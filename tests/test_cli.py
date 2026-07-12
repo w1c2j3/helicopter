@@ -1500,6 +1500,7 @@ class CommandPlanTests(unittest.TestCase):
                 "agentbench_db",
                 "agentbench_kg",
                 "beyond_aime",
+                "bouquet",
                 "brumo25",
                 "browsecomp",
                 "browsecomp_plus",

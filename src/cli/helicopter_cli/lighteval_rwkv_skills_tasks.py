@@ -196,7 +196,21 @@ LANGUAGE_NAMES = {
     "it": "Italian",
     "ja": "Japanese",
     "en": "English",
+    # BOUQuET pivot languages (NLLB codes)
+    "arb_Arab": "Arabic",
+    "arz_Arab": "Egyptian Arabic",
+    "cmn_Hant": "Mandarin Chinese",
+    "deu_Latn": "German",
+    "eng_Latn": "English",
+    "fra_Latn": "French",
+    "hin_Deva": "Hindi",
+    "ind_Latn": "Indonesian",
+    "rus_Cyrl": "Russian",
+    "spa_Latn": "Spanish",
 }
+
+BOUQUET_HF_REPO = "facebook/bouquet"
+BOUQUET_HF_SUBSET = "benchmark"
 
 MATH_PROMPT = (
     "Solve the following math problem. Think step by step, then give the final answer after 'Answer:'."
@@ -888,6 +902,10 @@ def answer_judge_prompt(line: dict[str, Any], task_name: str | None = None) -> D
 
 
 def _lang_display(lang: str) -> str:
+    # First try exact NLLB code (e.g. "hin_Deva")
+    if lang in LANGUAGE_NAMES:
+        return LANGUAGE_NAMES[lang]
+    # Then try stripping script suffix (e.g. "hin_Deva" -> "hin")
     base = lang.split("_", 1)[0]
     return LANGUAGE_NAMES.get(base, lang)
 
@@ -906,6 +924,30 @@ def wmt24pp_prompt(line: dict[str, Any], task_name: str | None = None) -> Doc | 
         "Return only the translation.\n\n"
         f"English: {source}\n"
         f"{target_name}:"
+    )
+    return Doc(
+        task_name=task_name,
+        query=query,
+        choices=[target],
+        gold_index=0,
+    )
+
+
+def bouquet_prompt(line: dict[str, Any], task_name: str | None = None) -> Doc | None:
+    source = str(line.get("src_text") or "").strip()
+    target = str(line.get("tgt_text") or "").strip()
+    src_lang = str(line.get("src_lang") or "")
+    tgt_lang = str(line.get("tgt_lang") or "")
+    src_name = _lang_display(src_lang)
+    tgt_name = _lang_display(tgt_lang)
+    if not source or not target or not src_name or not tgt_name:
+        return None
+
+    query = (
+        f"Translate the following text from {src_name} to {tgt_name}. "
+        "Return only the translation.\n\n"
+        f"{src_name}: {source}\n"
+        f"{tgt_name}:"
     )
     return Doc(
         task_name=task_name,
@@ -3772,6 +3814,21 @@ wmt24pp = LightevalTaskConfig(
     version=0,
 )
 
+bouquet = LightevalTaskConfig(
+    name="bouquet",
+    prompt_function=bouquet_prompt,
+    hf_repo=BOUQUET_HF_REPO,
+    hf_subset=BOUQUET_HF_SUBSET,
+    hf_avail_splits=["dev", "test"],
+    evaluation_splits=["test"],
+    few_shots_split=None,
+    few_shots_select=None,
+    generation_size=512,
+    metrics=[Metrics.chrf, Metrics.chrf_plus],
+    stop_sequence=[],
+    version=0,
+)
+
 TASKS_TABLE = [
     algebra222,
     amc23,
@@ -3780,6 +3837,7 @@ TASKS_TABLE = [
     agentbench_db,
     agentbench_kg,
     beyond_aime,
+    bouquet,
     brumo25,
     browsecomp,
     browsecomp_plus,
