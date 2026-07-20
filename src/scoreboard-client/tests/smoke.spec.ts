@@ -29,9 +29,8 @@ test("renders the SSR scoreboard table", async ({ page }) => {
   await expect(page.getByText(/metric=avg@1/)).toBeVisible();
 
   await page.goto("/?page=admin");
-  await expect(page.getByText("评测配置 · 启动")).toBeVisible();
+  await expect(page.getByText("评测配置 · 启动真实 Helicopter 批处理")).toBeVisible();
   await expect(page.getByText("GPU / 推理 worker 遥测")).toBeVisible();
-  await expect(page.getByText("Scheduler control is not part of the migrated scoreboard server.").first()).toBeVisible();
-  await page.getByRole("button", { name: "启动评测" }).click();
-  await expect(page.getByText(/501: Scheduler control is not part/).first()).toBeVisible();
+  await expect(page.getByText(/helicopter eval batch/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "启动评测" })).toBeEnabled();
 });

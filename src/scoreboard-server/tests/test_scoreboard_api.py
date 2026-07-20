@@ -662,38 +662,38 @@ async def test_scheduler_lease_store_keeps_foreign_active_jobs(
     assert await second.active_foreign_job_ids() == set()
 
 
-async def test_admin_stub_routes_keep_upstream_client_contract(
+async def test_admin_routes_expose_live_scheduler_contract(
     database_settings: DatabaseSettings,
 ) -> None:
     app = create_app(settings=database_settings)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         health = (await client.get("/api/admin/health")).json()
-        assert health == {"status": "disabled", "active": False, "auth_required": False}
+        assert health == {"status": "ok", "active": False, "auth_required": False}
 
         options = (await client.get("/api/admin/eval/options")).json()
-        assert options == {"jobs": [], "domains": [], "model_select": [], "worker_profile": [], "protocol": [], "run_mode": []}
+        assert "g1h-1.5b" in options["model_select"]
+        assert "configs/local/g1h-1.5b-accuracy.toml" in options["configs"]
 
-        assert (await client.get("/api/admin/eval/draft")).json() == {}
+        draft = (await client.get("/api/admin/eval/draft")).json()
+        assert draft["config"] == "configs/local/g1h-1.5b-accuracy.toml"
+        assert draft["models"] == ["g1h-1.5b"]
+        assert draft["scoreboard"] is True
 
         status = (await client.get("/api/admin/eval/status")).json()
         assert status["status"] == "idle"
-        assert status["error"] == "Scheduler control is not part of the migrated scoreboard server."
+        assert status["error"] is None
         assert status["queue_head"] == []
         assert status["available_gpus"] == []
 
-        start = await client.post("/api/admin/eval/start", json={})
-        assert start.status_code == 501
-        assert start.json()["detail"] == status["error"]
+        assert (await client.post("/api/admin/eval/pause")).status_code == 409
+        assert (await client.post("/api/admin/eval/resume")).status_code == 409
+        assert (await client.post("/api/admin/eval/cancel")).status_code == 409
 
-        assert (await client.post("/api/admin/eval/pause")).json()["error"] == status["error"]
-        assert (await client.post("/api/admin/eval/resume")).json()["error"] == status["error"]
-        assert (await client.post("/api/admin/eval/cancel")).json()["error"] == status["error"]
-
-        backpressure = (await client.get("/api/admin/backpressure", params={"infer_base_url": "http://infer"})).json()
+        backpressure = (await client.get("/api/admin/backpressure")).json()
         assert backpressure == {
-            "infer_base_url": "http://infer",
+            "infer_base_url": "",
             "available_gpus": [],
             "models": [],
-            "error": status["error"],
+            "error": None,
         }

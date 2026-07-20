@@ -120,6 +120,14 @@ export function HistoryPage() {
 
   return (
     <div>
+      <section className="card normal-intro">
+        <div>
+          <div className="eyebrow">NORMAL BOARD · 调参工作台</div>
+          <h2>对齐提示词、解码参数与每一次真实评测结果</h2>
+          <p>主看板聚焦模型能力对比；这里集中查看同一模型与 Benchmark 的历史配置、分数和代表样本。</p>
+        </div>
+        <div className="warning-rule">数据来自 Scoreboard 数据库</div>
+      </section>
       <section className="card">
         <div className="controls">
           <div className="control-group">
@@ -150,6 +158,14 @@ export function HistoryPage() {
         </div>
       </section>
       {error ? <div className="error-bar">加载失败：{error}</div> : null}
+      {history ? (
+        <div className="normal-summary">
+          <div className="summary-tile"><span>历史分数</span><strong>{history.total}</strong><small>当前模型 / Benchmark</small></div>
+          <div className="summary-tile"><span>配置曲线</span><strong>{history.groups.length}</strong><small>按 CoT 模式分组</small></div>
+          <div className="summary-tile"><span>当前模型</span><strong className="summary-text">{model || "—"}</strong><small>权重标识</small></div>
+          <div className="summary-tile"><span>Benchmark</span><strong className="summary-text">{benchmark || "—"}</strong><small>评测数据集</small></div>
+        </div>
+      ) : null}
       <div className="sh-layout">
         <div>
           {history && history.groups.length === 0 ? <div className="empty">该组合下暂无正式分数。</div> : null}

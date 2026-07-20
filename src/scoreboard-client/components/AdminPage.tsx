@@ -12,7 +12,7 @@ import type { AdminEvalStatusResponse } from "../lib/dtos/api/admin/eval/status"
 const TERMINAL = new Set(["idle", "completed", "cancelled", "failed"]);
 
 function statusClass(status: string): string {
-  if (status === "running" || status === "starting") return "stat-run";
+  if (status === "running" || status === "starting" || status === "cancelling") return "stat-run";
   if (status === "paused" || status === "pausing") return "stat-warn";
   if (status === "completed") return "stat-good";
   if (status === "failed") return "stat-bad";
@@ -140,10 +140,10 @@ function StatusPanel({
           <span className="muted mono-sm">-&gt; {status.desired_state}</span>
         ) : null}
         <div className="admin-controls">
-          <button className="btn" disabled={!canControl || pending === "pause"} onClick={() => run("pause", api.adminPause)}>
+          <button className="btn" disabled={!canControl || status.status === "paused" || pending === "pause"} onClick={() => run("pause", api.adminPause)}>
             暂停
           </button>
-          <button className="btn" disabled={!canControl || pending === "resume"} onClick={() => run("resume", api.adminResume)}>
+          <button className="btn" disabled={status.status !== "paused" || pending === "resume"} onClick={() => run("resume", api.adminResume)}>
             恢复
           </button>
           <button className="btn btn-danger" disabled={!canControl || pending === "cancel"} onClick={() => run("cancel", api.adminCancel)}>
@@ -172,6 +172,12 @@ function StatusPanel({
         开始 {fmtTime(status.started_at_unix_ms)} · 更新 {fmtTime(status.updated_at_unix_ms)}
         {status.finished_at_unix_ms ? ` · 结束 ${fmtTime(status.finished_at_unix_ms)}` : ""}
       </div>
+      {(status.log_tail?.length ?? 0) > 0 ? (
+        <details className="run-log" open={status.status === "failed"}>
+          <summary>实时运行日志 · {status.log_path ?? ""}</summary>
+          <pre>{status.log_tail.join("\n")}</pre>
+        </details>
+      ) : null}
     </section>
   );
 }
@@ -222,7 +228,7 @@ function QueuePanel({ status }: { status: AdminEvalStatusResponse }) {
 }
 
 function TelemetryPanel({ status }: { status: AdminEvalStatusResponse }) {
-  const inferUrl = (status.request?.infer_base_url as string) || "";
+  const inferUrl = (status.request?.base_url as string) || (status.request?.infer_base_url as string) || "";
   const [override, setOverride] = useState("");
   const [backpressure, setBackpressure] = useState<AdminBackpressureResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -362,14 +368,16 @@ function ConfigPanel({
 
   return (
     <section className="card">
-      <div className="card-title">评测配置 · 启动</div>
+      <div className="card-title">评测配置 · 启动真实 Helicopter 批处理</div>
+
+      <p className="admin-help">配置会转成 <code>helicopter eval batch</code> 参数；任务在服务端独立进程中运行，日志和最终报告会保存到 results/admin。</p>
 
       {options ? (
         <div className="controls" style={{ marginBottom: 14 }}>
-          <QuickSelect label="model_select" options={options.model_select} onPick={(value) => patch("model_select", value)} />
-          <QuickSelect label="run_mode" options={options.run_mode} onPick={(value) => patch("run_mode", value)} />
-          <QuickSelect label="domains（追加）" options={options.domains} onPick={(value) => patch("domains", [value])} />
-          <QuickSelect label="protocol" options={options.protocol} onPick={(value) => patch("infer_protocol", value)} />
+          <QuickSelect label="配置文件" options={options.configs} onPick={(value) => patch("config", value)} />
+          <QuickSelect label="模型（设为单选）" options={options.model_select} onPick={(value) => patch("models", [value])} />
+          <QuickSelect label="任务（设为单选）" options={options.domains} onPick={(value) => patch("tasks", [value])} />
+          <QuickSelect label="运行模式" options={options.run_mode} onPick={(value) => patch("rerun", value === "rerun")} />
         </div>
       ) : null}
 
@@ -383,6 +391,7 @@ function ConfigPanel({
           {starting ? "启动中..." : "启动评测"}
         </button>
         {disabled ? <span className="muted mono-sm">已有任务在运行，无法启动新任务。</span> : null}
+        {!disabled ? <span className="muted mono-sm">可先设置 <code>dry_run: true</code> 验证计划。</span> : null}
       </div>
     </section>
   );

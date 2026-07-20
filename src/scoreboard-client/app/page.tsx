@@ -6,7 +6,13 @@ import { api } from "../lib/api";
 export const dynamic = "force-dynamic";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
-const PAGE_BASE = (process.env.NEXT_PUBLIC_BASE_PATH || "/new-eval").replace(/\/$/, "");
+const PAGE_BASE = normalizeBasePath(process.env.NEXT_PUBLIC_BASE_PATH);
+
+function normalizeBasePath(input: string | undefined): string {
+  const value = (input || "").trim();
+  if (!value) return "";
+  return `${value.startsWith("/") ? "" : "/"}${value}`.replace(/\/+$/, "");
+}
 
 function pageHref(path: string): string {
   return PAGE_BASE ? `${PAGE_BASE}${path}` : path;
@@ -23,35 +29,44 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
   const page = value(params, "page", "dashboard");
   const view = value(params, "view", "benchmark_detail_delta");
   const model = value(params, "model", "");
-  const tab = value(params, "tab", "math");
+  const tab = value(params, "tab", "knowledge");
 
-  const isDashboard = page !== "history" && page !== "admin";
-  const meta = isDashboard ? await api.meta() : null;
+  const isNormalBoard = page === "normal" || page === "history";
+  const isDashboard = !isNormalBoard && page !== "admin";
+  let loadError: string | null = null;
+  const meta = isDashboard ? await api.meta().catch((error: unknown) => {
+    loadError = error instanceof Error ? error.message : String(error);
+    return null;
+  }) : null;
   const selectedModel = meta ? model || meta.auto_label : model;
-  const leaderboard = meta ? await api.leaderboard(selectedModel, view) : null;
+  const leaderboard = meta ? await api.leaderboard(selectedModel, view).catch((error: unknown) => {
+    loadError = error instanceof Error ? error.message : String(error);
+    return null;
+  }) : null;
 
   return (
     <main className="app-shell">
       <header className="app-header">
         <div>
-          <h1>RWKV Skills</h1>
+          <h1><span className="brand-dot">⦿</span> RWKV Skills</h1>
           <div className="subtitle">
-            {page === "history" ? "分数历史" : page === "admin" ? "调度器管理" : `评测看板 · ${leaderboard?.view_label ?? view}`}
+            {isNormalBoard ? "Normal 刷榜 · 提示词与解码参数对比" : page === "admin" ? "评测调度与运行管理" : `评测看板 · ${leaderboard?.view_label ?? view}`}
           </div>
         </div>
         <nav className="page-nav">
           <a className={page === "dashboard" ? "active" : ""} href={pageHref(`/?page=dashboard&view=${view}&model=${encodeURIComponent(selectedModel)}&tab=${tab}`)}>
             评测看板
           </a>
-          <a className={page === "history" ? "active" : ""} href={pageHref("/?page=history")}>
-            分数历史
+          <a className={isNormalBoard ? "active" : ""} href={pageHref("/?page=normal")}>
+            Normal 刷榜
           </a>
           <a className={page === "admin" ? "active" : ""} href={pageHref("/?page=admin")}>
             管理面板
           </a>
         </nav>
       </header>
-      {page === "history" ? (
+      {loadError ? <div className="error-bar">加载评测看板失败：{loadError}</div> : null}
+      {isNormalBoard ? (
         <HistoryPage />
       ) : page === "admin" ? (
         <AdminPage />

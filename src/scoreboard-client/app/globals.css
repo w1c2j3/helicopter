@@ -842,6 +842,111 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   margin-left: 6px;
 }
 
+.normal-intro {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 28px;
+  margin-bottom: 18px;
+  overflow: hidden;
+  background: radial-gradient(circle at 88% 15%, rgba(91, 140, 255, 0.18), transparent 34%), linear-gradient(135deg, var(--bg-card), #171a25);
+}
+.normal-intro .eyebrow {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+.normal-intro h2 {
+  margin: 8px 0 6px;
+  font-size: clamp(20px, 2.3vw, 30px);
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+}
+.normal-intro p {
+  max-width: 760px;
+  margin: 0;
+  color: var(--text-muted);
+}
+.warning-rule {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  border: 1px solid rgba(245, 177, 76, 0.35);
+  border-radius: 999px;
+  background: rgba(245, 177, 76, 0.09);
+  color: var(--warn);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.normal-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+.summary-tile {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 15px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+}
+.summary-tile span,
+.summary-tile small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.summary-tile strong {
+  overflow: hidden;
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.summary-tile .summary-text {
+  font-family: var(--mono);
+  font-size: 14px;
+}
+.admin-help {
+  margin: -4px 0 14px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.admin-help code {
+  font-family: var(--mono);
+}
+.run-log {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.run-log summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.run-log pre {
+  max-height: 300px;
+  overflow: auto;
+  margin: 10px 0 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #0d0f14;
+  color: var(--text-dim);
+  font: 11px/1.55 var(--mono);
+  white-space: pre-wrap;
+}
+
 /* ---- Next.js scoreboard compatibility ---- */
 .page-nav a {
   background: var(--bg-elevated);
@@ -915,5 +1020,12 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   .modal-col.right {
     border-left: 0;
     padding-left: 20px;
+  }
+  .normal-intro {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .normal-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
