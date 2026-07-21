@@ -30,9 +30,11 @@ from helicopter_cli import (
     g1h_config,
     lighteval_export,
     lighteval_dataset_resilience,
+    lighteval_raw_completion,
     lighteval_rwkv_skills_tasks,
     lighteval_tasks,
     performance,
+    scoreboard_bridge,
 )
 
 
@@ -256,6 +258,144 @@ def build_takeoff_plan(
         exists.side_effect = lambda path: True if path == venv_python else original_exists(path)
         return commands.build_takeoff_plan(args, root=ROOT, env=loaded_env, config=loaded_config)
 
+
+class RawCompletionTests(unittest.TestCase):
+    def test_open_think_prefill_continuation_is_not_answer_text(self) -> None:
+        self.assertEqual(
+            lighteval_raw_completion._strip_prefill_continuation(
+                ">  def solve():\n    return 1", "User: {query}\nAssistant: <think></think"
+            ),
+            "def solve():\n    return 1",
+        )
+        self.assertEqual(
+            lighteval_raw_completion._strip_prefill_continuation(">reasoning", "Assistant: <think"),
+            "reasoning",
+        )
+        self.assertEqual(
+            lighteval_raw_completion._strip_prefill_continuation("> legitimate", "Assistant:"),
+            "> legitimate",
+        )
+
+    def test_generated_mcq_uses_explicit_answer_marker_before_option_mentions(self) -> None:
+        text = "The correct answer is C. Option A is wrong. Option B is wrong. Option D is wrong."
+        self.assertEqual(lighteval_raw_completion._extract_choice(text, set("ABCD")), "C")
+        self.assertEqual(
+            lighteval_raw_completion._extract_choice(r"Therefore, the answer is \boxed{\text{B}}.", set("ABCD")),
+            "B",
+        )
+
+    def test_generated_mcq_postprocessing_preserves_full_completion(self) -> None:
+        response = ModelResponse(text=["Reasoning. Answer: D"])
+        doc = SimpleNamespace(choices=[" A", " B", " C", " D"])
+
+        processed = lighteval_raw_completion._postprocess_choice_response(doc, response)
+
+        self.assertEqual(processed.text, ["Reasoning. Answer: D"])
+        self.assertEqual(processed.text_post_processed, [" D"])
+
+    def test_generated_mcq_does_not_guess_from_prose_letters(self) -> None:
+        response = ModelResponse(text=["A careful comparison leaves the result unresolved."])
+        doc = SimpleNamespace(choices=["A", "B", "C", "D"])
+
+        processed = lighteval_raw_completion._postprocess_choice_response(doc, response)
+
+        self.assertEqual(processed.text_post_processed, response.text)
+
+    def test_raw_request_preserves_finish_reason_usage_and_unprocessed_text(self) -> None:
+        response = mock.Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [{"index": 0, "text": "> def solve():\n    return 1", "finish_reason": "length"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+        }
+        client = SimpleNamespace(
+            model="openai/model",
+            base_url="http://127.0.0.1:8000/v1",
+            api_key="key",
+            timeout=10,
+            API_MAX_RETRY=1,
+            API_RETRY_SLEEP=0,
+            API_RETRY_MULTIPLIER=1,
+        )
+        with mock.patch.dict(os.environ, {"HELICOPTER_PROMPT_TEMPLATE": "Assistant: <think></think"}, clear=False):
+            with mock.patch.object(lighteval_raw_completion, "load_sampling_overrides", return_value={}):
+                with mock.patch.object(lighteval_raw_completion.requests, "post", return_value=response):
+                    result = lighteval_raw_completion._request(client, "prompt", 32, 1, None)
+
+        self.assertEqual(result.text, ["def solve():\n    return 1"])
+        self.assertEqual(result.raw_text, ["> def solve():\n    return 1"])
+        self.assertEqual(result.finish_reason, "length")
+        self.assertEqual(result.usage["total_tokens"], 14)
+
+    def test_scoreboard_keeps_full_completion_and_extracted_eval_answer_separate(self) -> None:
+        response = ModelResponse(text=["Reasoning. Answer: B"], text_post_processed=[" B"])
+        response.finish_reason = "stop"
+        response.raw_text = ["> Reasoning. Answer: B"]
+
+        payload = scoreboard_bridge._response_payload(response)
+
+        self.assertEqual(scoreboard_bridge._completion_answer(payload), "Reasoning. Answer: B")
+        self.assertEqual(scoreboard_bridge._answer(payload), " B")
+        self.assertEqual(scoreboard_bridge._stop_reason(payload), "stop")
+        self.assertEqual(payload["raw_text"], ["> Reasoning. Answer: B"])
+
+    def test_math_final_stage_closes_think_and_records_both_requests(self) -> None:
+        stage1 = ModelResponse(text=["reasoning"], input="User: problem\nAssistant: <think")
+        stage1.raw_text = [">reasoning"]
+        stage1.finish_reason = "length"
+        stage1.usage = {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28}
+        stage2 = ModelResponse(text=["025"])
+        stage2.finish_reason = "stop"
+        stage2.usage = {"prompt_tokens": 30, "completion_tokens": 2, "total_tokens": 32}
+        doc = SimpleNamespace(choices=["025"])
+        client = SimpleNamespace()
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HELICOPTER_MATH_FINAL_SUFFIX": "\nTherefore, the answer is \\(\\boxed{",
+                "HELICOPTER_MATH_FINAL_MAX_TOKENS": "64",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(lighteval_raw_completion, "_request", return_value=stage2) as request:
+                result = lighteval_raw_completion._math_final_response(
+                    client, "User: problem\nAssistant: <think", doc, stage1
+                )
+
+        self.assertTrue(result.text[0].endswith(r"Therefore, the answer is \(\boxed{025}"))
+        self.assertEqual(result.finish_reason, "stop")
+        self.assertEqual(result.usage["total_tokens"], 60)
+        self.assertEqual(len(result.stages), 2)
+        self.assertEqual(result.stages[0]["stop_reason"], "length")
+        self.assertEqual(result.stages[1]["completion"], "025")
+        final_prompt = request.call_args.args[1]
+        self.assertIn("Assistant: <think>reasoning\n</think>", final_prompt)
+        self.assertEqual(request.call_args.args[2:5], (64, 1, ["}"]))
+        self.assertTrue(request.call_args.kwargs["force_max_tokens"])
+        self.assertTrue(request.call_args.kwargs["force_stops"])
+
+    def test_scoreboard_expands_two_stage_completion_metadata(self) -> None:
+        response = {
+            "finish_reason": "stop",
+            "stages": [
+                {"prompt": "p1", "completion": "c1", "stop_reason": "length"},
+                {"prompt": "p2", "completion": "c2", "stop_reason": "stop"},
+            ],
+        }
+        self.assertEqual(
+            scoreboard_bridge._completion_stages(
+                response, fallback_prompt="fallback", fallback_completion="fallback"
+            ),
+            {
+                "prompt1": "p1",
+                "completion1": "c1",
+                "stop_reason1": "length",
+                "prompt2": "p2",
+                "completion2": "c2",
+                "stop_reason2": "stop",
+            },
+        )
 
 class ParserTests(unittest.TestCase):
     def test_agent_harness_parser_accepts_plan_surface(self) -> None:

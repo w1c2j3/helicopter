@@ -73,9 +73,7 @@ def _extract_choice(text: str, allowed: set[str]) -> str:
         match = re.fullmatch(r"\s*[\[(]?\s*([A-Z])\s*[\])]?[.\s]*", line, re.IGNORECASE)
         if match and match.group(1).upper() in allowed:
             return match.group(1).upper()
-
-    matches = re.findall(r"(?<![A-Za-z])([A-Z])(?![A-Za-z])", text.upper())
-    return next((label for label in reversed(matches) if label in allowed), "")
+    return ""
 
 
 def _postprocess_choice_response(doc: Any, response: ModelResponse) -> ModelResponse:
