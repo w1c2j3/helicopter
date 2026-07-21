@@ -1,0 +1,33 @@
+# Server evaluation preset. Endpoint, API keys, judge, and database live in .env.remote.
+
+[prompt]
+mode = "normal_nocot"
+template = "User✿{query}✿\nBot✿<think></think"
+strip_terminal_flower = true
+
+[sampling]
+max_tokens = 2048
+temperature = 0.96
+top_p = 0.76
+top_k = 32
+presence_penalty = 1.0
+frequency_penalty = 0.1
+penalty_decay = 0.988
+stop = ["\nUser:", "User✿", "✿"]
+
+[lighteval]
+provider = "openai"
+output_dir = "results/lighteval"
+save_details = false
+dataset_loading_processes = 1
+load_tasks_multilingual = false
+custom_tasks = "src/cli/helicopter_cli/lighteval_rwkv_skills_tasks.py"
+concurrent_requests = 8
+
+[function_calling]
+concurrent_requests = 8
+request_timeout = 180
+
+[models.deployed]
+served_model_name = "rwkv7-g1h-7.2b-20260710-ctx10240"
+max_model_len = 10240

@@ -12,7 +12,7 @@ import time
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.error import URLError
 from urllib.parse import urlsplit
 from urllib.request import urlopen
@@ -167,9 +167,118 @@ def scoreboard_model_name(args: Any, config: dict[str, Any]) -> str:
     )
 
 
+def _first_nonempty_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        texts = [str(item) for item in value if item not in (None, "")]
+        if len(texts) == 1:
+            return texts[0]
+        if texts:
+            return json.dumps(texts, ensure_ascii=False, default=str)
+    if value not in (None, ""):
+        return str(value)
+    return ""
+
+
+def _lighteval_answer(model_response: Mapping[str, Any]) -> str:
+    for key in ("text_post_processed", "text"):
+        answer = _first_nonempty_text(model_response.get(key))
+        if answer:
+            return answer
+    return json.dumps(dict(model_response), ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _lighteval_reference(doc: Mapping[str, Any]) -> str:
+    choices = doc.get("choices")
+    gold_indices = doc.get("gold_index")
+    if isinstance(choices, list) and isinstance(gold_indices, list):
+        selected = [choices[index] for index in gold_indices if isinstance(index, int) and 0 <= index < len(choices)]
+        if selected:
+            return _first_nonempty_text(selected)
+    for key in ("expected_answer", "reference_answer", "solution", "answer", "target"):
+        value = doc.get(key)
+        if value not in (None, ""):
+            return _first_nonempty_text(value)
+    specific = doc.get("specific")
+    if isinstance(specific, Mapping):
+        for key in ("expected_answer", "reference_answer", "solution", "answer", "target"):
+            value = specific.get(key)
+            if value not in (None, ""):
+                return _first_nonempty_text(value)
+    return ""
+
+
+def _lighteval_passed(metrics: Mapping[str, Any]) -> bool:
+    values: list[float] = []
+    for name, value in metrics.items():
+        if "stderr" in str(name).lower() or isinstance(value, bool):
+            if isinstance(value, bool):
+                values.append(1.0 if value else 0.0)
+            continue
+        try:
+            values.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    return any(value > 0.0 for value in values)
+
+
+def _lighteval_detail_payloads(
+    *, detail_files: list[str], task_name: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    try:
+        import pandas as pd
+    except ImportError:
+        return [], []
+
+    completion_payloads: list[dict[str, Any]] = []
+    eval_payloads: list[dict[str, Any]] = []
+    for item in detail_files:
+        path = Path(item)
+        try:
+            rows = pd.read_parquet(path, columns=["doc", "metric", "model_response"]).to_dict("records")
+        except Exception:  # noqa: BLE001 - skip unrelated or malformed LightEval detail files.
+            continue
+        for row in rows:
+            doc = row.get("doc") if isinstance(row.get("doc"), Mapping) else {}
+            row_task = str(doc.get("task_name") or "")
+            if row_task and row_task != task_name:
+                continue
+            metrics = row.get("metric") if isinstance(row.get("metric"), Mapping) else {}
+            response = row.get("model_response") if isinstance(row.get("model_response"), Mapping) else {}
+            sample_index = len(completion_payloads)
+            answer = _lighteval_answer(response)
+            reference = _lighteval_reference(doc)
+            passed = _lighteval_passed(metrics)
+            key = {"sample_index": sample_index, "repeat_index": 0, "pass_index": 0}
+            completion_payloads.append(
+                {
+                    **key,
+                    "prompt1": response.get("input") or doc.get("query") or "",
+                    "completion1": answer,
+                    "stop_reason1": None,
+                    "stats": {"metrics": dict(metrics), "lighteval_task": task_name},
+                    "agent_result": {"doc": dict(doc), "model_response": dict(response)},
+                    "task_id": doc.get("id"),
+                }
+            )
+            eval_payloads.append(
+                {
+                    **key,
+                    "answer": answer,
+                    "ref_answer": reference,
+                    "raw_record": dict(doc),
+                    "is_passed": passed,
+                    "fail_reason": "" if passed else json.dumps(dict(metrics), ensure_ascii=False, default=str),
+                }
+            )
+    return completion_payloads, eval_payloads
+
+
 async def _ingest_scoreboard_results(
     *,
     result_files: list[str],
+    detail_files: list[str] | None = None,
     model_name: str,
     root: Path,
     job_name: str = "lighteval",
@@ -208,6 +317,20 @@ async def _ingest_scoreboard_results(
                     is_param_search=False,
                     allow_resume=False,
                 )
+                completion_payloads, eval_payloads = _lighteval_detail_payloads(
+                    detail_files=list(detail_files or []),
+                    task_name=str(task_name),
+                )
+                if completion_payloads:
+                    await store.ensure_benchmark_num_samples(
+                        dataset=dataset,
+                        num_samples=len(completion_payloads),
+                    )
+                    await store.insert_completion_payloads_batch(
+                        payloads=completion_payloads,
+                        task_id=task_id,
+                    )
+                    await store.ingest_eval_payloads(payloads=eval_payloads, task_id=task_id)
                 await store.record_score_payload(
                     task_id=task_id,
                     payload={"cot_mode": "NoCoT", "metrics": metrics},
@@ -246,6 +369,7 @@ def _scoreboard_env(env: dict[str, str]):
 def ingest_scoreboard_results(
     *,
     result_files: list[str],
+    detail_files: list[str] | None = None,
     model_name: str,
     root: Path,
     env: dict[str, str],
@@ -259,6 +383,7 @@ def ingest_scoreboard_results(
             recorded = asyncio.run(
                 _ingest_scoreboard_results(
                     result_files=result_files,
+                    detail_files=detail_files,
                     model_name=model_name,
                     root=root,
                     job_name=job_name,
@@ -347,17 +472,21 @@ def run_eval(
         elif server_process is not None:
             print(f"eval run: leaving vLLM server running (pid {server_process.pid})")
 
-    if exit_code == 0 and getattr(args, "scoreboard", False):
+    database_only = lighteval_plan.env.get("HELICOPTER_SCOREBOARD_DB_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
+    if exit_code == 0 and getattr(args, "scoreboard", False) and not database_only:
         try:
             report = json.loads(performance_output.read_text())
         except (OSError, json.JSONDecodeError):
             report = {}
         result_files = report.get("source_files", {}).get("results", [])
+        detail_files = report.get("source_files", {}).get("details", [])
         ingest_scoreboard_results(
             result_files=list(result_files),
+            detail_files=list(detail_files),
             model_name=scoreboard_model_name(args, config),
             root=root,
             env=env,
         )
-    print(f"eval run: finished with exit code {exit_code}; performance report: {performance_output}")
+    suffix = "database-only mode" if database_only else f"performance report: {performance_output}"
+    print(f"eval run: finished with exit code {exit_code}; {suffix}")
     return exit_code

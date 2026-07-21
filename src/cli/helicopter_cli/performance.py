@@ -868,7 +868,9 @@ def run_lighteval_with_performance(
         metrics_before=metrics_before,
         metrics_after=metrics_after,
     )
-    performance_output.parent.mkdir(parents=True, exist_ok=True)
-    performance_output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    database_only = env.get("HELICOPTER_SCOREBOARD_DB_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
+    if not database_only:
+        performance_output.parent.mkdir(parents=True, exist_ok=True)
+        performance_output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     write_scoreboard_performance(task_id=scoreboard_task_id, report=report, root=root)
     return exit_code
