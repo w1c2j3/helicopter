@@ -26,6 +26,7 @@ from .commands import (
 )
 from .config import resolve_model_entry, table
 from .env import pick
+from .g1h_config import canonical_task_name
 from .performance import (
     base_url_from_lighteval_command,
     derive_metrics_url,
@@ -151,7 +152,7 @@ def scoreboard_dataset_name(task_name: str) -> str:
     parts = [part.strip() for part in str(task_name).split("|") if part.strip()]
     if len(parts) > 1 and parts[-1].isdigit():
         parts = parts[:-1]
-    return parts[-1] if parts else str(task_name)
+    return canonical_task_name(parts[-1] if parts else str(task_name))
 
 
 def scoreboard_model_name(args: Any, config: dict[str, Any]) -> str:

@@ -27,6 +27,7 @@ from helicopter_cli import (
     eval_batch,
     eval_run,
     function_calling,
+    g1h_config,
     lighteval_export,
     lighteval_dataset_resilience,
     lighteval_rwkv_skills_tasks,
@@ -37,6 +38,43 @@ from helicopter_cli import (
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = ROOT / "configs/example.toml"
+
+
+class G1hConfigTests(unittest.TestCase):
+    POLICY = {
+        "prompt_style": "naive",
+        "zero_shot": True,
+        "avg_k": 8,
+        "rollout_n": 8,
+        "generation_size": 4096,
+        "gpass_k": 16,
+        "gpass_n": 48,
+        "gpass_generation_size": 8192,
+        "long_rollout_tasks": [],
+        "no_cot_tasks": [],
+    }
+
+    def test_variant_selection_prefers_avg_then_gpass(self) -> None:
+        selected = g1h_config.select_task_specs(
+            ["aime24", "aime24_avg", "aime24_gpassk", "math_500"],
+            self.POLICY,
+        )
+        self.assertEqual(selected, [("aime24_avg", "0"), ("math_500", "0")])
+
+    def test_variant_selection_falls_back_to_gpass(self) -> None:
+        selected = g1h_config.select_task_specs(["toy", "toy_gpassk"], self.POLICY)
+        self.assertEqual(selected, [("toy_gpassk", "0")])
+
+    def test_prompt_profiles_are_configurable(self) -> None:
+        naive = g1h_config.format_query("Q", canonical_name="math_500", policy=self.POLICY)
+        normal_policy = {**self.POLICY, "prompt_style": "normal"}
+        normal = g1h_config.format_query("Q", canonical_name="math_500", policy=normal_policy)
+        self.assertEqual(naive, "User: Q\nAssistant: <think>")
+        self.assertEqual(normal, "User✿Q✿\nBot✿<think>")
+
+    def test_alias_specs_make_zero_shot_explicit(self) -> None:
+        specs = g1h_config.alias_task_specs([("math_500", "5")], self.POLICY)
+        self.assertEqual(specs, ["g1h__math_500|0"])
 
 
 def load_example_config() -> dict[str, object]:
@@ -743,6 +781,34 @@ class CommandPlanTests(unittest.TestCase):
         self.assertEqual(plan.env["HELICOPTER_PATCH_LIGHTEVAL_LITELLM_LOGPROBS"], "1")
         self.assertEqual(plan.env["HELICOPTER_PATCH_LIGHTEVAL_DATASET_RETRIES"], "1")
         self.assertEqual(plan.env["PYTHONPATH"].split(os.pathsep)[0], str(ROOT / "src/cli"))
+
+    def test_g1h_plan_uses_doc_generation_size_and_aliases_tasks(self) -> None:
+        loaded_config = load_example_config()
+        loaded_config["lighteval"]["g1h"] = {
+            "metric": "avg",
+            "prompt_style": "naive",
+            "zero_shot": True,
+            "avg_k": 8,
+            "rollout_n": 8,
+            "generation_size": 4096,
+            "gpass_k": 16,
+            "gpass_n": 48,
+            "gpass_generation_size": 8192,
+        }
+        plan = commands.build_lighteval_plan(
+            lighteval_args(tasks="aime24,aime24_avg,math_500"),
+            root=ROOT,
+            env={},
+            config=loaded_config,
+        )
+
+        self.assertEqual(plan.command[6], "g1h__aime24_avg|0,g1h__math_500|0")
+        self.assertNotIn("max_new_tokens", plan.command[5])
+        sampling_json = plan.env.get("HELICOPTER_VLLM_SAMPLING_JSON")
+        if sampling_json:
+            self.assertNotIn("max_tokens", json.loads(sampling_json))
+        policy = json.loads(plan.env["HELICOPTER_LIGHTEEVAL_G1H_POLICY"])
+        self.assertEqual(policy["selected_tasks"], ["aime24_avg", "math_500"])
 
     def test_lighteval_plan_cli_max_new_tokens_overrides_config(self) -> None:
         loaded_config = load_example_config()
