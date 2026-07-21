@@ -47,7 +47,13 @@ def add_lighteval_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--api-key", help="API key passed through OPENAI_API_KEY")
     parser.add_argument("--concurrent-requests", type=int)
     parser.add_argument("--max-model-length", type=int)
-    parser.add_argument("--max-new-tokens", type=int, help="cap generated tokens through LightEval generation_parameters")
+    parser.add_argument(
+        "--max-tokens",
+        "--max-new-tokens",
+        dest="max_tokens",
+        type=int,
+        help="vLLM max output tokens; --max-new-tokens is a legacy alias",
+    )
     parser.add_argument("--max-samples", type=int)
     parser.add_argument("--output-dir")
     parser.add_argument("--dataset-loading-processes", type=int)

@@ -28,6 +28,7 @@ from helicopter_cli import (
     eval_run,
     function_calling,
     lighteval_export,
+    lighteval_dataset_resilience,
     lighteval_rwkv_skills_tasks,
     lighteval_tasks,
     performance,
@@ -740,6 +741,7 @@ class CommandPlanTests(unittest.TestCase):
         self.assertTrue(options["--save-details"])
         self.assertEqual(plan.env["OPENAI_API_KEY"], "EMPTY")
         self.assertEqual(plan.env["HELICOPTER_PATCH_LIGHTEVAL_LITELLM_LOGPROBS"], "1")
+        self.assertEqual(plan.env["HELICOPTER_PATCH_LIGHTEVAL_DATASET_RETRIES"], "1")
         self.assertEqual(plan.env["PYTHONPATH"].split(os.pathsep)[0], str(ROOT / "src/cli"))
 
     def test_lighteval_plan_cli_max_new_tokens_overrides_config(self) -> None:
@@ -753,6 +755,42 @@ class CommandPlanTests(unittest.TestCase):
         )
 
         self.assertIn("generation_parameters={max_new_tokens:128}", plan.command[5])
+
+    def test_lighteval_plan_forwards_canonical_vllm_sampling(self) -> None:
+        loaded_config = load_example_config()
+        loaded_config["lighteval"] = {
+            key: value
+            for key, value in loaded_config["lighteval"].items()
+            if key != "max_new_tokens"
+        }
+        loaded_config["sampling"] = {
+            "max_tokens": 512,
+            "temperature": 0.8,
+            "top_p": 0.35,
+            "top_k": 40,
+            "presence_penalty": 0.65,
+            "frequency_penalty": 0.25,
+            "penalty_decay": 0.99,
+        }
+
+        plan = commands.build_lighteval_plan(
+            lighteval_args(),
+            root=ROOT,
+            env={},
+            config=loaded_config,
+        )
+
+        model_args = plan.command[5]
+        self.assertIn("generation_parameters={", model_args)
+        self.assertIn("max_new_tokens:512", model_args)
+        self.assertIn("temperature:0.8", model_args)
+        self.assertIn("top_p:0.35", model_args)
+        self.assertIn("top_k:40", model_args)
+        self.assertNotIn("penalty_decay", model_args)
+        self.assertEqual(
+            json.loads(plan.env["HELICOPTER_VLLM_SAMPLING_JSON"]),
+            loaded_config["sampling"],
+        )
 
     def test_lighteval_plan_keeps_api_key_out_of_command(self) -> None:
         loaded_config = load_example_config()
@@ -1849,6 +1887,34 @@ class CommandPlanTests(unittest.TestCase):
 
     def test_comp_math_static_data_file_is_packaged(self) -> None:
         self.assertTrue(Path(lighteval_rwkv_skills_tasks.COMP_MATH_24_25_PATH).is_file())
+
+    def test_minerva_math_static_data_file_is_packaged(self) -> None:
+        path = Path(lighteval_rwkv_skills_tasks.MINERVA_MATH_PATH)
+        self.assertTrue(path.is_file())
+        with path.open(encoding="utf-8") as fh:
+            self.assertEqual(sum(1 for _line in fh), 272)
+
+    def test_dataset_resilience_retries_only_transient_errors(self) -> None:
+        transient = ConnectionError("proxy disconnected")
+        calls = 0
+
+        def flaky() -> str:
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                raise transient
+            return "ok"
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HELICOPTER_LIGHTEVAL_DATASET_RETRIES": "2",
+                "HELICOPTER_LIGHTEVAL_DATASET_RETRY_DELAY": "0",
+            },
+        ):
+            self.assertEqual(lighteval_dataset_resilience.retry_load_dataset(flaky), "ok")
+        self.assertEqual(calls, 3)
+        self.assertFalse(lighteval_dataset_resilience.is_transient_dataset_error(ValueError("bad data")))
 
     def test_mcpbench_static_data_files_are_packaged(self) -> None:
         expected_counts = {
