@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 from .config import dataset_root, resolve_model_entry, resolve_model_path, table
 from .env import env_value, pick
+from .g1h_config import alias_task_specs, normalize_policy, select_task_specs
 from .paths import resolve_path
 
 
@@ -355,6 +356,59 @@ def format_lighteval_sampling(sampling: dict[str, Any]) -> str | None:
     return f"generation_parameters={{{values}}}"
 
 
+def resolve_lighteval_request_sampling(
+    args: Any,
+    *,
+    env: dict[str, str],
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """Resolve request sampling without overriding G1h per-task lengths."""
+
+    sampling = resolve_lighteval_sampling(args, env=env, config=config)
+    if isinstance(table(config, "lighteval").get("g1h"), dict):
+        # LiteLLM merges generation_parameters after the per-Doc max_tokens.
+        # Leaving max_tokens here would turn every G1h task into an 8192-token
+        # request and defeat generation_size/gpass_generation_size in the
+        # configured task aliases.
+        sampling = {key: value for key, value in sampling.items() if key != "max_tokens"}
+    return sampling
+
+
+def resolve_lighteval_g1h_policy(
+    args: Any,
+    *,
+    env: dict[str, str],
+    config: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Resolve the native g1h avg/rollout policy for the LightEval child.
+
+    The task module is imported inside the spawned LightEval process, so the
+    policy is passed as JSON rather than reconstructed from a second config
+    file.  Task names are passed separately to keep the DB/catalog names
+    unchanged in result files and scoreboard rows.
+    """
+
+    lighteval = table(config, "lighteval")
+    policy = lighteval.get("g1h")
+    if not isinstance(policy, dict) or not policy:
+        return None
+
+    try:
+        resolved = normalize_policy(policy)
+        tasks = pick(getattr(args, "tasks", None), lighteval.get("tasks"))
+        if tasks:
+            if isinstance(tasks, list):
+                raw_specs = [str(item).strip() for item in tasks if str(item).strip()]
+            else:
+                raw_specs = [item.strip() for item in str(tasks).split(",") if item.strip()]
+            selected = select_task_specs(raw_specs, resolved)
+            resolved["selected_tasks"] = [name for name, _fewshot in selected]
+            resolved["tasks"] = alias_task_specs(selected, resolved)
+        return resolved
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+
+
 def build_lighteval_model_args(
     args: Any,
     *,
@@ -403,7 +457,7 @@ def build_lighteval_model_args(
         lighteval.get("max_model_length"),
         model.get("max_model_len"),
     )
-    sampling = resolve_lighteval_sampling(args, env=env, config=config)
+    sampling = resolve_lighteval_request_sampling(args, env=env, config=config)
     if concurrent_requests is not None:
         parts.append(f"concurrent_requests={concurrent_requests}")
     if max_model_length is not None:
@@ -430,7 +484,7 @@ def build_lighteval_plan(
     lighteval = table(config, "lighteval")
     python = python_executable(config, root=root, env=env)
     model_args, api_key = build_lighteval_model_args(args, root=root, env=env, config=config)
-    sampling = resolve_lighteval_sampling(args, env=env, config=config)
+    sampling = resolve_lighteval_request_sampling(args, env=env, config=config)
     command = [
         python,
         "-m",
@@ -497,6 +551,23 @@ def build_lighteval_plan(
         )
     if api_key:
         plan_env["OPENAI_API_KEY"] = api_key
+    g1h_policy = resolve_lighteval_g1h_policy(args, env=env, config=config)
+    if g1h_policy is not None:
+        task_selection = ",".join(str(item) for item in g1h_policy.pop("tasks", []))
+        plan_env["HELICOPTER_LIGHTEEVAL_G1H_POLICY"] = json.dumps(
+            g1h_policy,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if task_selection:
+            plan_env["HELICOPTER_LIGHTEEVAL_TASKS"] = ",".join(
+                str(item) for item in g1h_policy.get("selected_tasks", [])
+            )
+            try:
+                task_index = command.index(args.tasks)
+            except ValueError as error:
+                raise SystemExit("internal error: LightEval task argument was not found") from error
+            command[task_index] = task_selection
     return CommandPlan(command=command, cwd=root, shown_env=shown_env, env=plan_env)
 
 

@@ -3828,3 +3828,11 @@ TASKS_TABLE = [
     supergpqa,
     wmt24pp,
 ]
+
+# The launcher enables this only for the canonical g1h accuracy profile.  It
+# keeps the task names unchanged so scoreboard ingestion still maps results
+# back to the benchmark catalog, while replacing task metrics with the
+# configured ordinary avg@K (or preserving an explicit G-pass task).
+from helicopter_cli.lighteval_g1h_policy import apply_g1h_policy  # noqa: E402
+
+TASKS_TABLE = apply_g1h_policy(TASKS_TABLE)
