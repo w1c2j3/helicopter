@@ -47,6 +47,7 @@ OMNI_MATH_URL = "https://raw.githubusercontent.com/KbsdJames/Omni-MATH/refs/head
 QWEN_MATH_URL = (
     "https://raw.githubusercontent.com/QwenLM/Qwen2.5-Math/refs/heads/main/evaluation/data/{dataset}/test.jsonl"
 )
+MINERVA_MATH_PATH = str(Path(__file__).with_name("lighteval_data") / "minerva_math_test.jsonl")
 POLYMATH_LANGUAGES = ("ar", "bn", "de", "en", "es", "fr", "id", "it", "ja", "ko", "ms", "pt", "ru", "sw", "te", "th", "vi", "zh")
 POLYMATH_LEVELS = ("top", "high", "medium", "low")
 POLYMATH_URLS = [
@@ -3678,7 +3679,7 @@ mawps = free_answer_task(
 minerva_math = free_answer_task(
     "minerva_math",
     hf_repo="json",
-    hf_data_files={"test": QWEN_MATH_URL.format(dataset="minerva_math")},
+    hf_data_files={"test": MINERVA_MATH_PATH},
     hf_avail_splits=["test"],
     evaluation_splits=["test"],
 )

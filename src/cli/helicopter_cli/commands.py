@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from dataclasses import dataclass
@@ -15,6 +16,37 @@ from .paths import resolve_path
 WKV_MODES = ("fp16", "fp32io16")
 EMB_DEVICES = ("cpu", "gpu")
 LIGHTEVAL_BACKENDS = ("endpoint-litellm",)
+
+# Request-level sampling names accepted by the local vLLM OpenAI-compatible
+# endpoint. ``max_tokens`` is translated to LightEval's ``max_new_tokens``
+# only inside generation_parameters; the raw values are also passed through
+# a small local LiteLLM compatibility patch so provider-specific fields are
+# not silently discarded.
+VLLM_SAMPLING_FIELDS = (
+    "max_tokens",
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "seed",
+    "repetition_penalty",
+    "frequency_penalty",
+    "presence_penalty",
+    "penalty_decay",
+    "stop",
+)
+LIGHTEVAL_SAMPLING_FIELDS = frozenset(
+    {
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "seed",
+        "repetition_penalty",
+        "frequency_penalty",
+        "presence_penalty",
+    }
+)
 
 
 @dataclass
@@ -98,6 +130,17 @@ def apply_rwkv_env(
 
 def strip_vllm_env(env: dict[str, str]) -> dict[str, str]:
     return {key: value for key, value in env.items() if not key.startswith("VLLM_")}
+
+
+def prepend_pythonpath(env: dict[str, str], path: Path) -> None:
+    current = env.get("PYTHONPATH")
+    text = str(path)
+    if current:
+        paths = current.split(os.pathsep)
+        if text not in paths:
+            env["PYTHONPATH"] = os.pathsep.join([text, *paths])
+    else:
+        env["PYTHONPATH"] = text
 
 
 def parse_vllm_env_overrides(values: list[str] | None) -> dict[str, str]:
@@ -235,6 +278,83 @@ def lighteval_path_arg(value: Any, *, root: Path, env: dict[str, str]) -> str | 
     return text
 
 
+def resolve_lighteval_sampling(
+    args: Any,
+    *,
+    env: dict[str, str],
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """Resolve vLLM request sampling without inventing provider defaults.
+
+    ``[sampling]`` is the canonical configuration surface. The old
+    ``[lighteval].max_new_tokens`` and ``--max-new-tokens`` names remain as a
+    compatibility fallback because LightEval itself still calls this value
+    ``max_new_tokens``.
+    """
+    sampling = table(config, "sampling")
+    if not isinstance(sampling, dict):
+        raise SystemExit("[sampling] must be a TOML table")
+    lighteval = table(config, "lighteval")
+
+    resolved: dict[str, Any] = {}
+    for field in VLLM_SAMPLING_FIELDS:
+        cli_value = getattr(args, field, None)
+        if field == "max_tokens":
+            cli_value = pick(cli_value, getattr(args, "max_new_tokens", None))
+            value = pick(
+                cli_value,
+                env_value(
+                    env,
+                    "HELICOPTER_EVAL_MAX_TOKENS",
+                    "HELICOPTER_EVAL_MAX_NEW_TOKENS",
+                ),
+                sampling.get(field),
+                lighteval.get("max_new_tokens"),
+            )
+        elif field == "stop":
+            value = pick(
+                cli_value,
+                env_value(env, "HELICOPTER_EVAL_STOP"),
+                sampling.get(field),
+            )
+        else:
+            value = pick(
+                cli_value,
+                env_value(env, f"HELICOPTER_EVAL_{field.upper()}"),
+                sampling.get(field),
+            )
+        if value is not None:
+            resolved[field] = value
+    return resolved
+
+
+def _format_lighteval_value(value: Any) -> str:
+    if isinstance(value, (str, list, tuple, dict)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def format_lighteval_sampling(sampling: dict[str, Any]) -> str | None:
+    """Format only fields understood by LightEval's GenerationParameters."""
+    generation: dict[str, Any] = {}
+    for field, value in sampling.items():
+        if field == "max_tokens":
+            generation["max_new_tokens"] = value
+        elif field == "stop":
+            generation["stop_tokens"] = value
+        elif field in LIGHTEVAL_SAMPLING_FIELDS:
+            generation[field] = value
+    if not generation:
+        return None
+    values = ",".join(
+        f"{field}:{_format_lighteval_value(value)}"
+        for field, value in generation.items()
+    )
+    return f"generation_parameters={{{values}}}"
+
+
 def build_lighteval_model_args(
     args: Any,
     *,
@@ -283,17 +403,14 @@ def build_lighteval_model_args(
         lighteval.get("max_model_length"),
         model.get("max_model_len"),
     )
-    max_new_tokens = pick(
-        getattr(args, "max_new_tokens", None),
-        env_value(env, "HELICOPTER_EVAL_MAX_NEW_TOKENS"),
-        lighteval.get("max_new_tokens"),
-    )
+    sampling = resolve_lighteval_sampling(args, env=env, config=config)
     if concurrent_requests is not None:
         parts.append(f"concurrent_requests={concurrent_requests}")
     if max_model_length is not None:
         parts.append(f"max_model_length={max_model_length}")
-    if max_new_tokens is not None:
-        parts.append(f"generation_parameters={{max_new_tokens:{max_new_tokens}}}")
+    sampling_arg = format_lighteval_sampling(sampling)
+    if sampling_arg is not None:
+        parts.append(sampling_arg)
 
     if not api_key and is_local_base_url(base_url):
         api_key = "EMPTY"
@@ -313,6 +430,7 @@ def build_lighteval_plan(
     lighteval = table(config, "lighteval")
     python = python_executable(config, root=root, env=env)
     model_args, api_key = build_lighteval_model_args(args, root=root, env=env, config=config)
+    sampling = resolve_lighteval_sampling(args, env=env, config=config)
     command = [
         python,
         "-m",
@@ -370,6 +488,13 @@ def build_lighteval_plan(
 
     shown_env = {"PYTHON": python}
     plan_env = strip_vllm_env(env)
+    prepend_pythonpath(plan_env, root / "src/cli")
+    plan_env["HELICOPTER_PATCH_LIGHTEVAL_LITELLM_LOGPROBS"] = "1"
+    plan_env["HELICOPTER_PATCH_LIGHTEVAL_DATASET_RETRIES"] = "1"
+    if sampling:
+        plan_env["HELICOPTER_VLLM_SAMPLING_JSON"] = json.dumps(
+            sampling, ensure_ascii=False, separators=(",", ":")
+        )
     if api_key:
         plan_env["OPENAI_API_KEY"] = api_key
     return CommandPlan(command=command, cwd=root, shown_env=shown_env, env=plan_env)

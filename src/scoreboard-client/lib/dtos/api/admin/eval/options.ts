@@ -5,4 +5,5 @@ export interface AdminEvalOptionsResponse {
   worker_profile: string[];
   protocol: string[];
   run_mode: string[];
+  configs: string[];
 }

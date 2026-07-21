@@ -16,4 +16,7 @@ export interface AdminEvalStatusResponse {
   active_jobs: string[];
   available_gpus: string[];
   request: Record<string, unknown> | null;
+  log_path: string | null;
+  report_path: string | null;
+  log_tail: string[];
 }

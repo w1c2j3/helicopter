@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Helicopter Scoreboard",
-  description: "RWKV evaluation scoreboard"
+  title: "RWKV Skills · Helicopter",
+  description: "RWKV evaluation dashboard and scheduler control panel"
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
