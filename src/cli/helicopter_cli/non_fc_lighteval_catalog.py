@@ -50,6 +50,7 @@ EXCLUDED_DIRECT_PATTERNS = (
     r"browsecomp",
     r"swe[_-]?bench",
     r"^mathqa$",
+    r"^gpqa-fr$",
     r"^ifeval-fr$",
     r"^qasper$",
     r"^cmmlu_zho_mcf:",

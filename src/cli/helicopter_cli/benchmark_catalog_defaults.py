@@ -13,5 +13,6 @@ REQUIRED_TASKS = (
     "arc:challenge",
     "truthfulqa:mc",
     "natural_questions",
+    "triviaqa",
     "squad_v2",
 )
