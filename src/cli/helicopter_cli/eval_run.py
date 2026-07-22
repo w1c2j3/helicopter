@@ -231,6 +231,8 @@ def _lighteval_detail_payloads(
     except ImportError:
         return [], []
 
+    from .scoreboard_bridge import _compact_lighteval_doc
+
     completion_payloads: list[dict[str, Any]] = []
     eval_payloads: list[dict[str, Any]] = []
     for item in detail_files:
@@ -258,7 +260,10 @@ def _lighteval_detail_payloads(
                     "completion1": answer,
                     "stop_reason1": None,
                     "stats": {"metrics": dict(metrics), "lighteval_task": task_name},
-                    "agent_result": {"doc": dict(doc), "model_response": dict(response)},
+                    "agent_result": {
+                        "doc": _compact_lighteval_doc(doc),
+                        "model_response": dict(response),
+                    },
                     "task_id": doc.get("id"),
                 }
             )
@@ -396,6 +401,13 @@ def ingest_scoreboard_results(
         print(f"eval run: scoreboard score recorded: {line}")
 
 
+def _pinned_scoreboard_task_id(env: dict[str, str]) -> str | None:
+    pipeline_stage = str(env.get("HELICOPTER_PIPELINE_STAGE") or "").strip().lower()
+    if pipeline_stage != "score":
+        return None
+    return str(env.get("HELICOPTER_SCOREBOARD_TASK_ID") or "").strip() or None
+
+
 def run_eval(
     args: Any,
     *,
@@ -424,6 +436,30 @@ def run_eval(
             print(format_plan_for_display(infer_plan))
         print(format_plan_for_display(lighteval_plan))
         return 0
+    database_only = lighteval_plan.env.get("HELICOPTER_SCOREBOARD_DB_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
+    scoreboard_task_id: str | None = None
+    pinned_scoreboard_task_id = _pinned_scoreboard_task_id(lighteval_plan.env)
+    if database_only:
+        selected_tasks = [item.strip() for item in str(args.tasks).split(",") if item.strip()]
+        if len(selected_tasks) != 1:
+            raise SystemExit("database pipeline requires one (model, benchmark) task per process")
+
+        dataset = scoreboard_dataset_name(selected_tasks[0])
+        if pinned_scoreboard_task_id is not None:
+            scoreboard_task_id = pinned_scoreboard_task_id
+        else:
+            from .scoreboard_bridge import prepare_lighteval_task
+
+            with SCOREBOARD_LOCK, _scoreboard_env(lighteval_plan.env):
+                scoreboard_task_id = prepare_lighteval_task(
+                    model=scoreboard_model_name(args, config),
+                    dataset=dataset,
+                    root=root,
+                    env=lighteval_plan.env,
+                )
+        lighteval_plan.env["HELICOPTER_SCOREBOARD_TASK_ID"] = scoreboard_task_id
+        lighteval_plan.env["HELICOPTER_SCOREBOARD_DATASET"] = dataset
+        args.scoreboard_task_id = scoreboard_task_id
 
     output_dir = output_dir_from_command(lighteval_plan.command) or (root / "results/lighteval")
     if not output_dir.is_absolute():
@@ -471,6 +507,11 @@ def run_eval(
             stop_server(server_process)
         elif server_process is not None:
             print(f"eval run: leaving vLLM server running (pid {server_process.pid})")
+    if scoreboard_task_id and exit_code != 0 and pinned_scoreboard_task_id is None:
+        from .scoreboard_bridge import set_lighteval_task_status
+
+        with SCOREBOARD_LOCK, _scoreboard_env(lighteval_plan.env):
+            set_lighteval_task_status(task_id=scoreboard_task_id, status="Failed")
 
     database_only = lighteval_plan.env.get("HELICOPTER_SCOREBOARD_DB_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
     if exit_code == 0 and getattr(args, "scoreboard", False) and not database_only:

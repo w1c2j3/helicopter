@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from .config import dataset_root, resolve_model_entry, resolve_model_path, table
+from .config import default_config_path, dataset_root, resolve_model_entry, resolve_model_path, table
 from .env import env_value, pick
 from .g1h_config import alias_task_specs, normalize_policy, select_task_specs
 from .paths import resolve_path
@@ -240,8 +240,10 @@ def normalize_openai_base_url(base_url: str) -> str:
 def local_openai_base_url(config: dict[str, Any], env: dict[str, str], args: Any) -> str:
     lighteval = table(config, "lighteval")
     runtime = table(config, "runtime")
+    model = resolve_model_entry(config, args.model) if getattr(args, "model", None) else {}
     configured = pick(
         getattr(args, "base_url", None),
+        model.get("base_url"),
         env_value(env, "HELICOPTER_EVAL_BASE_URL", "OPENAI_BASE_URL"),
         lighteval.get("base_url"),
     )
@@ -344,7 +346,11 @@ def format_lighteval_sampling(sampling: dict[str, Any]) -> str | None:
         if field == "max_tokens":
             generation["max_new_tokens"] = value
         elif field == "stop":
-            generation["stop_tokens"] = value
+            # The LightEval CLI parser rewrites ``word:`` patterns even inside
+            # quoted stop strings (for example ``User:``), corrupting JSON.
+            # The raw-completion patch receives stop separately via
+            # HELICOPTER_VLLM_SAMPLING_JSON.
+            continue
         elif field in LIGHTEVAL_SAMPLING_FIELDS:
             generation[field] = value
     if not generation:
@@ -409,6 +415,49 @@ def resolve_lighteval_g1h_policy(
         raise SystemExit(str(error)) from error
 
 
+def resolve_lighteval_task_request_policy(
+    *,
+    config: dict[str, Any],
+    selected_tasks: list[str],
+    base_sampling: dict[str, Any],
+) -> dict[str, Any]:
+    """Resolve TOML domain settings to exact LightEval task request settings."""
+
+    from .non_fc_lighteval_catalog import domain_for_task
+
+    stops = table(config, "stops")
+    stop_domains = stops.get("domains", {})
+    if not isinstance(stop_domains, dict):
+        raise SystemExit("[stops.domains] must be a TOML table")
+    sampling = table(config, "sampling")
+    sampling_domains = sampling.get("domains", {})
+    if not isinstance(sampling_domains, dict):
+        raise SystemExit("[sampling.domains] must be a TOML table")
+
+    tasks: dict[str, Any] = {}
+    for task_name in selected_tasks:
+        domain = domain_for_task(task_name)
+        if domain is None:
+            raise SystemExit(f"no benchmark domain is registered for LightEval task {task_name!r}")
+        domain_stops = stop_domains.get(domain)
+        if domain_stops is not None and not isinstance(domain_stops, list):
+            raise SystemExit(f"[stops.domains].{domain} must be a TOML array")
+        domain_sampling = sampling_domains.get(domain, {})
+        if not isinstance(domain_sampling, dict):
+            raise SystemExit(f"[sampling.domains.{domain}] must be a TOML table")
+        unknown = set(domain_sampling) - set(VLLM_SAMPLING_FIELDS)
+        if unknown:
+            fields = ", ".join(sorted(unknown))
+            raise SystemExit(f"[sampling.domains.{domain}] has unsupported fields: {fields}")
+        tasks[task_name] = {
+            "domain": domain,
+            "inherit_task_stops": bool(stops.get("inherit_task_stops", True)),
+            "stop": list(domain_stops) if domain_stops is not None else None,
+            "sampling": {**base_sampling, **domain_sampling},
+        }
+    return {"tasks": tasks}
+
+
 def build_lighteval_model_args(
     args: Any,
     *,
@@ -417,8 +466,10 @@ def build_lighteval_model_args(
     config: dict[str, Any],
 ) -> tuple[str, str | None]:
     raw_model_args = lighteval_path_arg(getattr(args, "model_args", None), root=root, env=env)
+    model = resolve_model_entry(config, args.model)
     api_key = pick(
         getattr(args, "api_key", None),
+        model.get("api_key"),
         env_value(env, "HELICOPTER_EVAL_API_KEY", "OPENAI_API_KEY"),
         table(config, "lighteval").get("api_key"),
     )
@@ -427,7 +478,6 @@ def build_lighteval_model_args(
             api_key = "EMPTY"
         return raw_model_args, str(api_key) if api_key else None
 
-    model = resolve_model_entry(config, args.model)
     lighteval = table(config, "lighteval")
     provider = str(pick(getattr(args, "provider", None), lighteval.get("provider"), "openai"))
     served_model_name = str(
@@ -445,11 +495,18 @@ def build_lighteval_model_args(
         f"model_name={model_name}",
         f"provider={provider}",
         f"base_url={base_url}",
+        "use_cache=false",
     ]
     concurrent_requests = pick(
         getattr(args, "concurrent_requests", None),
         env_value(env, "HELICOPTER_EVAL_CONCURRENT_REQUESTS"),
         lighteval.get("concurrent_requests"),
+    )
+    request_timeout = pick(
+        getattr(args, "request_timeout", None),
+        env_value(env, "HELICOPTER_EVAL_REQUEST_TIMEOUT"),
+        lighteval.get("request_timeout"),
+        lighteval.get("timeout"),
     )
     max_model_length = pick(
         getattr(args, "max_model_length", None),
@@ -460,6 +517,8 @@ def build_lighteval_model_args(
     sampling = resolve_lighteval_request_sampling(args, env=env, config=config)
     if concurrent_requests is not None:
         parts.append(f"concurrent_requests={concurrent_requests}")
+    if request_timeout is not None:
+        parts.append(f"timeout={request_timeout}")
     if max_model_length is not None:
         parts.append(f"max_model_length={max_model_length}")
     sampling_arg = format_lighteval_sampling(sampling)
@@ -545,6 +604,33 @@ def build_lighteval_plan(
     prepend_pythonpath(plan_env, root / "src/cli")
     plan_env["HELICOPTER_PATCH_LIGHTEVAL_LITELLM_LOGPROBS"] = "1"
     plan_env["HELICOPTER_PATCH_LIGHTEVAL_DATASET_RETRIES"] = "1"
+    plan_env["HELICOPTER_LIGHTEVAL_DATASET_ONLINE_FALLBACK"] = "1"
+    plan_env["HELICOPTER_SCOREBOARD_DB_ONLY"] = "1"
+    plan_env["HELICOPTER_PROJECT_ROOT"] = str(root)
+    model_entry = resolve_model_entry(config, args.model)
+    plan_env["HELICOPTER_SCOREBOARD_MODEL_NAME"] = str(
+        pick(
+            getattr(args, "lighteval_model_name", None),
+            model_entry.get("served_model_name"),
+            model_entry.get("requested_name"),
+            args.model,
+        )
+    )
+    prompt = table(config, "prompt")
+    prompt_template = str(prompt.get("template") or "")
+    if prompt_template:
+        plan_env["HELICOPTER_PROMPT_TEMPLATE"] = prompt_template
+    plan_env["HELICOPTER_STRIP_TERMINAL_FLOWER"] = (
+        "1" if bool(prompt.get("strip_terminal_flower", False)) else "0"
+    )
+    prompt_mode = str(prompt.get("mode") or "").strip()
+    if prompt_mode:
+        plan_env["HELICOPTER_SCOREBOARD_PROMPT_MODE"] = prompt_mode
+    plan_env["HELICOPTER_SCOREBOARD_COT_MODE"] = "NoCoT" if "nocot" in prompt_mode.lower() else "CoT"
+    configured_path = Path(args.config) if getattr(args, "config", None) else default_config_path(root)
+    if not configured_path.is_absolute():
+        configured_path = root / configured_path
+    plan_env["HELICOPTER_SCOREBOARD_CONFIG_PATH"] = str(configured_path.resolve())
     if sampling:
         plan_env["HELICOPTER_VLLM_SAMPLING_JSON"] = json.dumps(
             sampling, ensure_ascii=False, separators=(",", ":")
@@ -553,6 +639,17 @@ def build_lighteval_plan(
         plan_env["OPENAI_API_KEY"] = api_key
     g1h_policy = resolve_lighteval_g1h_policy(args, env=env, config=config)
     if g1h_policy is not None:
+        selected_tasks = [str(item) for item in g1h_policy.get("selected_tasks", [])]
+        request_policy = resolve_lighteval_task_request_policy(
+            config=config,
+            selected_tasks=selected_tasks,
+            base_sampling=sampling,
+        )
+        plan_env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"] = json.dumps(
+            request_policy,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
         task_selection = ",".join(str(item) for item in g1h_policy.pop("tasks", []))
         plan_env["HELICOPTER_LIGHTEEVAL_G1H_POLICY"] = json.dumps(
             g1h_policy,

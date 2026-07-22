@@ -1,0 +1,236 @@
+from __future__ import annotations
+
+import json
+import logging
+import os
+from typing import Any
+
+from lighteval.pipeline import Pipeline
+from lighteval.tasks.lighteval_task import LightevalTask
+from lighteval.tasks.requests import SamplingMethod
+
+from helicopter_cli.lighteval_raw_completion import _response_from_rollouts
+from helicopter_cli.scoreboard_bridge import load_lighteval_generation
+
+
+_ORIGINAL_EVALUATE = Pipeline.evaluate
+_ORIGINAL_SHOW_RESULTS = Pipeline.show_results
+_ORIGINAL_GET_RESULTS = Pipeline.get_results
+_ORIGINAL_SAVE_RESULTS = Pipeline.save_and_push_results
+_ORIGINAL_POST_PROCESS_OUTPUTS = Pipeline._post_process_outputs
+_ORIGINAL_GET_DOCS = LightevalTask.get_docs
+logger = logging.getLogger(__name__)
+
+
+def auto_sample_count(
+    *,
+    document_count: int,
+    rollout_n: int,
+    target_generations: int,
+    large_generation_threshold: int,
+    large_sample_rate: float,
+) -> int | None:
+    """Return the configured deterministic sample cap for one benchmark."""
+
+    document_count = max(0, int(document_count))
+    rollout_n = max(1, int(rollout_n))
+    full_generations = document_count * rollout_n
+    if not document_count or full_generations <= int(target_generations):
+        return None
+    if full_generations >= int(large_generation_threshold):
+        selected = round(document_count * float(large_sample_rate))
+    else:
+        selected = round(int(target_generations) / rollout_n)
+    return max(1, min(document_count, int(selected)))
+
+
+def strip_prefilled_reasoning(text: str, *, force: bool = False) -> str:
+    """Return the answer after a prefilled think block closes.
+
+    The prompt owns the opening think text, so the generated continuation
+    contains only the closing tag. Full in-response tag pairs remain delegated
+    to LightEval's native reasoning-tag remover.
+    """
+
+    value = str(text or "")
+    closing = value.lower().find("</think>")
+    opening = value.lower().find("<think")
+    if closing >= 0 and (force or opening < 0 or opening > closing):
+        return value[closing + len("</think>") :].lstrip()
+    return value
+
+
+def has_unclosed_reasoning_prefill(prompt: Any) -> bool:
+    value = str(prompt or "").lower()
+    opening = value.rfind("<think")
+    closing = value.rfind("</think>")
+    return opening >= 0 and opening > closing
+
+
+def _configured_sample_policy() -> dict[str, Any] | None:
+    raw = os.environ.get("HELICOPTER_LIGHTEEVAL_G1H_POLICY", "").strip()
+    if not raw:
+        return None
+    try:
+        policy = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    required = {
+        "target_generations_per_benchmark",
+        "large_benchmark_generation_threshold",
+        "large_benchmark_sample_rate",
+    }
+    return policy if isinstance(policy, dict) and required <= policy.keys() else None
+
+
+def _get_docs(self: LightevalTask, max_samples: int | None = None) -> list[Any]:
+    policy = _configured_sample_policy()
+    if max_samples is not None or policy is None:
+        return _ORIGINAL_GET_DOCS(self, max_samples)
+    raw_num_samples = getattr(self, "num_samples", [1])
+    rollout_n = (
+        max(raw_num_samples)
+        if isinstance(raw_num_samples, (list, tuple))
+        else int(raw_num_samples)
+    )
+    document_count = len(self.eval_docs())
+    selected = auto_sample_count(
+        document_count=document_count,
+        rollout_n=rollout_n,
+        target_generations=int(policy["target_generations_per_benchmark"]),
+        large_generation_threshold=int(policy["large_benchmark_generation_threshold"]),
+        large_sample_rate=float(policy["large_benchmark_sample_rate"]),
+    )
+    if selected is not None:
+        logger.info(
+            "benchmark sampling: task=%s documents=%d selected=%d rollout_n=%d",
+            self.name,
+            document_count,
+            selected,
+            rollout_n,
+        )
+    return _ORIGINAL_GET_DOCS(self, selected)
+
+
+def _stage() -> str:
+    return os.environ.get("HELICOPTER_PIPELINE_STAGE", "full").strip().lower()
+
+
+def _responses_from_database(pipeline: Pipeline) -> dict[Any, list[Any]]:
+    task_id = os.environ.get("HELICOPTER_SCOREBOARD_TASK_ID", "").strip()
+    if not task_id:
+        raise RuntimeError("score stage requires HELICOPTER_SCOREBOARD_TASK_ID")
+    grouped: dict[int, dict[int, dict[str, Any]]] = {}
+    for row in load_lighteval_generation(task_id=task_id):
+        if str(row.get("status") or "").lower() != "completed":
+            continue
+        context = row.get("context")
+        agent_result = context.get("agent_result") if isinstance(context, dict) else None
+        response = agent_result.get("model_response") if isinstance(agent_result, dict) else None
+        if not isinstance(response, dict):
+            continue
+        grouped.setdefault(int(row["sample_index"]), {})[int(row["repeat_index"])] = response
+
+    outputs: dict[Any, list[Any]] = {}
+    for sampling_method, docs in pipeline.sampling_docs.items():
+        if sampling_method != SamplingMethod.GENERATIVE:
+            raise RuntimeError(f"database score stage does not support {sampling_method}")
+        responses = []
+        for sample_index, doc in enumerate(docs):
+            rollout_n = max(1, int(getattr(doc, "num_samples", 1)))
+            stored = grouped.get(sample_index, {})
+            missing = [index for index in range(rollout_n) if index not in stored]
+            if missing:
+                raise RuntimeError(
+                    f"task {task_id} generation is incomplete at sample {sample_index}: missing repeats {missing}"
+                )
+            responses.append(
+                _response_from_rollouts([stored[index] for index in range(rollout_n)])
+            )
+        outputs[sampling_method] = responses
+    return outputs
+
+
+def _post_process_outputs(
+    self: Pipeline,
+    sampling_method_responses: dict[str, list[Any]],
+) -> None:
+    _ORIGINAL_POST_PROCESS_OUTPUTS(self, sampling_method_responses)
+    if not self.pipeline_parameters.remove_reasoning_tags:
+        return
+    for responses in sampling_method_responses.values():
+        for response in responses:
+            texts = list(getattr(response, "text", None) or [])
+            processed = list(getattr(response, "text_post_processed", None) or texts)
+            requires_closing = has_unclosed_reasoning_prefill(getattr(response, "input", None))
+            scored: list[str] = []
+            for index, text in enumerate(texts):
+                candidate = processed[index] if index < len(processed) else text
+                if requires_closing and "</think>" not in str(text).lower():
+                    scored.append("")
+                elif requires_closing:
+                    # The prompt owns the opening think tag. Work from the raw
+                    # response before LightEval removes any quoted tag pair in
+                    # the reasoning, then take everything after its first close.
+                    scored.append(strip_prefilled_reasoning(text, force=True))
+                else:
+                    scored.append(strip_prefilled_reasoning(candidate))
+            response.text_post_processed = scored
+
+
+def _evaluate(self: Pipeline) -> None:
+    stage = _stage()
+    if stage not in {"generate", "score"}:
+        return _ORIGINAL_EVALUATE(self)
+
+    self.evaluation_tracker.general_config_logger.log_args_info(
+        num_fewshot_seeds=self.pipeline_parameters.num_fewshot_seeds,
+        max_samples=self.pipeline_parameters.max_samples,
+        job_id=str(self.pipeline_parameters.job_id),
+    )
+    if stage == "generate":
+        self._run_model()
+        self.evaluation_tracker.general_config_logger.log_end_time()
+        self._helicopter_generation_only = True
+        return
+
+    outputs = _responses_from_database(self)
+    if self.is_main_process():
+        self._post_process_outputs(outputs)
+        self._compute_metrics(outputs)
+        self.evaluation_tracker.general_config_logger.log_end_time()
+        self.evaluation_tracker.metrics_logger.aggregate(
+            task_dict=self.tasks_dict,
+            bootstrap_iters=self.pipeline_parameters.bootstrap_iters,
+        )
+        self.evaluation_tracker.details_logger.aggregate()
+
+
+def _show_results(self: Pipeline) -> None:
+    if getattr(self, "_helicopter_generation_only", False):
+        print("lighteval: generation complete; scoring deferred to database worker")
+        return
+    _ORIGINAL_SHOW_RESULTS(self)
+
+
+def _get_results(self: Pipeline) -> Any:
+    if getattr(self, "_helicopter_generation_only", False):
+        return {"generation_only": True}
+    return _ORIGINAL_GET_RESULTS(self)
+
+
+def _save_and_push_results(self: Pipeline) -> None:
+    if getattr(self, "_helicopter_generation_only", False):
+        return
+    _ORIGINAL_SAVE_RESULTS(self)
+
+
+if not getattr(Pipeline.evaluate, "_helicopter_db_pipeline_patch", False):
+    _get_docs._helicopter_db_pipeline_patch = True  # type: ignore[attr-defined]
+    LightevalTask.get_docs = _get_docs
+    _evaluate._helicopter_db_pipeline_patch = True  # type: ignore[attr-defined]
+    Pipeline.evaluate = _evaluate
+    Pipeline._post_process_outputs = _post_process_outputs
+    Pipeline.show_results = _show_results
+    Pipeline.get_results = _get_results
+    Pipeline.save_and_push_results = _save_and_push_results

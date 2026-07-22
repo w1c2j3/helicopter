@@ -13,7 +13,7 @@ output_dir = "results/lighteval"
 save_details = true
 dataset_loading_processes = 1
 load_tasks_multilingual = true
-custom_tasks = "src/cli/helicopter_cli/lighteval_rwkv_skills_tasks.py"
+custom_tasks = "src/cli/helicopter_cli/lighteval_policy_tasks.py"
 max_new_tokens = 512
 
 [function_calling]

@@ -8,6 +8,7 @@ import queue
 import re
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -15,14 +16,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import requests
+
 from .benchmark_catalog_defaults import (
     CATALOG_RUN_STATUS,
     CATALOG_SCOPE,
     CATALOG_SOURCE,
     CATALOG_TARGET_KIND,
 )
-from .commands import table
-from .env import pick
+from .commands import local_openai_base_url, resolve_model_entry, table
+from .env import env_value, pick
 from .eval_run import (
     SCOREBOARD_LOCK,
     _scoreboard_env,
@@ -64,6 +67,18 @@ class GpuSlot:
     port: int
 
 
+@dataclass(frozen=True)
+class ModelConcurrency:
+    model: str
+    benchmark_workers: int
+    concurrent_requests: int
+    rollout_n: int
+    max_num_seqs: int | None
+    running_requests: int
+    waiting_requests: int
+    source: str
+
+
 def _as_str_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -75,6 +90,29 @@ def _as_str_list(value: Any) -> list[str]:
             result.extend(_as_str_list(item))
         return result
     return [str(value)]
+
+
+def interleave_catalog_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Round-robin catalog rows by field while preserving order within each field."""
+    order: list[str] = []
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        field = str(row.get("field") or "")
+        if field not in buckets:
+            order.append(field)
+            buckets[field] = []
+        buckets[field].append(row)
+
+    result: list[dict[str, Any]] = []
+    positions = {field: 0 for field in order}
+    while len(result) < len(rows):
+        for field in order:
+            position = positions[field]
+            bucket = buckets[field]
+            if position < len(bucket):
+                result.append(bucket[position])
+                positions[field] = position + 1
+    return result
 
 
 def batch_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -113,13 +151,202 @@ def resolve_batch_plan(
             "[eval.batch].fc_tasks in the config"
         )
 
+    # Interleave models by benchmark so one slow model cannot monopolize the
+    # head of the queue. Every pair remains an independent persistence unit.
     units: list[BatchUnit] = []
-    for model in models:
-        if lighteval_tasks:
-            units.append(BatchUnit(model=model, kind="lighteval", tasks=list(lighteval_tasks)))
-        if fc_tasks:
-            units.append(BatchUnit(model=model, kind="fc", tasks=list(fc_tasks)))
+    for task in lighteval_tasks:
+        for model in models:
+            units.append(BatchUnit(model=model, kind="lighteval", tasks=[task]))
+    for task in fc_tasks:
+        for model in models:
+            units.append(BatchUnit(model=model, kind="fc", tasks=[task]))
     return units
+
+
+def resolve_parallel_cap(args: Any, config: dict[str, Any]) -> int | None:
+    value = pick(getattr(args, "parallel", None), batch_config(config).get("parallel"))
+    if value is None:
+        return None
+    try:
+        parallel = int(value)
+    except (TypeError, ValueError) as error:
+        raise SystemExit("[eval.batch].parallel/--parallel must be a positive integer") from error
+    if parallel <= 0:
+        raise SystemExit("[eval.batch].parallel/--parallel must be a positive integer")
+    return parallel
+
+
+def _nested_value(value: Any, key: str) -> Any:
+    if isinstance(value, dict):
+        if key in value:
+            return value[key]
+        for child in value.values():
+            found = _nested_value(child, key)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _nested_value(child, key)
+            if found is not None:
+                return found
+    return None
+
+
+def _metric_value(text: str, metric: str) -> int:
+    values: list[float] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(metric) or stripped.startswith("#"):
+            continue
+        try:
+            values.append(float(stripped.rsplit(None, 1)[-1]))
+        except (IndexError, ValueError):
+            continue
+    return max(0, int(sum(values)))
+
+
+def probe_model_runtime(
+    *,
+    base_url: str,
+    api_key: str | None,
+    timeout: float = 5.0,
+) -> tuple[int | None, int, int, str]:
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[:-3]
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    max_num_seqs: int | None = None
+    source = "fallback"
+    try:
+        response = requests.get(
+            f"{root}/server_info",
+            params={"config_format": "json"},
+            headers=headers,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        value = _nested_value(response.json(), "max_num_seqs")
+        if value is not None and int(value) > 0:
+            max_num_seqs = int(value)
+            source = "server_info"
+    except (OSError, TypeError, ValueError, requests.RequestException):
+        pass
+    running = waiting = 0
+    try:
+        response = requests.get(f"{root}/metrics", headers=headers, timeout=timeout)
+        response.raise_for_status()
+        running = _metric_value(response.text, "vllm:num_requests_running")
+        waiting = _metric_value(response.text, "vllm:num_requests_waiting")
+    except (OSError, requests.RequestException):
+        pass
+    return max_num_seqs, running, waiting, source
+
+
+def derive_model_concurrency(
+    *,
+    model: str,
+    pending_benchmarks: int,
+    rollout_n: int,
+    max_num_seqs: int | None,
+    configured_request_ceiling: int | None,
+    running_requests: int = 0,
+    waiting_requests: int = 0,
+    source: str = "fallback",
+) -> ModelConcurrency:
+    rollout_n = max(1, int(rollout_n))
+    pending_benchmarks = max(1, int(pending_benchmarks))
+    if max_num_seqs is None:
+        return ModelConcurrency(model, 1, 1, rollout_n, None, running_requests, waiting_requests, source)
+    available_sequences = max(rollout_n, int(max_num_seqs) - max(0, int(running_requests)))
+    request_slots = max(1, available_sequences // rollout_n)
+    if waiting_requests > 0:
+        request_slots = 1
+    # A model is the scheduling resource. Exactly one (model, benchmark)
+    # generation task owns it and receives all currently available request slots.
+    benchmark_workers = 1
+    concurrent_requests = request_slots
+    if configured_request_ceiling is not None:
+        concurrent_requests = min(concurrent_requests, max(1, int(configured_request_ceiling)))
+    return ModelConcurrency(
+        model,
+        benchmark_workers,
+        concurrent_requests,
+        rollout_n,
+        int(max_num_seqs),
+        running_requests,
+        waiting_requests,
+        source,
+    )
+
+
+def resolve_model_concurrency(
+    *,
+    model: str,
+    pending_benchmarks: int,
+    args: Any,
+    config: dict[str, Any],
+    env: dict[str, str],
+) -> ModelConcurrency:
+    lighteval = table(config, "lighteval")
+    policy = lighteval.get("g1h") if isinstance(lighteval.get("g1h"), dict) else {}
+    rollout_n = int(policy.get("rollout_n") or policy.get("avg_k") or 1)
+    # Presets describe evaluation semantics, not model capacity. Only an
+    # explicit CLI/environment override may cap the model-derived request count.
+    ceiling_value = pick(
+        getattr(args, "concurrent_requests", None),
+        env_value(env, "HELICOPTER_EVAL_CONCURRENT_REQUESTS"),
+    )
+    ceiling = int(ceiling_value) if ceiling_value is not None else None
+    try:
+        model_config = resolve_model_entry(config, model)
+    except SystemExit:
+        return derive_model_concurrency(
+            model=model,
+            pending_benchmarks=pending_benchmarks,
+            rollout_n=rollout_n,
+            max_num_seqs=None,
+            configured_request_ceiling=ceiling,
+        )
+    infer_config = model_config.get("infer") if isinstance(model_config.get("infer"), dict) else {}
+    configured_max = infer_config.get("max_num_seqs") or model_config.get("max_num_seqs")
+    max_num_seqs = int(configured_max) if configured_max is not None else None
+    running = waiting = 0
+    source = "model_config" if max_num_seqs is not None else "fallback"
+    configured_endpoint = pick(
+        getattr(args, "base_url", None),
+        model_config.get("base_url"),
+        env_value(env, "HELICOPTER_EVAL_BASE_URL", "OPENAI_BASE_URL"),
+        lighteval.get("base_url"),
+    )
+    if configured_endpoint:
+        unit_args = copy.copy(args)
+        unit_args.model = model
+        base_url = local_openai_base_url(config, env, unit_args)
+        api_key = pick(
+            getattr(args, "api_key", None),
+            model_config.get("api_key"),
+            env_value(env, "HELICOPTER_EVAL_API_KEY", "OPENAI_API_KEY"),
+            lighteval.get("api_key"),
+        )
+        probed_max, running, waiting, probed_source = probe_model_runtime(
+            base_url=base_url,
+            api_key=str(api_key) if api_key else None,
+        )
+        if probed_max is not None:
+            max_num_seqs = probed_max
+            source = probed_source
+    return derive_model_concurrency(
+        model=model,
+        pending_benchmarks=pending_benchmarks,
+        rollout_n=rollout_n,
+        max_num_seqs=max_num_seqs,
+        configured_request_ceiling=ceiling,
+        running_requests=running,
+        waiting_requests=waiting,
+        source=source,
+    )
 
 
 def detect_idle_gpus(*, threshold_mib: float = DEFAULT_GPU_IDLE_MIB) -> list[int]:
@@ -197,12 +424,23 @@ async def _query_completed_datasets(
     try:
         normalized_model = normalize_model_name(model_name)
         for dataset in datasets:
+            exact_exists = await Score.filter(
+                task__model__model_name=normalized_model,
+                task__benchmark__benchmark_name=dataset,
+                task__benchmark__benchmark_split="",
+                task__is_tmp=False,
+                task__status="Completed",
+            ).exists()
+            if exact_exists:
+                completed.add(dataset)
+                continue
             name, split = split_dataset(dataset)
             exists = await Score.filter(
                 task__model__model_name=normalized_model,
                 task__benchmark__benchmark_name=name,
                 task__benchmark__benchmark_split=split,
                 task__is_tmp=False,
+                task__status="Completed",
             ).exists()
             if exists:
                 completed.add(dataset)
@@ -278,10 +516,13 @@ async def _query_catalog_lighteval_tasks(
             source=CATALOG_SOURCE,
             target_kind=CATALOG_TARGET_KIND,
             run_status=CATALOG_RUN_STATUS,
-            limit=limit,
+            limit=None,
         )
     finally:
         await close_db()
+    rows = interleave_catalog_rows(rows)
+    if limit is not None and int(limit) > 0:
+        rows = rows[: int(limit)]
     return [str(row["name"]) for row in rows]
 
 
@@ -321,6 +562,7 @@ def _unit_args(args: Any, unit: BatchUnit, slot: GpuSlot) -> Any:
     unit_args.tasks = ",".join(unit.tasks)
     unit_args.no_server = getattr(args, "no_server", False)
     unit_args.keep_server = False
+    unit_args.scoreboard = True
     if slot.port:
         unit_args.base_url = f"http://127.0.0.1:{slot.port}/v1"
     batch_dir = getattr(args, "_batch_run_dir", None) or getattr(args, "output_dir", None)
@@ -347,10 +589,22 @@ def run_unit(
     env: dict[str, str],
     config: dict[str, Any],
     max_retries: int,
+    concurrent_requests: int | None = None,
+    pipeline_stage: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> None:
-    label = f"{unit.model}/{unit.kind}"
+    stage_note = f"/{pipeline_stage}" if pipeline_stage else ""
+    label = f"{unit.model}/{unit.kind}{stage_note}"
     unit_args = _unit_args(args, unit, slot)
+    if concurrent_requests is not None:
+        unit_args.concurrent_requests = int(concurrent_requests)
     unit_env = _unit_env(env, slot)
+    if pipeline_stage == "score":
+        unit_args.no_server = True
+    if pipeline_stage:
+        unit_env["HELICOPTER_PIPELINE_STAGE"] = pipeline_stage
+    if extra_env:
+        unit_env.update({str(key): str(value) for key, value in extra_env.items()})
     runner = run_eval if unit.kind == "lighteval" else run_function_calling_eval
     started = time.monotonic()
     unit.started_at = _utc_now()
@@ -438,10 +692,8 @@ def resolve_batch_report_path(args: Any, config: dict[str, Any], root: Path, *, 
     configured = pick(getattr(args, "batch_output", None), batch.get("output"))
     if configured:
         path = Path(str(configured))
-    elif getattr(args, "dry_run", False):
-        return None
     else:
-        path = Path("results/eval_batch") / f"batch_{_stamp_from_iso(started_at)}.json"
+        return None
     if not path.is_absolute():
         path = root / path
     return path
@@ -528,11 +780,46 @@ def run_batch(
         filter_completed_units(units, args=args, config=config, env=env, root=root)
 
     runnable = [unit for unit in units if unit.status == "pending"]
+    if not runnable:
+        print("eval batch: nothing to run (all benchmarks already scored)")
+        print(format_summary(units))
+        write_batch_report(
+            path=report_path,
+            units=units,
+            slots=slots,
+            args=args,
+            exit_code=0,
+            started_at=started_at,
+            ended_at=_utc_now(),
+        )
+        return 0
+
+    pending_by_model = {
+        model: sum(1 for unit in runnable if unit.model == model)
+        for model in {unit.model for unit in runnable}
+    }
+    model_concurrency = {
+        model: resolve_model_concurrency(
+            model=model,
+            pending_benchmarks=count,
+            args=args,
+            config=config,
+            env=env,
+        )
+        for model, count in pending_by_model.items()
+    }
     if getattr(args, "dry_run", False):
         print(
-            f"eval batch: {len(runnable)} unit(s) over {len(slots)} slot(s): "
+            f"eval batch: {len(runnable)} unit(s): "
             + "; ".join(f"{unit.model}/{unit.kind}:{','.join(unit.tasks)}" for unit in runnable)
         )
+        for model in sorted(model_concurrency):
+            item = model_concurrency[model]
+            print(
+                f"eval batch: model={model} workers={item.benchmark_workers} "
+                f"concurrent_requests={item.concurrent_requests} rollout_n={item.rollout_n} "
+                f"max_num_seqs={item.max_num_seqs or 'unknown'} source={item.source}"
+            )
         for unit in runnable:
             run_unit(
                 unit,
@@ -542,6 +829,7 @@ def run_batch(
                 env=env,
                 config=config,
                 max_retries=0,
+                concurrent_requests=model_concurrency[unit.model].concurrent_requests,
             )
             if unit.status == "completed":
                 unit.status = "dry_run"
@@ -559,33 +847,69 @@ def run_batch(
         )
         return exit_code
 
-    if not runnable:
-        print("eval batch: nothing to run (all benchmarks already scored)")
-        print(format_summary(units))
-        write_batch_report(
-            path=report_path,
-            units=units,
-            slots=slots,
-            args=args,
-            exit_code=0,
-            started_at=started_at,
-            ended_at=_utc_now(),
-        )
-        return 0
-
-    workers = max(1, min(int(getattr(args, "parallel", None) or 1), len(slots), len(runnable)))
+    external_endpoint = bool(getattr(args, "no_server", False) or getattr(args, "base_url", None))
+    workers = sum(item.benchmark_workers for item in model_concurrency.values())
+    if not external_endpoint:
+        workers = min(workers, len(slots))
+    parallel_cap = resolve_parallel_cap(args, config)
+    if parallel_cap is not None:
+        workers = min(workers, parallel_cap)
+    workers = max(1, min(workers, len(runnable)))
     max_retries = max(0, int(getattr(args, "max_retries", None) or 0))
     print(
-        f"eval batch: running {len(runnable)} unit(s) on {len(slots)} slot(s) "
-        f"with {workers} worker(s)"
+        f"eval batch: running {len(runnable)} unit(s) with {workers} model worker(s)"
     )
+    for model in sorted(model_concurrency):
+        item = model_concurrency[model]
+        print(
+            f"eval batch: model={model} workers={item.benchmark_workers} "
+            f"concurrent_requests={item.concurrent_requests} rollout_n={item.rollout_n} "
+            f"max_num_seqs={item.max_num_seqs or 'unknown'} "
+            f"running={item.running_requests} waiting={item.waiting_requests} source={item.source}"
+        )
 
     slot_queue: queue.Queue[GpuSlot] = queue.Queue()
     for slot in slots:
         slot_queue.put(slot)
 
+    model_semaphores = {
+        model: threading.Semaphore(1)
+        for model in model_concurrency
+    }
+    unit_indices = {id(unit): index for index, unit in enumerate(runnable)}
+    score_workers = max(1, min(len(runnable), int(env.get("HELICOPTER_SCORE_WORKERS", "4"))))
+    judge_capacity = max(1, int(env.get("HELICOPTER_JUDGE_CONCURRENT_REQUESTS", "10")))
+    judge_per_worker = max(1, judge_capacity // score_workers)
+    score_executor = ThreadPoolExecutor(max_workers=score_workers)
+    score_futures: list[Any] = []
+    score_futures_lock = threading.Lock()
+    print(
+        f"eval batch: postprocess workers={score_workers} "
+        f"judge_total_capacity={judge_capacity} judge_per_worker={judge_per_worker}"
+    )
+
+    def score_worker(unit: BatchUnit) -> None:
+        run_unit(
+            unit,
+            args=args,
+            slot=GpuSlot(index=unit_indices[id(unit)], gpu=None, port=0),
+            root=root,
+            env=env,
+            config=config,
+            max_retries=max_retries,
+            concurrent_requests=1,
+            pipeline_stage="score",
+            extra_env={"HELICOPTER_JUDGE_CONCURRENT_REQUESTS": str(judge_per_worker)},
+        )
+
     def worker(unit: BatchUnit) -> None:
-        slot = slot_queue.get()
+        semaphore = model_semaphores[unit.model]
+        semaphore.acquire()
+        slot = (
+            GpuSlot(index=unit_indices[id(unit)], gpu=None, port=0)
+            if external_endpoint
+            else slot_queue.get()
+        )
         try:
             run_unit(
                 unit,
@@ -595,18 +919,31 @@ def run_batch(
                 env=env,
                 config=config,
                 max_retries=max_retries,
+                concurrent_requests=model_concurrency[unit.model].concurrent_requests,
+                pipeline_stage="generate",
             )
         finally:
-            slot_queue.put(slot)
+            if not external_endpoint:
+                slot_queue.put(slot)
+            semaphore.release()
 
-    if workers == 1:
-        for unit in runnable:
-            worker(unit)
-    else:
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = [executor.submit(worker, unit) for unit in runnable]
-            for future in futures:
-                future.result()
+        if unit.status == "completed":
+            with score_futures_lock:
+                score_futures.append(score_executor.submit(score_worker, unit))
+
+    try:
+        if workers == 1:
+            for unit in runnable:
+                worker(unit)
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = [executor.submit(worker, unit) for unit in runnable]
+                for future in futures:
+                    future.result()
+        for future in score_futures:
+            future.result()
+    finally:
+        score_executor.shutdown(wait=True)
 
     print(format_summary(units))
     failed = [unit for unit in units if unit.status == "failed"]

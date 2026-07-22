@@ -16,7 +16,6 @@ from .env import env_value, pick
 from .eval_run import (
     DEFAULT_SERVER_TIMEOUT_S,
     format_plan_for_display,
-    ingest_scoreboard_results,
     port_from_base_url,
     server_is_healthy,
     stop_server,
@@ -49,6 +48,13 @@ from .lighteval_rwkv_skills_tasks import (
     _toolalpaca_execution_matches,
     ApiBankSandbox,
     ToolAlpacaSandbox,
+)
+from .scoreboard_bridge import (
+    checkpoint_function_calling_result,
+    load_function_calling_generation,
+    prepare_function_calling_task,
+    set_function_calling_task_status,
+    write_function_calling_results,
 )
 
 
@@ -613,11 +619,13 @@ def run_samples(
     max_new_tokens: int,
     timeout_s: float,
     concurrent_requests: int,
+    on_result: Callable[[int, FunctionCallingRunResult], None] | None = None,
 ) -> list[FunctionCallingRunResult]:
     worker_count = max(1, int(concurrent_requests))
     if worker_count == 1:
-        return [
-            evaluate_sample(
+        results: list[FunctionCallingRunResult] = []
+        for index, sample in enumerate(samples):
+            result = evaluate_sample(
                 sample,
                 base_url=base_url,
                 model_name=model_name,
@@ -625,10 +633,14 @@ def run_samples(
                 max_new_tokens=max_new_tokens,
                 timeout_s=timeout_s,
             )
-            for sample in samples
-        ]
+            if on_result is not None:
+                on_result(index, result)
+            results.append(result)
+        return results
+
+    ordered: list[FunctionCallingRunResult | None] = [None] * len(samples)
     with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = [
+        futures = {
             executor.submit(
                 evaluate_sample,
                 sample,
@@ -637,10 +649,18 @@ def run_samples(
                 api_key=api_key,
                 max_new_tokens=max_new_tokens,
                 timeout_s=timeout_s,
-            )
-            for sample in samples
-        ]
-        return [future.result() for future in futures]
+            ): index
+            for index, sample in enumerate(samples)
+        }
+        for future in concurrent.futures.as_completed(futures):
+            index = futures[future]
+            result = future.result()
+            if on_result is not None:
+                on_result(index, result)
+            ordered[index] = result
+    if any(result is None for result in ordered):
+        raise RuntimeError("function-calling generation returned incomplete results")
+    return [result for result in ordered if result is not None]
 
 
 def model_name_for_fc(args: Any, config: dict[str, Any]) -> str:
@@ -771,61 +791,6 @@ def _compact_response_message(response: Mapping[str, Any] | None) -> dict[str, A
     return compact
 
 
-def _write_results(
-    *,
-    output_dir: Path,
-    stamp: str,
-    model_name: str,
-    task_names: list[str],
-    samples: list[FunctionCallingSample],
-    results: list[FunctionCallingRunResult],
-    elapsed_seconds: float,
-) -> Path:
-    run_dir = output_dir / stamp
-    run_dir.mkdir(parents=True, exist_ok=True)
-    details_path = run_dir / "details.jsonl"
-    with details_path.open("w", encoding="utf-8") as handle:
-        for result in results:
-            handle.write(
-                json.dumps(
-                    {
-                        "task": result.task_name,
-                        "sample_id": result.sample_id,
-                        "score": result.score,
-                        "actual_calls": result.actual_calls,
-                        "response_message": _compact_response_message(result.raw_response),
-                        "error": result.error,
-                        "elapsed_seconds": result.elapsed_seconds,
-                        "prompt_tokens": result.prompt_tokens,
-                        "completion_tokens": result.completion_tokens,
-                        "total_tokens": result.total_tokens,
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-                + "\n"
-            )
-    results_path = run_dir / "results.json"
-    results_path.write_text(
-        json.dumps(
-            {
-                "model": model_name,
-                "mode": "openai_tool_calls",
-                "tasks": task_names,
-                "sample_count": len(samples),
-                "details": str(details_path),
-                "performance": _aggregate_performance(results, elapsed_seconds=elapsed_seconds),
-                "results": _aggregate_results(results),
-            },
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    return results_path
-
-
 def run_function_calling_eval(args: Any, *, root: Path, env: dict[str, str], config: dict[str, Any]) -> int:
     task_names = parse_task_names(getattr(args, "tasks", None))
     fc_config = table(config, "function_calling")
@@ -899,6 +864,115 @@ def run_function_calling_eval(args: Any, *, root: Path, env: dict[str, str], con
     if not samples:
         raise SystemExit("no function-calling samples loaded")
 
+    pipeline_stage = str(env.get("HELICOPTER_PIPELINE_STAGE") or "full").strip().lower()
+    database_pipeline = pipeline_stage in {"generate", "score"}
+    if database_pipeline and len(task_names) != 1:
+        raise SystemExit("database function-calling pipeline requires one benchmark per process")
+    sampling_config = {
+        "max_new_tokens": max_new_tokens,
+        "temperature": 0,
+        "mode": "openai_tool_calls",
+    }
+    scoreboard_task_id: str | None = None
+    stored_by_index: dict[int, dict[str, Any]] = {}
+    if database_pipeline:
+        scoreboard_task_id = prepare_function_calling_task(
+            model=model_name,
+            dataset=task_names[0],
+            sampling_config=sampling_config,
+            config_path=getattr(args, "config", None),
+            root=root,
+            env=env,
+        )
+        stored_rows = load_function_calling_generation(
+            task_id=scoreboard_task_id,
+            root=root,
+            env=env,
+        )
+        for row in stored_rows:
+            if str(row.get("status") or "").lower() != "completed":
+                continue
+            context = row.get("context")
+            agent_result = context.get("agent_result") if isinstance(context, Mapping) else None
+            run_result = agent_result.get("run_result") if isinstance(agent_result, Mapping) else None
+            if isinstance(run_result, Mapping):
+                stored_by_index[int(row["sample_index"])] = dict(run_result)
+
+    if pipeline_stage == "score":
+        missing = [index for index in range(len(samples)) if index not in stored_by_index]
+        if missing:
+            raise SystemExit(
+                f"function-calling task {scoreboard_task_id} is missing generated samples {missing[:20]}"
+            )
+        results: list[FunctionCallingRunResult] = []
+        for index, sample in enumerate(samples):
+            payload = stored_by_index[index]
+            actual_calls = payload.get("actual_calls")
+            if not isinstance(actual_calls, list):
+                actual_calls = []
+            raw_response = payload.get("raw_response")
+            if not isinstance(raw_response, dict):
+                raw_response = None
+            error = payload.get("error")
+            result = FunctionCallingRunResult(
+                task_name=sample.task_name,
+                sample_id=sample.sample_id,
+                score=score_calls(sample, actual_calls),
+                actual_calls=actual_calls,
+                raw_response=raw_response,
+                error=str(error) if error else None,
+                elapsed_seconds=payload.get("elapsed_seconds"),
+                prompt_tokens=payload.get("prompt_tokens"),
+                completion_tokens=payload.get("completion_tokens"),
+                total_tokens=payload.get("total_tokens"),
+            )
+            results.append(result)
+        aggregate = _aggregate_results(results)
+        recorded = write_function_calling_results(
+            samples=samples,
+            results=results,
+            metrics=aggregate,
+            model=model_name,
+            root=root,
+            env=env,
+            task_id=scoreboard_task_id,
+        )
+        for item in recorded:
+            print(f"function-calling: database rows recorded: {item}")
+        print(f"function-calling: score stage finished {len(samples)} samples without model access")
+        return 0
+
+    generation_indices = list(range(len(samples)))
+    generation_samples = samples
+    generation_callback: Callable[[int, FunctionCallingRunResult], None] | None = None
+    if pipeline_stage == "generate":
+        generation_indices = [
+            index for index in range(len(samples)) if index not in stored_by_index
+        ]
+        if not generation_indices:
+            print(
+                f"function-calling: generation already complete in task {scoreboard_task_id}; "
+                "scoring deferred"
+            )
+            return 0
+        generation_samples = [samples[index] for index in generation_indices]
+
+        def persist_result(local_index: int, result: FunctionCallingRunResult) -> None:
+            original_index = generation_indices[local_index]
+            checkpoint_function_calling_result(
+                task_id=str(scoreboard_task_id),
+                dataset=task_names[0],
+                num_samples=len(samples),
+                sample_index=original_index,
+                sample=samples[original_index],
+                result=result,
+                sampling_config=sampling_config,
+                root=root,
+                env=env,
+            )
+
+        generation_callback = persist_result
+
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     server_process: subprocess.Popen[bytes] | None = None
     server_log: Path | None = None
@@ -934,13 +1008,14 @@ def run_function_calling_eval(args: Any, *, root: Path, env: dict[str, str], con
     started = time.monotonic()
     try:
         results = run_samples(
-            samples,
+            generation_samples,
             base_url=base_url,
             model_name=model_name,
             api_key=api_key or None,
             max_new_tokens=max_new_tokens,
             timeout_s=timeout_s,
             concurrent_requests=concurrent_requests,
+            on_result=generation_callback,
         )
     finally:
         elapsed = time.monotonic() - started
@@ -950,26 +1025,39 @@ def run_function_calling_eval(args: Any, *, root: Path, env: dict[str, str], con
         elif server_process is not None:
             print(f"function-calling: leaving vLLM server running (pid {server_process.pid})")
 
-    results_path = _write_results(
-        output_dir=output_dir,
-        stamp=stamp,
-        model_name=model_name,
-        task_names=task_names,
+    if pipeline_stage == "generate":
+        failed = [result for result in results if result.error]
+        if failed:
+            set_function_calling_task_status(
+                task_id=str(scoreboard_task_id),
+                status="Failed",
+                root=root,
+                env=env,
+            )
+            print(
+                f"function-calling: {len(failed)} request(s) failed; "
+                "successful checkpoints will be reused"
+            )
+            return 1
+        print(
+            f"function-calling: generation complete for {len(results)} missing sample(s); "
+            "scoring deferred"
+        )
+        return 0
+
+    aggregate = _aggregate_results(results)
+    recorded = write_function_calling_results(
         samples=samples,
         results=results,
-        elapsed_seconds=elapsed,
+        metrics=aggregate,
+        model=model_name,
+        root=root,
+        env=env,
     )
-    if getattr(args, "scoreboard", False):
-        ingest_scoreboard_results(
-            result_files=[str(results_path)],
-            model_name=model_name,
-            root=root,
-            env=env,
-            job_name="function_calling",
-        )
-    aggregate = _aggregate_results(results)
+    for item in recorded:
+        print(f"function-calling: database rows recorded: {item}")
     for task_name in task_names:
         if task_name in aggregate:
             print(f"function-calling: {task_name} accuracy={aggregate[task_name]['accuracy']:.4f}")
-    print(f"function-calling: finished {len(samples)} samples in {elapsed:.1f}s; results: {results_path}")
+    print(f"function-calling: finished {len(samples)} samples in {elapsed:.1f}s; persisted to database")
     return 0

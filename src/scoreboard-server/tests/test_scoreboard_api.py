@@ -13,6 +13,7 @@ from scoreboard_server.db.lease import SchedulerLeaseManager, SchedulerLeaseStor
 from scoreboard_server.db.settings import DatabaseSettings
 from scoreboard_server.application import create_app
 from scoreboard_server.db.repository import ScoreboardStore
+from scoreboard_server.db.models import Benchmark, BenchmarkCatalog, Completion, Task
 
 
 def _maintenance_connection_kwargs() -> dict[str, str]:
@@ -138,10 +139,55 @@ async def _seed_scoreboard(settings: DatabaseSettings) -> int:
     return int(task_id)
 
 
+@pytest.mark.asyncio
+async def test_exact_catalog_name_is_not_split_as_suffix(database_settings: DatabaseSettings) -> None:
+    await BenchmarkCatalog.create(
+        benchmark_name="human_eval",
+        benchmark_split="",
+        field="coding",
+        source="lighteval",
+        source_family="lighteval",
+        target_kind="task",
+        run_status="direct_lighteval_task",
+        scope="test",
+        metadata=None,
+    )
+    store = ScoreboardStore(settings=database_settings)
+    task_id = await store.get_or_create_task(
+        job_name="judge",
+        job_id=None,
+        dataset="human_eval",
+        model="rwkv7-test",
+        is_param_search=False,
+        allow_resume=False,
+    )
+    task = await Task.get(task_id=int(task_id))
+    benchmark = await Benchmark.get(benchmark_id=task.benchmark_id)
+    assert benchmark.benchmark_name == "human_eval"
+    assert benchmark.benchmark_split == ""
+
+
 async def test_scoreboard_api_serves_leaderboard_records_context_and_history(
     database_settings: DatabaseSettings,
 ) -> None:
     task_id = await _seed_scoreboard(database_settings)
+    service = ScoreboardStore(settings=database_settings)
+    tuning_task_id = await service.get_or_create_task(
+        job_name="free_response",
+        job_id="job-tuning",
+        dataset="gsm8k_test",
+        model="rwkv7-g1g-1.5b",
+        is_param_search=True,
+        sampling_config={
+            "prompt_profile": "normal",
+            "sampling_config": {"answer": {"temperature": 0.7, "top_k": 40, "top_p": 0.9}},
+        },
+        allow_resume=False,
+    )
+    await service.record_score_payload(
+        task_id=tuning_task_id,
+        payload={"cot_mode": "CoT", "metrics": {"accuracy": 0.6}, "created_at": "2026-07-01T13:00:00"},
+    )
     app = create_app(settings=database_settings)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
@@ -157,6 +203,17 @@ async def test_scoreboard_api_serves_leaderboard_records_context_and_history(
         assert math_domain["rows"][0]["benchmark_name"] == "gsm8k_test"
         assert math_domain["rows"][0]["cells"][0]["percent"] == 50.0
         assert math_domain["rows"][0]["cells"][0]["meta"]["task_id"] == task_id
+
+        all_matrix = next(domain for domain in leaderboard["matrix"]["domains"] if domain["key"] == "all")
+        assert all_matrix["columns"][0]["key"] == "gsm8k_test"
+        assert all_matrix["rows"][0]["model"] == "rwkv7-g1g-1.5b"
+        assert all_matrix["rows"][0]["cells"][0]["percent"] == 50.0
+
+        tuning = leaderboard["tuning_matrix"]["benchmarks"][0]
+        assert tuning["key"] == "gsm8k_test"
+        assert tuning["columns"][0]["label"] == "normal · CoT · T0.7 · K40 · P0.9"
+        assert tuning["rows"][0]["best"] == 60.0
+        assert tuning["rows"][0]["cells"][0]["meta"]["task_id"] == int(tuning_task_id)
 
         records = (await client.get("/api/eval-records", params={"task_id": task_id, "limit": 10})).json()
         assert len(records["records"]) == 2
@@ -397,30 +454,145 @@ async def test_resume_reuses_running_task_and_upserts_completion(
     )
     assert second == first
 
-    await service.insert_completion_payloads_batch(
-        task_id=first,
-        payloads=[
-            {
-                "sample_index": 0,
-                "repeat_index": 0,
-                "pass_index": 0,
-                "prompt1": "old",
-                "completion1": "old",
-                "sampling_config": {},
-            },
-            {
-                "sample_index": 0,
-                "repeat_index": 0,
-                "pass_index": 0,
-                "prompt1": "new",
-                "completion1": "new",
-                "sampling_config": {},
-            },
-        ],
+    old_payload = {
+        "sample_index": 0,
+        "repeat_index": 0,
+        "pass_index": 0,
+        "prompt1": "old",
+        "completion1": "old",
+        "sampling_config": {"generation_size": 2048, "effective_generation_size": 4096},
+    }
+    await service.insert_completion_payloads_batch(task_id=first, payloads=[old_payload])
+    original = await Completion.get(
+        task_id=int(first),
+        sample_index=0,
+        avg_repeat_index=0,
+        pass_index=0,
     )
+
+    new_payload = {
+        **old_payload,
+        "prompt1": "new",
+        "completion1": "new",
+        "sampling_config": {"generation_size": 2048},
+    }
+    await service.insert_completion_payloads_batch(task_id=first, payloads=[new_payload])
+    updated = await Completion.get(completions_id=original.completions_id)
+
     assert await service.count_completions(task_id=first, status="Completed") == 1
+    assert updated.created_at == original.created_at
     payloads = await service.list_completion_payloads(task_id=first, status="Completed")
     assert payloads[0]["prompt1"] == "new"
+    assert payloads[0]["sampling_config"]["effective_generation_size"] == 4096
+
+async def test_resume_ignores_git_hash_for_uploaded_running_task(
+    database_settings: DatabaseSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ScoreboardStore(settings=database_settings)
+    monkeypatch.setenv("RWKV_GIT_SHA", "unknown")
+    first = await service.get_or_create_task(
+        job_name="lighteval",
+        job_id=None,
+        dataset="mmlu_anatomy",
+        model="rwkv7-test",
+        is_param_search=False,
+        sampling_config={"avg_k": 8},
+        allow_resume=True,
+    )
+
+    monkeypatch.setenv("RWKV_GIT_SHA", "local-upload-20260721")
+    resumed = await service.get_or_create_task(
+        job_name="lighteval",
+        job_id=None,
+        dataset="mmlu_anatomy",
+        model="rwkv7-test",
+        is_param_search=False,
+        sampling_config={"avg_k": 8},
+        allow_resume=True,
+    )
+
+    assert resumed == first
+
+
+async def test_partial_score_remains_resumable_and_eval_is_upserted(
+    database_settings: DatabaseSettings,
+) -> None:
+    service = ScoreboardStore(settings=database_settings)
+    task_id = await service.get_or_create_task(
+        job_name="lighteval",
+        job_id=None,
+        dataset="mmlu_anatomy",
+        model="rwkv7-test",
+        is_param_search=False,
+        sampling_config={"avg_k": 8},
+        allow_resume=False,
+    )
+    await service.insert_completion_payloads_batch(
+        task_id=task_id,
+        payloads=[
+            {
+                "_stage": "generation",
+                "status": "Completed",
+                "sample_index": 0,
+                "repeat_index": 0,
+                "pass_index": 0,
+                "prompt1": "question",
+                "completion1": "answer",
+                "sampling_config": {},
+            }
+        ],
+    )
+    first_eval = {
+        "sample_index": 0,
+        "repeat_index": 0,
+        "pass_index": 0,
+        "answer": "wrong",
+        "ref_answer": "right",
+        "is_passed": False,
+    }
+    assert await service.ingest_eval_payloads(task_id=task_id, payloads=[first_eval]) == 1
+    second_eval = {**first_eval, "answer": "right", "is_passed": True}
+    assert await service.ingest_eval_payloads(task_id=task_id, payloads=[second_eval]) == 1
+    eval_rows = await service.list_eval_rows(task_id=task_id)
+    assert len(eval_rows) == 1
+    assert eval_rows[0]["is_passed"] is True
+
+    await service.record_score_payload(
+        task_id=task_id,
+        payload={"cot_mode": "NoCoT", "metrics": {"avg@8": 1.0}},
+        mark_completed=False,
+    )
+    bundle = await service.get_task_bundle(task_id=task_id)
+    assert bundle is not None
+    assert bundle["task"]["status"] == "Running"
+
+    resumed = await service.get_or_create_task(
+        job_name="lighteval",
+        job_id=None,
+        dataset="mmlu_anatomy",
+        model="rwkv7-test",
+        is_param_search=False,
+        sampling_config={"avg_k": 8},
+        allow_resume=True,
+    )
+    assert resumed == task_id
+
+    await service.record_score_payload(
+        task_id=task_id,
+        payload={"cot_mode": "NoCoT", "metrics": {"avg@8": 1.0, "judge_avg@8": 1.0}},
+    )
+    new_task_id = await service.get_or_create_task(
+        job_name="lighteval",
+        job_id=None,
+        dataset="mmlu_anatomy",
+        model="rwkv7-test",
+        is_param_search=False,
+        sampling_config={"avg_k": 8},
+        allow_resume=True,
+    )
+    assert new_task_id != task_id
+
 
 
 async def test_ref_answer_fallback_and_task_identity_metadata(
@@ -672,12 +844,12 @@ async def test_admin_routes_expose_live_scheduler_contract(
         assert health == {"status": "ok", "active": False, "auth_required": False}
 
         options = (await client.get("/api/admin/eval/options")).json()
-        assert "g1h-1.5b" in options["model_select"]
-        assert "configs/local/g1h-1.5b-accuracy.toml" in options["configs"]
+        assert "g1g-1.5b" in options["model_select"]
+        assert "configs/example.toml" in options["configs"]
 
         draft = (await client.get("/api/admin/eval/draft")).json()
-        assert draft["config"] == "configs/local/g1h-1.5b-accuracy.toml"
-        assert draft["models"] == ["g1h-1.5b"]
+        assert draft["config"] == "configs/example.toml"
+        assert draft["models"] == ["g1g-1.5b"]
         assert draft["scoreboard"] is True
 
         status = (await client.get("/api/admin/eval/status")).json()

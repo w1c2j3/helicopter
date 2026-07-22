@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from string import ascii_uppercase
 from typing import Any
 
@@ -20,8 +21,7 @@ from lighteval.utils.cache_management import cached
 
 _TEMPLATE_ENV = "HELICOPTER_PROMPT_TEMPLATE"
 _STRIP_FLOWER_ENV = "HELICOPTER_STRIP_TERMINAL_FLOWER"
-_MATH_FINAL_SUFFIX_ENV = "HELICOPTER_MATH_FINAL_SUFFIX"
-_MATH_FINAL_MAX_TOKENS_ENV = "HELICOPTER_MATH_FINAL_MAX_TOKENS"
+_TASK_REQUEST_POLICY_ENV = "HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"
 
 
 def _strip_prefill_continuation(text: str, template: str | None = None) -> str:
@@ -53,7 +53,27 @@ _CHOICE_PATTERNS = (
     re.compile(r"\\boxed\{\s*(?:\\(?:text|mathrm)\{\s*)?([A-Z])", re.IGNORECASE),
     re.compile(
         r"(?:final\s+)?(?:the\s+)?(?:correct\s+)?answer\s*"
-        r"(?:is|:)?\s*(?:option\s*)?[\[(]?\s*([A-Z])\b",
+        r"[*_]{0,3}\s*(?:is\s*)?:?\s*(?:option\s*)?[*_]{0,3}\s*"
+        r"[\[(]?\s*[*_]{0,3}\s*([A-Z])\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"</think>\s*[*_]{0,3}\s*[\[(]?\s*([A-Z])\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:therefore|thus|hence|so)\b[^\n]{0,200}?"
+        r"\b(?:is\s+provided\s+in|select(?:s|ed)?|choose|chosen|is)\s*"
+        r"[*_]{0,3}\s*(?:option|choice)\s*[*_]{0,3}\s*([A-Z])\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:option|choice)\s*[*_]{0,3}\s*([A-Z])\b[^\n]{0,100}?"
+        r"\b(?:is\s+)?(?:the\s+)?(?:correct|best|most\s+accurate)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:therefore|thus|hence|so),?\s*[*_]{0,3}\s*([A-Z])\s*[\).]",
         re.IGNORECASE,
     ),
 )
@@ -88,91 +108,55 @@ def _postprocess_choice_response(doc: Any, response: ModelResponse) -> ModelResp
     return response
 
 
-def _uses_math_final_stage(doc: Any) -> bool:
-    suffix = os.environ.get(_MATH_FINAL_SUFFIX_ENV, "")
-    choices = getattr(doc, "choices", None)
-    return bool(suffix and isinstance(choices, (list, tuple)) and len(choices) == 1 and str(choices[0]).strip())
+def _canonical_task_name(task_name: str | None) -> str:
+    name = str(task_name or "").split("|", 1)[0]
+    return name[len("g1h__") :] if name.startswith("g1h__") else name
 
 
-def _with_closed_think(text: str) -> str:
-    stripped = text.rstrip()
-    return stripped if "</think>" in stripped else f"{stripped}\n</think>"
-
-
-def _usage_dict(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def _combined_usage(stage1: Any, stage2: Any) -> dict[str, Any]:
-    first, second = _usage_dict(stage1), _usage_dict(stage2)
-    combined: dict[str, Any] = {"stage1": first, "stage2": second}
-    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-        values = [item.get(key) for item in (first, second)]
-        if all(isinstance(value, int) for value in values):
-            combined[key] = sum(values)
-    return combined
-
-
-def _math_final_response(self: LiteLLMClient, prompt: str, doc: Any, response: ModelResponse) -> ModelResponse:
-    if not _uses_math_final_stage(doc):
-        return response
-    suffix = os.environ[_MATH_FINAL_SUFFIX_ENV]
+def _task_request_policy(task_name: str | None) -> dict[str, Any]:
+    raw = os.environ.get(_TASK_REQUEST_POLICY_ENV, "").strip()
+    if not raw:
+        return {}
     try:
-        final_max_tokens = max(1, int(os.environ.get(_MATH_FINAL_MAX_TOKENS_ENV, "64")))
-    except ValueError as error:
-        raise RuntimeError(f"invalid {_MATH_FINAL_MAX_TOKENS_ENV}") from error
+        policy = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"invalid {_TASK_REQUEST_POLICY_ENV}: {error}") from error
+    if not isinstance(policy, dict):
+        raise RuntimeError(f"{_TASK_REQUEST_POLICY_ENV} must contain a JSON object")
+    tasks = policy.get("tasks")
+    if not isinstance(tasks, dict):
+        return {}
+    entry = tasks.get(_canonical_task_name(task_name), {})
+    return entry if isinstance(entry, dict) else {}
 
-    raw_stage1 = list(getattr(response, "raw_text", response.text))
-    stage1_finish = getattr(response, "finish_reason", None)
-    stage1_usage = getattr(response, "usage", None)
-    combined_texts: list[str] = []
-    combined_raw_texts: list[str] = []
-    final_reasons: list[Any] = []
-    final_usages: list[Any] = []
-    recorded_stages: list[dict[str, Any]] = []
 
-    for index, (clean_text, raw_text) in enumerate(zip(response.text, raw_stage1)):
-        raw_reasoning = _with_closed_think(str(raw_text or ""))
-        clean_reasoning = _with_closed_think(str(clean_text or ""))
-        final_prompt = f"{prompt}{raw_reasoning}{suffix}"
-        final_response = _request(
-            self,
-            final_prompt,
-            final_max_tokens,
-            1,
-            ["}"],
-            prompt_template=suffix,
-            force_max_tokens=True,
-            force_stops=True,
-        )
-        final_piece = str(final_response.text[0] if final_response.text else "").strip()
-        combined = f"{clean_reasoning}{suffix}{final_piece}"
-        raw_combined = f"{raw_reasoning}{suffix}{final_piece}"
-        if suffix.rstrip().endswith("{") and not combined.rstrip().endswith("}"):
-            combined += "}"
-            raw_combined += "}"
-        combined_texts.append(combined)
-        combined_raw_texts.append(raw_combined)
-        final_reasons.append(getattr(final_response, "finish_reason", None))
-        final_usages.append(getattr(final_response, "usage", None))
-        if len(response.text) == 1:
-            first_reason = stage1_finish[0] if isinstance(stage1_finish, list) and stage1_finish else stage1_finish
-            recorded_stages = [
-                {"prompt": prompt, "completion": str(clean_text or ""), "stop_reason": first_reason},
-                {"prompt": final_prompt, "completion": final_piece, "stop_reason": final_reasons[-1]},
-            ]
+def _merge_stops(task_stops: list[str] | None, configured: Any, *, inherit: bool) -> list[str] | None:
+    values: list[str] = []
+    if inherit:
+        values.extend(str(item) for item in (task_stops or []) if str(item))
+    if configured is not None:
+        if not isinstance(configured, list):
+            raise RuntimeError("task stop policy must be a JSON array")
+        values.extend(str(item) for item in configured if str(item))
+    return list(dict.fromkeys(values)) or None
 
-    response.text = combined_texts
-    response.text_post_processed = None
-    response.raw_text = combined_raw_texts
-    response.finish_reason = final_reasons[0] if len(final_reasons) == 1 else final_reasons
-    if len(final_usages) == 1:
-        response.usage = _combined_usage(stage1_usage, final_usages[0])
-    else:
-        response.usage = {"stage1": stage1_usage, "stage2": final_usages}
-    if recorded_stages:
-        response.stages = recorded_stages
-    return response
+
+def _configured_stops(task_name: str | None, task_stops: list[str] | None) -> list[str] | None:
+    policy = _task_request_policy(task_name)
+    if not policy:
+        return task_stops
+    return _merge_stops(
+        task_stops,
+        policy.get("stop"),
+        inherit=bool(policy.get("inherit_task_stops", True)),
+    )
+
+
+def _configured_sampling(task_name: str | None) -> dict[str, Any]:
+    value = _task_request_policy(task_name).get("sampling", {})
+    if not isinstance(value, dict):
+        raise RuntimeError("task sampling policy must be a JSON object")
+    return dict(value)
 
 
 def _completion_url(base_url: str | None) -> str:
@@ -202,16 +186,23 @@ def _request(
     prompt_template: str | None = None,
     force_max_tokens: bool = False,
     force_stops: bool = False,
+    task_name: str | None = None,
 ) -> ModelResponse:
     overrides = load_sampling_overrides()
     configured_stop = overrides.pop("stop", None)
     configured_max = overrides.pop("max_tokens", None)
+    overrides.update(_configured_sampling(task_name))
+    task_policy = _task_request_policy(task_name)
+    task_policy_stop = _configured_stops(task_name, stops)
+    effective_stop = task_policy_stop if task_policy else (
+        configured_stop if configured_stop is not None else stops
+    )
     payload: dict[str, Any] = {
         "model": _served_model(self.model),
         "prompt": prompt,
         "max_tokens": max_tokens if force_max_tokens else (configured_max if configured_max is not None else max_tokens),
         "n": int(num_samples),
-        "stop": stops if force_stops else (configured_stop if configured_stop is not None else stops),
+        "stop": stops if force_stops else effective_stop,
         **overrides,
     }
     payload = {key: value for key, value in payload.items() if value is not None}
@@ -247,11 +238,143 @@ def _request(
     raise RuntimeError(f"raw completion request failed after retries: {last_error}")
 
 
+
+def _one(value: Any) -> Any:
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
+def _response_from_rollouts(rollouts: list[dict[str, Any]]) -> ModelResponse:
+    if not rollouts:
+        raise RuntimeError("cannot rebuild an empty response")
+    def restored_text(item: dict[str, Any], key: str) -> str:
+        return str(_one(item.get(key)) or "")
+
+    post_processed = [
+        restored_text(item, "text_post_processed")
+        if _one(item.get("text_post_processed")) is not None
+        else None
+        for item in rollouts
+    ]
+    response = ModelResponse(
+        input=rollouts[0].get("input"),
+        text=[restored_text(item, "text") for item in rollouts],
+        text_post_processed=(
+            [str(value or "") for value in post_processed]
+            if any(value is not None for value in post_processed)
+            else None
+        ),
+    )
+    response.raw_text = [
+        restored_text(item, "raw_text")
+        if _one(item.get("raw_text")) is not None
+        else restored_text(item, "text")
+        for item in rollouts
+    ]
+    response.finish_reason = [_one(item.get("finish_reason")) for item in rollouts]
+    response.usage = [item.get("usage") for item in rollouts]
+    stages = [item.get("stages") for item in rollouts]
+    if any(stage is not None for stage in stages):
+        response.stages_by_rollout = stages
+    return response
+
+
+def _stored_generation(task_id: str | None) -> dict[int, dict[int, dict[str, Any]]]:
+    if not task_id:
+        return {}
+    from helicopter_cli.scoreboard_bridge import load_lighteval_generation
+
+    grouped: dict[int, dict[int, dict[str, Any]]] = {}
+    for row in load_lighteval_generation(task_id=task_id):
+        if str(row.get("status") or "").lower() != "completed":
+            continue
+        context = row.get("context")
+        if not isinstance(context, dict):
+            continue
+        agent_result = context.get("agent_result")
+        if not isinstance(agent_result, dict):
+            continue
+        model_response = agent_result.get("model_response")
+        if not isinstance(model_response, dict):
+            continue
+        grouped.setdefault(int(row["sample_index"]), {})[int(row["repeat_index"])] = model_response
+    return grouped
+
+
+def _response_rollouts(response: ModelResponse) -> list[dict[str, Any]]:
+    from helicopter_cli.scoreboard_bridge import _response_payload, _rollout_count, _rollout_response
+
+    payload = _response_payload(response)
+    return [_rollout_response(payload, index) for index in range(_rollout_count(payload))]
+
+
+def _checkpoint_response(
+    *,
+    task_id: str | None,
+    dataset_name: str,
+    task_name: str,
+    total_samples: int,
+    sample_index: int,
+    doc: Any,
+    response: ModelResponse,
+    repeat_indices: list[int],
+    generation_size: int,
+) -> None:
+    if not task_id:
+        return
+    from helicopter_cli.scoreboard_bridge import checkpoint_lighteval_response
+
+    checkpoint_lighteval_response(
+        task_id=task_id,
+        dataset=dataset_name,
+        task_name=task_name,
+        num_samples=total_samples,
+        sample_index=sample_index,
+        doc=doc,
+        response=response,
+        repeat_indices=repeat_indices,
+        generation_size=generation_size,
+    )
+
+
+def _merge_response_rollouts(
+    *,
+    existing: dict[int, dict[str, Any]],
+    generated: ModelResponse | None,
+    generated_indices: list[int],
+    rollout_n: int,
+) -> ModelResponse:
+    merged = dict(existing)
+    if generated is not None:
+        generated_rollouts = _response_rollouts(generated)
+        if len(generated_rollouts) != len(generated_indices):
+            raise RuntimeError(
+                f"completion count mismatch: got {len(generated_rollouts)}, expected {len(generated_indices)}"
+            )
+        merged.update(zip(generated_indices, generated_rollouts))
+    missing = [index for index in range(rollout_n) if index not in merged]
+    if missing:
+        raise RuntimeError(f"generation checkpoint is incomplete after request: missing repeats {missing}")
+    return _response_from_rollouts([merged[index] for index in range(rollout_n)])
+
 @cached(SamplingMethod.GENERATIVE)
 def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
+    """Generate with PostgreSQL checkpoints as the only response cache.
+
+    Helicopter configures LightEval with use_cache=false, so the native cache
+    decorator delegates directly to this method. Resume is handled exclusively
+    by _stored_generation and every fresh response reaches the DB checkpoint.
+    """
+
     dataset = GenerativeTaskDataset(requests=docs, num_dataset_splits=self.DATASET_SPLITS)
     template = os.environ[_TEMPLATE_ENV]
+    task_id = os.environ.get("HELICOPTER_SCOREBOARD_TASK_ID", "").strip() or None
+    dataset_name = os.environ.get("HELICOPTER_SCOREBOARD_DATASET", "").strip()
+    stored = _stored_generation(task_id)
+    original_indices = {id(doc): index for index, doc in enumerate(docs)}
     results: list[ModelResponse] = []
+
     for split in tqdm(
         dataset.splits_iterator(),
         total=dataset.num_dataset_splits,
@@ -263,37 +386,75 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
         contexts = [self.prompt_manager._prepare_plain_text(doc) for doc in split_docs]
         prompts = [template.format(query=context) for context in contexts]
         max_tokens = split[0].generation_size
-        num_samples = split[0].num_samples
+        rollout_n = int(split[0].num_samples)
         stops = split[0].stop_sequences
-        with ThreadPoolExecutor(self.concurrent_requests) as executor:
-            responses = list(
-                tqdm(
-                    executor.map(
-                        lambda prompt: _request(
-                            self,
-                            prompt,
-                            max_tokens,
-                            num_samples,
-                            stops,
-                            prompt_template=template,
-                        ),
-                        prompts,
-                    ),
-                    total=len(prompts),
-                    desc="Raw completions",
-                    position=1,
-                    leave=False,
-                    disable=self.disable_tqdm,
-                )
+        responses: list[ModelResponse | None] = [None] * len(split_docs)
+
+        def generate_one(position: int, missing: list[int]) -> ModelResponse:
+            response = _request(
+                self,
+                prompts[position],
+                max_tokens,
+                len(missing),
+                stops,
+                prompt_template=template,
+                task_name=str(getattr(split_docs[position], "task_name", "") or dataset_name),
             )
+            return _postprocess_choice_response(split_docs[position], response)
+
         with ThreadPoolExecutor(self.concurrent_requests) as executor:
-            finalized = list(
-                executor.map(
-                    lambda item: _math_final_response(self, item[0], item[1], item[2]),
-                    zip(prompts, split_docs, responses),
+            futures: dict[Any, tuple[int, int, list[int], dict[int, dict[str, Any]]]] = {}
+            for position, doc in enumerate(split_docs):
+                sample_index = original_indices.get(id(doc))
+                if sample_index is None:
+                    raise RuntimeError("LightEval changed document identity; cannot assign a stable sample_index")
+                existing = stored.get(sample_index, {})
+                missing = [index for index in range(rollout_n) if index not in existing]
+                if not missing:
+                    responses[position] = _merge_response_rollouts(
+                        existing=existing,
+                        generated=None,
+                        generated_indices=[],
+                        rollout_n=rollout_n,
+                    )
+                    continue
+                future = executor.submit(generate_one, position, missing)
+                futures[future] = (position, sample_index, missing, existing)
+
+            for future in tqdm(
+                as_completed(futures),
+                total=len(futures),
+                desc="Raw completions",
+                position=1,
+                leave=False,
+                disable=self.disable_tqdm,
+            ):
+                position, sample_index, missing, existing = futures[future]
+                generated = future.result()
+                doc = split_docs[position]
+                task_name = str(getattr(doc, "task_name", "") or dataset_name)
+                _checkpoint_response(
+                    task_id=task_id,
+                    dataset_name=dataset_name or task_name,
+                    task_name=task_name,
+                    total_samples=len(docs),
+                    sample_index=sample_index,
+                    doc=doc,
+                    response=generated,
+                    repeat_indices=missing,
+                    generation_size=max_tokens,
                 )
-            )
-        results.extend(_postprocess_choice_response(doc, response) for doc, response in zip(split_docs, finalized))
+                responses[position] = _merge_response_rollouts(
+                    existing=existing,
+                    generated=generated,
+                    generated_indices=missing,
+                    rollout_n=rollout_n,
+                )
+
+        if any(response is None for response in responses):
+            raise RuntimeError("generation returned an incomplete response set")
+        results.extend(response for response in responses if response is not None)
+
     return dataset.get_original_order(results)
 
 

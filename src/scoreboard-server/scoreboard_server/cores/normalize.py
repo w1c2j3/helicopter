@@ -158,7 +158,7 @@ def display_param(param: str | None) -> str:
     return (param or "?").replace("_", ".")
 
 
-def sanitize_json(value: Any, *, max_depth: int = 6, _depth: int = 0) -> Any:
+def sanitize_json(value: Any, *, max_depth: int = 32, _depth: int = 0) -> Any:
     if _depth > max_depth:
         return "[truncated depth]"
     if value is None or isinstance(value, bool):
@@ -174,11 +174,19 @@ def sanitize_json(value: Any, *, max_depth: int = 6, _depth: int = 0) -> Any:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace").replace("\x00", "")
     if isinstance(value, Mapping):
-        return {str(sanitize_json(k, _depth=_depth + 1)): sanitize_json(v, _depth=_depth + 1) for k, v in value.items()}
+        return {
+            str(sanitize_json(k, max_depth=max_depth, _depth=_depth + 1)): sanitize_json(
+                v, max_depth=max_depth, _depth=_depth + 1
+            )
+            for k, v in value.items()
+        }
     if isinstance(value, (list, tuple)):
-        return [sanitize_json(item, _depth=_depth + 1) for item in value]
+        return [sanitize_json(item, max_depth=max_depth, _depth=_depth + 1) for item in value]
     if isinstance(value, set):
-        return [sanitize_json(item, _depth=_depth + 1) for item in sorted(value, key=str)]
+        return [
+            sanitize_json(item, max_depth=max_depth, _depth=_depth + 1)
+            for item in sorted(value, key=str)
+        ]
     try:
         json.dumps(value)
         return value

@@ -83,17 +83,22 @@ def build_leaderboard_payload(
 
 def _leaderboard_matrix(entries: list[dict[str, Any]]) -> dict[str, Any]:
     """Build the primary board: Naive-only, model rows and benchmark columns."""
-    naive_entries = [
-        entry
-        for entry in entries
-        if not entry.get("is_param_search") and is_naive(entry.get("task"), entry.get("sampling_config"))
-    ]
+    naive_entries = [entry for entry in entries if _is_primary_entry(entry)]
     domains = [_matrix_domain(naive_entries, group) for group in _domain_groups_with_naive() if group["key"] != "naive"]
     return {
         "model_count": len({str(entry.get("model") or "") for entry in naive_entries if entry.get("model")}),
         "benchmark_count": sum(len(domain["columns"]) for domain in domains),
         "domains": domains,
     }
+
+
+def _is_primary_entry(entry: dict[str, Any]) -> bool:
+    if entry.get("is_param_search"):
+        return False
+    sampling_config = entry.get("sampling_config")
+    # Historical DB rows can predate prompt metadata. They are official
+    # non-search runs, so absence of that metadata must not hide them.
+    return not sampling_config or is_naive(entry.get("task"), sampling_config)
 
 
 def _matrix_domain(entries: list[dict[str, Any]], group: dict[str, str]) -> dict[str, Any]:
@@ -156,8 +161,8 @@ def _matrix_domain(entries: list[dict[str, Any]], group: dict[str, str]) -> dict
 
 
 def _entry_matrix_column_key(entry: dict[str, Any], metric: str) -> str:
-    eval_method = str(entry.get("cot_mode") or ("CoT" if entry.get("cot") else "NoCoT"))
-    return json_key([str(entry.get("dataset") or "unknown"), eval_method, metric])
+    del metric
+    return str(entry.get("dataset") or "unknown")
 
 
 def _matrix_cell(entry: dict[str, Any] | None, column: dict[str, Any]) -> dict[str, Any]:
@@ -261,8 +266,8 @@ def _tuning_config(entry: dict[str, Any]) -> dict[str, Any]:
     parts = [prompt_profile, cot_mode]
     for key, prefix in (
         ("temperature", "T"),
-        ("top_p", "P"),
         ("top_k", "K"),
+        ("top_p", "P"),
         ("presence_penalty", "PP"),
         ("frequency_penalty", "FP"),
     ):

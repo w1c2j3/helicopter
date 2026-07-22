@@ -48,6 +48,35 @@ def _redacted_request(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _nested_value(value: Any, key: str) -> Any:
+    if isinstance(value, dict):
+        if key in value:
+            return value[key]
+        for child in value.values():
+            found = _nested_value(child, key)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _nested_value(child, key)
+            if found is not None:
+                return found
+    return None
+
+
+def _prometheus_value(text: str, metric: str) -> int:
+    total = 0.0
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or not stripped.startswith(metric):
+            continue
+        try:
+            total += float(stripped.rsplit(None, 1)[-1])
+        except (IndexError, ValueError):
+            continue
+    return max(0, int(total))
+
+
 def _latest_config() -> str:
     local = REPO_ROOT / "configs" / "local"
     candidates = sorted(local.glob("*.toml"), key=lambda item: item.stat().st_mtime, reverse=True)
@@ -99,7 +128,7 @@ def admin_draft() -> dict[str, Any]:
         "tasks": config_tasks[:1] or options["domains"][:1],
         "fc_tasks": [],
         "gpus": "",
-        "parallel": 1,
+        "parallel": None,
         "max_retries": 0,
         "no_server": False,
         "scoreboard": True,
@@ -284,23 +313,42 @@ class SchedulerAdminController:
         models: list[dict[str, Any]] = []
         error: str | None = None
         if base_url:
-            url = base_url.rstrip("/")
-            if url.endswith("/v1"):
-                url += "/backpressure"
-            elif not url.endswith("/backpressure"):
-                url += "/v1/backpressure"
+            root = base_url.rstrip("/")
+            if root.endswith("/v1"):
+                root = root[:-3]
             headers = {"Accept": "application/json"}
             raw_key = request.get("api_key")
             if raw_key and raw_key != "***":
                 headers["Authorization"] = f"Bearer {raw_key}"
             try:
-                with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=2.0) as response:
-                    payload = json.loads(response.read().decode("utf-8"))
-                raw_models = payload.get("models", payload) if isinstance(payload, dict) else payload
-                if isinstance(raw_models, dict):
-                    models = [dict(value, model_slug=str(key)) for key, value in raw_models.items() if isinstance(value, dict)]
-                elif isinstance(raw_models, list):
-                    models = [item for item in raw_models if isinstance(item, dict)]
+                info_url = f"{root}/server_info?config_format=json"
+                with urllib.request.urlopen(
+                    urllib.request.Request(info_url, headers=headers), timeout=3.0
+                ) as response:
+                    server_info = json.loads(response.read().decode("utf-8"))
+                metrics_url = f"{root}/metrics"
+                with urllib.request.urlopen(
+                    urllib.request.Request(metrics_url, headers=headers), timeout=3.0
+                ) as response:
+                    metrics = response.read().decode("utf-8", errors="replace")
+                requested_models = request.get("models") or ["served-model"]
+                models = [
+                    {
+                        "model_slug": str(model),
+                        "max_num_seqs": _nested_value(server_info, "max_num_seqs"),
+                        "max_num_batched_tokens": _nested_value(
+                            server_info, "max_num_batched_tokens"
+                        ),
+                        "num_requests_running": _prometheus_value(
+                            metrics, "vllm:num_requests_running"
+                        ),
+                        "num_requests_waiting": _prometheus_value(
+                            metrics, "vllm:num_requests_waiting"
+                        ),
+                        "source": "vllm:/server_info+/metrics",
+                    }
+                    for model in requested_models
+                ]
             except (OSError, ValueError, urllib.error.URLError) as exc:
                 error = str(exc)
         return {"infer_base_url": base_url, "available_gpus": snapshot["available_gpus"], "models": models, "error": error}
@@ -335,7 +383,10 @@ class SchedulerAdminController:
         result["tasks"] = _as_list(result.get("tasks") or result.get("domains"))
         result["fc_tasks"] = _as_list(result.get("fc_tasks"))
         result["benchmark_fields"] = _as_list(result.get("benchmark_fields"))
-        result["parallel"] = max(1, int(result.get("parallel") or 1))
+        if result.get("parallel") not in (None, ""):
+            result["parallel"] = max(1, int(result["parallel"]))
+        else:
+            result["parallel"] = None
         result["max_retries"] = max(0, int(result.get("max_retries") or 0))
         result["tasks_from_db"] = bool(result.get("tasks_from_db"))
         if result["tasks_from_db"] and result["tasks"]:

@@ -29,6 +29,16 @@ def _positive_int(policy: Mapping[str, Any], key: str, default: int) -> int:
     return result
 
 
+def _sample_rate(policy: Mapping[str, Any], key: str) -> float:
+    try:
+        result = float(policy[key])
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"[lighteval.g1h].{key} must be a number in (0, 1]") from error
+    if not 0 < result <= 1:
+        raise ValueError(f"[lighteval.g1h].{key} must be a number in (0, 1]")
+    return result
+
+
 def _string_list(policy: Mapping[str, Any], key: str) -> list[str]:
     value = policy.get(key, [])
     if not isinstance(value, list):
@@ -48,10 +58,27 @@ def normalize_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("[lighteval.g1h].prompt_style must be 'naive' or 'normal'")
 
     result["zero_shot"] = bool(result.get("zero_shot", True))
-    result["avg_k"] = _positive_int(result, "avg_k", 8)
+    if "avg_k" not in result:
+        raise ValueError("[lighteval.g1h].avg_k must be set in the TOML configuration")
+    result["avg_k"] = _positive_int(result, "avg_k", 1)
     result["rollout_n"] = _positive_int(result, "rollout_n", result["avg_k"])
     if result["rollout_n"] != result["avg_k"]:
         raise ValueError("[lighteval.g1h] requires rollout_n == avg_k for ordinary avg@k")
+
+    target_key = "target_generations_per_benchmark"
+    threshold_key = "large_benchmark_generation_threshold"
+    rate_key = "large_benchmark_sample_rate"
+    if target_key in result:
+        result[target_key] = _positive_int(result, target_key, 5000)
+    if threshold_key in result:
+        result[threshold_key] = _positive_int(result, threshold_key, 20000)
+    if target_key in result and threshold_key in result:
+        if result[threshold_key] < result[target_key]:
+            raise ValueError(
+                f"[lighteval.g1h].{threshold_key} must be >= {target_key}"
+            )
+    if rate_key in result:
+        result[rate_key] = _sample_rate(result, rate_key)
 
     result["generation_size"] = _positive_int(result, "generation_size", 4096)
     result["gpass_generation_size"] = _positive_int(result, "gpass_generation_size", 8192)
@@ -71,10 +98,10 @@ def normalize_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
     if result["variant_selection"] not in {"all", "avg_then_gpass"}:
         raise ValueError("[lighteval.g1h].variant_selection must be 'all' or 'avg_then_gpass'")
 
-    result.setdefault("naive_cot_template", "User: {query}\nAssistant: <think>")
-    result.setdefault("naive_nocot_template", "User: {query}\nAssistant:")
-    result.setdefault("normal_cot_template", "User✿{query}✿\nBot✿<think>")
-    result.setdefault("normal_nocot_template", "User✿{query}✿\nBot✿<think></think>")
+    result.setdefault("naive_cot_template", "User: {query}\nAssistant: <think")
+    result.setdefault("naive_nocot_template", "User: {query}\nAssistant: <think></think")
+    result.setdefault("normal_cot_template", "User✿{query}✿\nBot✿<think")
+    result.setdefault("normal_nocot_template", "User✿{query}✿\nBot✿<think></think")
     return result
 
 

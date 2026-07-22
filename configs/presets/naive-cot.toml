@@ -4,8 +4,15 @@
 mode = "naive_cot"
 template = "User: {query}\nAssistant: <think"
 strip_terminal_flower = false
-math_final_suffix = "\nTherefore, the answer is \\(\\boxed{"
-math_final_max_tokens = 64
+
+[stops]
+inherit_task_stops = false
+
+[stops.domains]
+math = ["\nUser:"]
+coding = ["\nUser:"]
+instruction_following = ["\nUser:"]
+knowledge = ["\nUser:"]
 
 [sampling]
 max_tokens = 2048
@@ -15,7 +22,9 @@ top_k = 32
 presence_penalty = 1.0
 frequency_penalty = 0.1
 penalty_decay = 0.988
-stop = ["\nUser:", "User✿", "✿"]
+
+[sampling.domains.instruction_following]
+max_tokens = 1280
 
 [lighteval]
 provider = "openai"
@@ -23,13 +32,30 @@ output_dir = "results/lighteval"
 save_details = false
 dataset_loading_processes = 1
 load_tasks_multilingual = false
-custom_tasks = "src/cli/helicopter_cli/lighteval_rwkv_skills_tasks.py"
+custom_tasks = "src/cli/helicopter_cli/lighteval_policy_tasks.py"
 concurrent_requests = 8
+request_timeout = 900
+
+[lighteval.g1h]
+metric = "avg"
+prompt_style = "naive"
+zero_shot = true
+avg_k = 1
+rollout_n = 1
+target_generations_per_benchmark = 5000
+large_benchmark_generation_threshold = 20000
+large_benchmark_sample_rate = 0.2
+generation_size = 2048
+gpass_generation_size = 4096
+long_rollout_tasks = ["arena_hard_v2"]
+variant_selection = "avg_then_gpass"
 
 [function_calling]
 concurrent_requests = 8
 request_timeout = 180
 
 [models.deployed]
-served_model_name = "rwkv7-g1h-7.2b-20260710-ctx10240"
+served_model_name = "rwkv7-g1h-1.5b-20260710-ctx10240"
 max_model_len = 10240
+max_num_seqs = 1024
+max_num_batched_tokens = 32768

@@ -31,13 +31,33 @@ from lighteval.tasks.lighteval_task import LightevalTaskConfig
 from lighteval.tasks.requests import Doc, SamplingMethod
 
 
-ALGEBRA222_URL = "https://raw.githubusercontent.com/joyheyueya/declarative-math-word-problem/main/algebra222.csv"
+def _cached_dataset_file(relative_path: str, fallback: str) -> str:
+    root = os.environ.get("DATASETS_PATH", "").strip()
+    if not root:
+        return fallback
+    candidate = Path(root) / relative_path
+    return str(candidate) if candidate.is_file() else fallback
+
+
+ALGEBRA222_URL = _cached_dataset_file(
+    "cache/algebra222/algebra222.csv",
+    "https://raw.githubusercontent.com/joyheyueya/declarative-math-word-problem/main/algebra222.csv",
+)
 COMP_MATH_24_25_PATH = str(Path(__file__).with_name("lighteval_data") / "comp_math_24_25_test.jsonl")
-HUMAN_EVAL_URL = "https://github.com/openai/human-eval/raw/master/data/HumanEval.jsonl.gz"
-HUMAN_EVAL_CN_URL = "https://huggingface.co/datasets/zai-org/humaneval-x/resolve/main/data/python/data/humaneval.jsonl"
+HUMAN_EVAL_URL = _cached_dataset_file(
+    "cache/human_eval/HumanEval.jsonl.gz",
+    "https://github.com/openai/human-eval/raw/master/data/HumanEval.jsonl.gz",
+)
+HUMAN_EVAL_CN_URL = _cached_dataset_file(
+    "cache/human_eval_cn/humaneval.jsonl",
+    "https://huggingface.co/datasets/zai-org/humaneval-x/resolve/main/data/python/data/humaneval.jsonl",
+)
 HUMAN_EVAL_FIX_REPO = "bigcode/humanevalpack"
 HUMAN_EVAL_PLUS_REPO = "evalplus/humanevalplus"
-MATH_ODYSSEY_URL = "https://raw.githubusercontent.com/protagolabs/odyssey-math/main/final-odyssey-math-with-levels.jsonl"
+MATH_ODYSSEY_URL = _cached_dataset_file(
+    "cache/math_odyssey/math_odyssey.jsonl",
+    "https://raw.githubusercontent.com/protagolabs/odyssey-math/main/final-odyssey-math-with-levels.jsonl",
+)
 MAWPS_URLS = [
     f"https://raw.githubusercontent.com/microsoft/ToRA/main/src/data/mawps/{subset}.jsonl"
     for subset in ("addsub", "singleeq", "singleop", "multiarith")
@@ -410,8 +430,41 @@ def free_answer_prompt(line: dict[str, Any], task_name: str | None = None) -> Do
     )
 
 
+def _arena_hard_database_answers() -> dict[str, str]:
+    if os.environ.get("HELICOPTER_PIPELINE_STAGE", "").strip().lower() != "score":
+        return {}
+    task_id = os.environ.get("HELICOPTER_SCOREBOARD_TASK_ID", "").strip()
+    if not task_id:
+        return {}
+    from helicopter_cli.scoreboard_bridge import load_lighteval_generation
+
+    answers: dict[str, str] = {}
+    for payload in load_lighteval_generation(task_id=task_id):
+        context = payload.get("context")
+        if not isinstance(context, Mapping):
+            continue
+        agent_result = context.get("agent_result")
+        doc = agent_result.get("doc") if isinstance(agent_result, Mapping) else None
+        if not isinstance(doc, Mapping):
+            continue
+        specific = doc.get("specific")
+        uid = (
+            specific.get("sample_id") if isinstance(specific, Mapping) else doc.get("id")
+        )
+        references = specific.get("references") if isinstance(specific, Mapping) else None
+        if uid is None or not isinstance(references, list) or not references:
+            continue
+        reference = _norm(references[0])
+        if reference:
+            answers[str(uid)] = reference
+    return answers
+
+
 @lru_cache(maxsize=1)
 def _arena_hard_baseline_answers() -> dict[str, str]:
+    database_answers = _arena_hard_database_answers()
+    if database_answers:
+        return database_answers
     with urllib.request.urlopen(ARENA_HARD_BASELINE_URL, timeout=30) as response:
         rows = response.read().decode("utf-8").splitlines()
     answers: dict[str, str] = {}

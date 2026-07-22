@@ -46,6 +46,11 @@ def add_lighteval_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--provider", help="LiteLLM provider prefix; defaults to openai")
     parser.add_argument("--api-key", help="API key passed through OPENAI_API_KEY")
     parser.add_argument("--concurrent-requests", type=int)
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        help="per-request inference timeout in seconds",
+    )
     parser.add_argument("--max-model-length", type=int)
     parser.add_argument(
         "--max-tokens",
@@ -190,10 +195,14 @@ def build_parser() -> argparse.ArgumentParser:
     eval_batch.add_argument("--fc-tasks", action="append", help="native function-calling task id (repeat or comma-separate); defaults to [eval.batch].fc_tasks")
     eval_batch.add_argument("--gpus", help="comma-separated GPU indexes; defaults to idle-GPU auto-detection")
     eval_batch.add_argument("--gpu-idle-max-mem", type=float, help="MiB of used memory below which a GPU counts as idle")
-    eval_batch.add_argument("--parallel", type=int, default=1, help="number of units to run concurrently (capped by available GPU slots)")
+    eval_batch.add_argument(
+        "--parallel",
+        type=int,
+        help="optional global cap for model-derived benchmark workers",
+    )
     eval_batch.add_argument("--max-retries", type=int, default=0, help="retries per failed unit")
     eval_batch.add_argument("--port-base", type=int, help="first port for managed vLLM servers; slot i uses port-base + i")
-    eval_batch.add_argument("--batch-output", help="write the batch run report JSON here; defaults to results/eval_batch for real runs")
+    eval_batch.add_argument("--batch-output", help="optionally write a batch report JSON; disabled by default")
     eval_batch.add_argument("--rerun", action="store_true", help="run benchmarks even when the scoreboard already has a score")
     eval_batch.add_argument("--wkv-mode", choices=WKV_MODES)
     eval_batch.add_argument("--emb-device", choices=EMB_DEVICES)

@@ -6,14 +6,16 @@ build-backend = "setuptools.build_meta"
 name = "helicopter"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+  "helicopter-scoreboard-server",
+]
 
 [project.scripts]
 helicopter = "helicopter_cli.__main__:main"
 
 [dependency-groups]
 eval = [
-  "lighteval[extended_tasks,litellm,multilingual] @ git+https://github.com/huggingface/lighteval.git@64f4f5ae173626509fad6e477ca4ee56ebb26129",
+  "lighteval[extended_tasks,litellm,multilingual]",
   "language-data",
   "more-itertools",
 ]
@@ -131,6 +133,10 @@ full = [
 
 [tool.uv]
 package = true
+
+[tool.uv.sources]
+helicopter-scoreboard-server = { path = "src/scoreboard-server", editable = true }
+lighteval = { path = "src/eval/lighteval", editable = true }
 
 [tool.setuptools.packages.find]
 where = ["src/cli"]

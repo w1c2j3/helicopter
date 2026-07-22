@@ -19,7 +19,7 @@ from .lighteval_tasks import load_registry
 
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_CUSTOM_TASKS = Path(__file__).with_name("lighteval_rwkv_skills_tasks.py")
+DEFAULT_CUSTOM_TASKS = Path(__file__).with_name("lighteval_policy_tasks.py")
 
 
 @dataclass(frozen=True)
@@ -344,6 +344,18 @@ def task_sort_key(task: str) -> tuple[int, int, str]:
 
 def rule_matches(rule: SelectionRule, task: str) -> bool:
     return task in rule.exact or any(task.startswith(prefix) for prefix in rule.prefixes)
+
+
+def domain_for_task(task: str) -> str | None:
+    """Return the benchmark field used by TOML request policies."""
+
+    name = str(task).split("|", 1)[0]
+    if name.startswith("g1h__"):
+        name = name[len("g1h__") :]
+    for rule in SELECTION_RULES:
+        if rule_matches(rule, name):
+            return rule.field
+    return None
 
 
 def has_perplexity_metric(task_config: object) -> bool:
