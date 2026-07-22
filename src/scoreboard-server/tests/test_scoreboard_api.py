@@ -73,7 +73,7 @@ async def _seed_scoreboard(settings: DatabaseSettings) -> int:
         sampling_config={
             "avg_k": 1,
             "pass_ks": [1],
-            "prompt_profile": "normal",
+            "prompt_profile": "naive",
             "sampling_config": {
                 "answer": {
                     "temperature": 0.2,
