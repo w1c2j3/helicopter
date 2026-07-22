@@ -147,6 +147,21 @@ class BenchmarkSamplingPolicyTests(unittest.TestCase):
                 "Assistant: <think></think>"
             )
         )
+        self.assertTrue(
+            lighteval_db_pipeline.has_empty_reasoning_prefill(
+                "Assistant: <think></think"
+            )
+        )
+        self.assertTrue(
+            lighteval_db_pipeline.has_empty_reasoning_prefill(
+                "Botâœ¿<think></think"
+            )
+        )
+        self.assertFalse(
+            lighteval_db_pipeline.has_empty_reasoning_prefill(
+                "Assistant: <think></think>"
+            )
+        )
 
     def test_pipeline_scores_only_answer_after_prefilled_reasoning(self) -> None:
         pipeline = SimpleNamespace(
@@ -199,6 +214,28 @@ class BenchmarkSamplingPolicyTests(unittest.TestCase):
             closed_prompt_response.text_post_processed,
             ["def solve(): return 1"],
         )
+
+        # NoCoT owns the empty think block in the prompt. Its deliberately
+        # incomplete closing tag is completed and removed by the request
+        # adapter, so the entire stored continuation is the answer even when
+        # LightEval's native reasoning remover produces an empty string.
+        for prompt in (
+            "Assistant: <think></think",
+            "Botâœ¿<think></think",
+        ):
+            nocot_response = ModelResponse(text=["ANSWER: 52"], input=prompt)
+            with mock.patch.object(
+                lighteval_db_pipeline,
+                "_ORIGINAL_POST_PROCESS_OUTPUTS",
+                side_effect=lambda _pipeline, responses: setattr(
+                    responses["GENERATIVE"][0], "text_post_processed", [""]
+                ),
+            ):
+                lighteval_db_pipeline._post_process_outputs(
+                    pipeline,
+                    {"GENERATIVE": [nocot_response]},
+                )
+            self.assertEqual(nocot_response.text_post_processed, ["ANSWER: 52"])
 
     def test_invalid_large_sample_rate_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "large_benchmark_sample_rate"):

@@ -67,6 +67,19 @@ def has_unclosed_reasoning_prefill(prompt: Any) -> bool:
     return opening >= 0 and opening > closing
 
 
+def has_empty_reasoning_prefill(prompt: Any) -> bool:
+    """Return whether the prompt ends with the configured ``</think`` prefill.
+
+    The missing final ``>`` is deliberate: the model emits it as the first
+    continuation token and the request adapter removes that token before the
+    response reaches LightEval.  Consequently the whole remaining continuation
+    is an answer and must not be passed through reasoning-tag removal.
+    """
+
+    value = str(prompt or "").rstrip().lower()
+    return value.endswith("</think") and not value.endswith("</think>")
+
+
 def _configured_sample_policy() -> dict[str, Any] | None:
     raw = os.environ.get("HELICOPTER_LIGHTEEVAL_G1H_POLICY", "").strip()
     if not raw:
@@ -162,11 +175,15 @@ def _post_process_outputs(
         for response in responses:
             texts = list(getattr(response, "text", None) or [])
             processed = list(getattr(response, "text_post_processed", None) or texts)
-            requires_closing = has_unclosed_reasoning_prefill(getattr(response, "input", None))
+            prompt = getattr(response, "input", None)
+            requires_closing = has_unclosed_reasoning_prefill(prompt)
+            empty_reasoning_prefill = has_empty_reasoning_prefill(prompt)
             scored: list[str] = []
             for index, text in enumerate(texts):
                 candidate = processed[index] if index < len(processed) else text
-                if requires_closing and "</think>" not in str(text).lower():
+                if empty_reasoning_prefill:
+                    scored.append(str(text))
+                elif requires_closing and "</think>" not in str(text).lower():
                     scored.append("")
                 elif requires_closing:
                     # The prompt owns the opening think tag. Work from the raw
