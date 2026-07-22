@@ -244,8 +244,9 @@ def _rollout_official_result(
 
 
 
-def _json_env(name: str) -> dict[str, Any]:
-    raw = os.environ.get(name, "").strip()
+def _json_env(name: str, values: Mapping[str, str] | None = None) -> dict[str, Any]:
+    source = os.environ if values is None else values
+    raw = source.get(name, "").strip()
     if not raw:
         return {}
     try:
@@ -257,9 +258,9 @@ def _json_env(name: str) -> dict[str, Any]:
     return value
 
 
-def _sampling_config() -> dict[str, Any]:
-    sampling = _json_env("HELICOPTER_VLLM_SAMPLING_JSON")
-    policy = _json_env("HELICOPTER_LIGHTEEVAL_G1H_POLICY")
+def sampling_config_from_env(values: Mapping[str, str]) -> dict[str, Any]:
+    sampling = _json_env("HELICOPTER_VLLM_SAMPLING_JSON", values)
+    policy = _json_env("HELICOPTER_LIGHTEEVAL_G1H_POLICY", values)
     for key in (
         "metric",
         "avg_k",
@@ -271,10 +272,10 @@ def _sampling_config() -> dict[str, Any]:
     ):
         if key in policy:
             sampling[key] = policy[key]
-    prompt_mode = os.environ.get("HELICOPTER_SCOREBOARD_PROMPT_MODE", "").strip()
+    prompt_mode = values.get("HELICOPTER_SCOREBOARD_PROMPT_MODE", "").strip()
     if prompt_mode:
         sampling["prompt_mode"] = prompt_mode
-    request_policy = _json_env("HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY")
+    request_policy = _json_env("HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY", values)
     task_policies = request_policy.get("tasks")
     if isinstance(task_policies, Mapping) and len(task_policies) == 1:
         task_name, task_policy = next(iter(task_policies.items()))
@@ -288,6 +289,10 @@ def _sampling_config() -> dict[str, Any]:
                 "sampling": _jsonable(task_policy.get("sampling")),
             }
     return sampling
+
+
+def _sampling_config() -> dict[str, Any]:
+    return sampling_config_from_env(os.environ)
 
 
 def _judge_settings() -> tuple[str, str, str] | None:

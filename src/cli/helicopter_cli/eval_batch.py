@@ -24,7 +24,7 @@ from .benchmark_catalog_defaults import (
     CATALOG_SOURCE,
     CATALOG_TARGET_KIND,
 )
-from .commands import local_openai_base_url, resolve_model_entry, table
+from .commands import build_lighteval_plan, local_openai_base_url, resolve_model_entry, table
 from .env import env_value, pick
 from .eval_run import (
     SCOREBOARD_LOCK,
@@ -442,6 +442,7 @@ async def _query_completed_datasets(
     model_name: str,
     datasets: list[str],
     root: Path,
+    identities: dict[str, tuple[str, dict[str, Any]]] | None = None,
 ) -> set[str]:
     scoreboard_path = root / "src/scoreboard-server"
     if str(scoreboard_path) not in sys.path:
@@ -457,24 +458,47 @@ async def _query_completed_datasets(
     try:
         normalized_model = normalize_model_name(model_name)
         for dataset in datasets:
-            exact_exists = await Score.filter(
+            exact_query = Score.filter(
                 task__model__model_name=normalized_model,
                 task__benchmark__benchmark_name=dataset,
                 task__benchmark__benchmark_split="",
                 task__is_tmp=False,
                 task__status="Completed",
-            ).exists()
+            )
+            identity = (identities or {}).get(dataset)
+            if identity is not None:
+                config_path, sampling_config = identity
+                exact_query = exact_query.filter(task__config_path=config_path)
+                exact_scores = await exact_query.prefetch_related("task")
+                exact_exists = any(
+                    json.dumps(score.task.sampling_config, sort_keys=True, separators=(",", ":"))
+                    == json.dumps(sampling_config, sort_keys=True, separators=(",", ":"))
+                    for score in exact_scores
+                )
+            else:
+                exact_exists = await exact_query.exists()
             if exact_exists:
                 completed.add(dataset)
                 continue
             name, split = split_dataset(dataset)
-            exists = await Score.filter(
+            split_query = Score.filter(
                 task__model__model_name=normalized_model,
                 task__benchmark__benchmark_name=name,
                 task__benchmark__benchmark_split=split,
                 task__is_tmp=False,
                 task__status="Completed",
-            ).exists()
+            )
+            if identity is not None:
+                config_path, sampling_config = identity
+                split_query = split_query.filter(task__config_path=config_path)
+                split_scores = await split_query.prefetch_related("task")
+                exists = any(
+                    json.dumps(score.task.sampling_config, sort_keys=True, separators=(",", ":"))
+                    == json.dumps(sampling_config, sort_keys=True, separators=(",", ":"))
+                    for score in split_scores
+                )
+            else:
+                exists = await split_query.exists()
             if exists:
                 completed.add(dataset)
     finally:
@@ -487,6 +511,33 @@ def unit_dataset_names(unit: BatchUnit) -> dict[str, str]:
     if unit.kind == "lighteval":
         return {task: scoreboard_dataset_name(task) for task in unit.tasks}
     return {task: task for task in unit.tasks}
+
+
+def lighteval_scoreboard_identities(
+    unit: BatchUnit,
+    *,
+    args: Any,
+    config: dict[str, Any],
+    env: dict[str, str],
+    root: Path,
+) -> dict[str, tuple[str, dict[str, Any]]]:
+    """Resolve the same config identity used when a LightEval task is stored."""
+
+    from .scoreboard_bridge import sampling_config_from_env
+
+    identities: dict[str, tuple[str, dict[str, Any]]] = {}
+    for task in unit.tasks:
+        task_unit = BatchUnit(model=unit.model, kind=unit.kind, tasks=[task])
+        task_args = _unit_args(args, task_unit, GpuSlot(index=0, gpu=None, port=0))
+        plan = build_lighteval_plan(task_args, root=root, env=env, config=config)
+        config_path = plan.env.get("HELICOPTER_SCOREBOARD_CONFIG_PATH", "")
+        if not config_path:
+            raise RuntimeError("LightEval plan did not resolve a scoreboard config path")
+        identities[scoreboard_dataset_name(task)] = (
+            config_path,
+            sampling_config_from_env(plan.env),
+        )
+    return identities
 
 
 def filter_completed_units(
@@ -503,6 +554,17 @@ def filter_completed_units(
         unit_args = copy.copy(args)
         unit_args.model = unit.model
         model_name = scoreboard_model_name(unit_args, config)
+        identities = (
+            lighteval_scoreboard_identities(
+                unit,
+                args=args,
+                config=config,
+                env=env,
+                root=root,
+            )
+            if unit.kind == "lighteval"
+            else None
+        )
         try:
             with SCOREBOARD_LOCK, _scoreboard_env(env):
                 completed = asyncio.run(
@@ -510,6 +572,7 @@ def filter_completed_units(
                         model_name=model_name,
                         datasets=sorted(set(mapping.values())),
                         root=root,
+                        identities=identities,
                     )
                 )
         except Exception as error:  # noqa: BLE001 - fall back to running everything

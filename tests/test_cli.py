@@ -5438,7 +5438,10 @@ class EvalBatchTests(unittest.TestCase):
             eval_batch.BatchUnit(model="g1d-0.4b", kind="fc", tasks=["bfcl_v3"]),
         ]
 
-        async def fake_query(*, model_name, datasets, root):
+        captured_identities = {}
+
+        async def fake_query(*, model_name, datasets, root, identities=None):
+            captured_identities.update(identities or {})
             return {"gsm8k", "bfcl_v3"} & set(datasets)
 
         with mock.patch.object(eval_batch, "_query_completed_datasets", fake_query):
@@ -5450,6 +5453,9 @@ class EvalBatchTests(unittest.TestCase):
         self.assertEqual(units[0].status, "pending")
         self.assertEqual(units[1].tasks, [])
         self.assertEqual(units[1].status, "skipped")
+        gsm8k_config_path, gsm8k_sampling = captured_identities["gsm8k"]
+        self.assertTrue(gsm8k_config_path.endswith("configs/example.toml"))
+        self.assertIsInstance(gsm8k_sampling, dict)
 
     def test_run_unit_retries_and_records_failure(self) -> None:
         loaded = load_example_config()
