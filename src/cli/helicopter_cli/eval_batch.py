@@ -38,6 +38,8 @@ from .function_calling import run_function_calling_eval
 
 DEFAULT_GPU_IDLE_MIB = 2048.0
 DEFAULT_PORT_BASE = 8000
+OPEN_FILE_RESERVE_MIN = 128
+OPEN_FILES_PER_REQUEST = 4
 
 UNIT_KINDS = ("lighteval", "fc")
 
@@ -254,6 +256,7 @@ def derive_model_concurrency(
     running_requests: int = 0,
     waiting_requests: int = 0,
     source: str = "fallback",
+    open_file_limit: int | None = None,
 ) -> ModelConcurrency:
     rollout_n = max(1, int(rollout_n))
     pending_benchmarks = max(1, int(pending_benchmarks))
@@ -269,6 +272,10 @@ def derive_model_concurrency(
     concurrent_requests = request_slots
     if configured_request_ceiling is not None:
         concurrent_requests = min(concurrent_requests, max(1, int(configured_request_ceiling)))
+    open_file_cap = request_cap_from_open_files(open_file_limit)
+    if open_file_cap is not None and concurrent_requests > open_file_cap:
+        concurrent_requests = open_file_cap
+        source = f"{source}+nofile:{open_file_limit}"
     return ModelConcurrency(
         model,
         benchmark_workers,
@@ -279,6 +286,30 @@ def derive_model_concurrency(
         waiting_requests,
         source,
     )
+
+
+def soft_open_file_limit() -> int | None:
+    """Return the process FD ceiling when the platform exposes RLIMIT_NOFILE."""
+
+    try:
+        import resource
+
+        soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft == resource.RLIM_INFINITY:
+            return None
+        return max(0, int(soft))
+    except (ImportError, OSError, ValueError):
+        return None
+
+
+def request_cap_from_open_files(open_file_limit: int | None) -> int | None:
+    """Reserve descriptors for Python, HTTP, database, and dataset files."""
+
+    if open_file_limit is None:
+        return None
+    reserve = max(OPEN_FILE_RESERVE_MIN, int(open_file_limit) // 8)
+    usable = max(OPEN_FILES_PER_REQUEST, int(open_file_limit) - reserve)
+    return max(1, usable // OPEN_FILES_PER_REQUEST)
 
 
 def resolve_model_concurrency(
@@ -308,6 +339,7 @@ def resolve_model_concurrency(
             rollout_n=rollout_n,
             max_num_seqs=None,
             configured_request_ceiling=ceiling,
+            open_file_limit=soft_open_file_limit(),
         )
     infer_config = model_config.get("infer") if isinstance(model_config.get("infer"), dict) else {}
     configured_max = infer_config.get("max_num_seqs") or model_config.get("max_num_seqs")
@@ -346,6 +378,7 @@ def resolve_model_concurrency(
         running_requests=running,
         waiting_requests=waiting,
         source=source,
+        open_file_limit=soft_open_file_limit(),
     )
 
 

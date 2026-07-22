@@ -5071,6 +5071,23 @@ class EvalBatchTests(unittest.TestCase):
         self.assertEqual(backpressured.benchmark_workers, 1)
         self.assertEqual(backpressured.concurrent_requests, 1)
 
+    def test_model_concurrency_reserves_process_file_descriptors(self) -> None:
+        self.assertEqual(eval_batch.request_cap_from_open_files(1024), 224)
+        self.assertIsNone(eval_batch.request_cap_from_open_files(None))
+
+        plan = eval_batch.derive_model_concurrency(
+            model="rwkv",
+            pending_benchmarks=12,
+            rollout_n=1,
+            max_num_seqs=1024,
+            configured_request_ceiling=None,
+            source="model_config",
+            open_file_limit=1024,
+        )
+        self.assertEqual(plan.benchmark_workers, 1)
+        self.assertEqual(plan.concurrent_requests, 224)
+        self.assertEqual(plan.source, "model_config+nofile:1024")
+
     def test_unit_args_assigns_slot_base_url_and_joined_tasks(self) -> None:
         unit = eval_batch.BatchUnit(model="m", kind="lighteval", tasks=["gsm8k|0", "mmlu|0"])
         slot = eval_batch.GpuSlot(index=1, gpu=3, port=8001)
