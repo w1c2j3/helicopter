@@ -648,9 +648,6 @@ def build_lighteval_plan(
     prompt_template = str(prompt.get("template") or "")
     if prompt_template:
         plan_env["HELICOPTER_PROMPT_TEMPLATE"] = prompt_template
-    plan_env["HELICOPTER_STRIP_TERMINAL_FLOWER"] = (
-        "1" if bool(prompt.get("strip_terminal_flower", False)) else "0"
-    )
     prompt_mode = str(prompt.get("mode") or "").strip()
     if prompt_mode:
         plan_env["HELICOPTER_SCOREBOARD_PROMPT_MODE"] = prompt_mode

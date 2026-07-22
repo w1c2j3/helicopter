@@ -3,7 +3,6 @@
 [prompt]
 mode = "normal_cot"
 template = "User✿{query}✿\nBot✿<think"
-strip_terminal_flower = true
 allowed_domains = ["math", "knowledge"]
 
 [prompt.domains.knowledge]

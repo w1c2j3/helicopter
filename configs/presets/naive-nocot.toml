@@ -3,7 +3,6 @@
 [prompt]
 mode = "naive_nocot"
 template = "User: {query}\nAssistant: <think></think"
-strip_terminal_flower = false
 allowed_domains = ["math", "coding", "instruction_following", "knowledge"]
 
 [prompt.domains.coding]

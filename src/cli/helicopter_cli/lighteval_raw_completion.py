@@ -22,7 +22,6 @@ from lighteval.utils.cache_management import cached
 
 
 _TEMPLATE_ENV = "HELICOPTER_PROMPT_TEMPLATE"
-_STRIP_FLOWER_ENV = "HELICOPTER_STRIP_TERMINAL_FLOWER"
 _TASK_REQUEST_POLICY_ENV = "HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"
 
 
@@ -188,12 +187,6 @@ def _served_model(model: str) -> str:
     return model.split("/", 1)[1] if model.startswith("openai/") else model
 
 
-def _strip_terminal_flower(text: str) -> str:
-    if os.environ.get(_STRIP_FLOWER_ENV, "").strip().lower() not in {"1", "true", "yes", "on"}:
-        return text
-    return re.sub(r"✿\s*$", "", text)
-
-
 def _api_headers(self: LiteLLMClient) -> dict[str, str]:
     headers = {"Content-Type": "application/json"}
     api_key = os.environ.get("HELICOPTER_EVAL_API_KEY") or self.api_key or os.environ.get("OPENAI_API_KEY")
@@ -335,7 +328,7 @@ def _request(
             choices = sorted(body.get("choices") or [], key=lambda item: item.get("index", 0))
             if not choices:
                 raise RuntimeError(f"completion response has no choices: {body!r}")
-            raw_texts = [_strip_terminal_flower(str(choice.get("text") or "")) for choice in choices]
+            raw_texts = [str(choice.get("text") or "") for choice in choices]
             texts = [_strip_prefill_continuation(text, prompt_template) for text in raw_texts]
             result = ModelResponse(text=texts, input=prompt)
             result.raw_text = raw_texts

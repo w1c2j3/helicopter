@@ -3,7 +3,6 @@
 [prompt]
 mode = "naive_cot"
 template = "User: {query}\nAssistant: <think"
-strip_terminal_flower = false
 allowed_domains = ["math", "knowledge"]
 
 [prompt.domains.knowledge]
