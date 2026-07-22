@@ -1894,6 +1894,35 @@ class CommandPlanTests(unittest.TestCase):
                     config=loaded_config,
                 )
 
+    def test_nocot_preset_distinguishes_code_generation_from_cs_choices(self) -> None:
+        for preset, expected_prefix in (
+            ("configs/presets/naive-nocot.toml", "User:"),
+            ("configs/presets/normal-nocot.toml", "User✿"),
+        ):
+            with self.subTest(preset=preset):
+                loaded_config, _ = config.load_config(ROOT, preset)
+                plan = commands.build_lighteval_plan(
+                    lighteval_args(
+                        model="deployed",
+                        tasks="lcb:codegeneration|0,mmlu:machine_learning|0,ceval_zho_mcf:college_programming|0",
+                        config=preset,
+                    ),
+                    root=ROOT,
+                    env={},
+                    config=loaded_config,
+                )
+
+                tasks = json.loads(plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"])["tasks"]
+                self.assertEqual(tasks["lcb:codegeneration"]["format"], "code")
+                self.assertIn("fenced code block", tasks["lcb:codegeneration"]["prompt_template"])
+                self.assertTrue(tasks["lcb:codegeneration"]["prompt_template"].startswith(expected_prefix))
+                for task_name in ("mmlu:machine_learning", "ceval_zho_mcf:college_programming"):
+                    self.assertEqual(tasks[task_name]["format"], "choice")
+                    self.assertNotIn("fenced code block", tasks[task_name]["prompt_template"])
+                    self.assertIn("option letter", tasks[task_name]["prompt_template"])
+                    self.assertTrue(tasks[task_name]["prompt_template"].startswith(expected_prefix))
+                    self.assertEqual(tasks[task_name]["sampling"]["max_tokens"], 512)
+
     def test_nocot_server_preset_keeps_domain_token_budgets_in_toml(self) -> None:
         loaded_config, _ = config.load_config(ROOT, "configs/presets/normal-nocot.toml")
         plan = commands.build_lighteval_plan(

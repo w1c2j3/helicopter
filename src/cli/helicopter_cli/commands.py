@@ -423,7 +423,7 @@ def resolve_lighteval_task_request_policy(
 ) -> dict[str, Any]:
     """Resolve TOML domain settings to exact LightEval task request settings."""
 
-    from .non_fc_lighteval_catalog import domain_for_task
+    from .non_fc_lighteval_catalog import domain_for_task, request_format_for_task
 
     stops = table(config, "stops")
     stop_domains = stops.get("domains", {})
@@ -433,10 +433,16 @@ def resolve_lighteval_task_request_policy(
     sampling_domains = sampling.get("domains", {})
     if not isinstance(sampling_domains, dict):
         raise SystemExit("[sampling.domains] must be a TOML table")
+    sampling_formats = sampling.get("formats", {})
+    if not isinstance(sampling_formats, dict):
+        raise SystemExit("[sampling.formats] must be a TOML table")
     prompt = table(config, "prompt")
     prompt_domains = prompt.get("domains", {})
     if not isinstance(prompt_domains, dict):
         raise SystemExit("[prompt.domains] must be a TOML table")
+    prompt_formats = prompt.get("formats", {})
+    if not isinstance(prompt_formats, dict):
+        raise SystemExit("[prompt.formats] must be a TOML table")
     allowed_domains = prompt.get("allowed_domains")
     if allowed_domains is not None:
         if not isinstance(allowed_domains, list) or not all(
@@ -460,14 +466,28 @@ def resolve_lighteval_task_request_policy(
         domain_sampling = sampling_domains.get(domain, {})
         if not isinstance(domain_sampling, dict):
             raise SystemExit(f"[sampling.domains.{domain}] must be a TOML table")
-        unknown = set(domain_sampling) - set(VLLM_SAMPLING_FIELDS)
-        if unknown:
-            fields = ", ".join(sorted(unknown))
+        request_format = request_format_for_task(task_name)
+        format_sampling = sampling_formats.get(request_format, {}) if request_format else {}
+        if not isinstance(format_sampling, dict):
+            raise SystemExit(f"[sampling.formats.{request_format}] must be a TOML table")
+        unknown_domain = set(domain_sampling) - set(VLLM_SAMPLING_FIELDS)
+        if unknown_domain:
+            fields = ", ".join(sorted(unknown_domain))
             raise SystemExit(f"[sampling.domains.{domain}] has unsupported fields: {fields}")
+        unknown_format = set(format_sampling) - set(VLLM_SAMPLING_FIELDS)
+        if unknown_format:
+            fields = ", ".join(sorted(unknown_format))
+            raise SystemExit(f"[sampling.formats.{request_format}] has unsupported fields: {fields}")
         domain_prompt = prompt_domains.get(domain, {})
         if not isinstance(domain_prompt, dict):
             raise SystemExit(f"[prompt.domains.{domain}] must be a TOML table")
-        prompt_template = domain_prompt.get("template", prompt.get("template"))
+        format_prompt = prompt_formats.get(request_format, {}) if request_format else {}
+        if not isinstance(format_prompt, dict):
+            raise SystemExit(f"[prompt.formats.{request_format}] must be a TOML table")
+        prompt_template = format_prompt.get(
+            "template",
+            domain_prompt.get("template", prompt.get("template")),
+        )
         if prompt_template is not None and (
             not isinstance(prompt_template, str) or "{query}" not in prompt_template
         ):
@@ -476,9 +496,10 @@ def resolve_lighteval_task_request_policy(
             )
         task_policy = {
             "domain": domain,
+            "format": request_format,
             "inherit_task_stops": bool(stops.get("inherit_task_stops", True)),
             "stop": list(domain_stops) if domain_stops is not None else None,
-            "sampling": {**base_sampling, **domain_sampling},
+            "sampling": {**base_sampling, **domain_sampling, **format_sampling},
         }
         if prompt_template is not None:
             task_policy["prompt_template"] = prompt_template

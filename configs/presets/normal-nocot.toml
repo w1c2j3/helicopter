@@ -5,8 +5,11 @@ mode = "normal_nocot"
 template = "User✿{query}✿\nBot✿<think></think"
 allowed_domains = ["math", "coding", "instruction_following", "knowledge"]
 
-[prompt.domains.coding]
+[prompt.formats.code]
 template = "User✿{query}\nOutput only one fenced code block.✿\nBot✿<think></think"
+
+[prompt.formats.choice]
+template = "User✿{query}\nGive only the final answer. For multiple-choice questions, give only the option letter.✿\nBot✿<think></think"
 
 [prompt.domains.knowledge]
 template = "User✿{query}\nGive only the final answer. For multiple-choice questions, give only the option letter.✿\nBot✿<think></think"
@@ -36,6 +39,9 @@ max_tokens = 1280
 max_tokens = 2048
 
 [sampling.domains.knowledge]
+max_tokens = 512
+
+[sampling.formats.choice]
 max_tokens = 512
 
 [lighteval]
