@@ -1818,7 +1818,7 @@ class CommandPlanTests(unittest.TestCase):
         )
 
         tasks = json.loads(plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"])["tasks"]
-        self.assertEqual(tasks["gsm8k"]["sampling"]["max_tokens"], 512)
+        self.assertEqual(tasks["gsm8k"]["sampling"]["max_tokens"], 2048)
         self.assertNotIn("max_tokens", tasks["lcb:codegeneration_v6"]["sampling"])
         self.assertEqual(tasks["ifeval"]["sampling"]["max_tokens"], 1280)
         self.assertEqual(tasks["arc:challenge"]["sampling"]["max_tokens"], 512)

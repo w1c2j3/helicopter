@@ -34,7 +34,7 @@ penalty_decay = 0.988
 max_tokens = 1280
 
 [sampling.domains.math]
-max_tokens = 512
+max_tokens = 2048
 
 [sampling.domains.knowledge]
 max_tokens = 512
