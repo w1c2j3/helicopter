@@ -9,9 +9,9 @@ TARGET_PER_DOMAIN = 30
 EXPECTED_FIELDS = ("math", "coding", "instruction_following", "knowledge")
 REQUIRED_TASKS = (
     "mmlu:professional_law",
-    "gpqa:diamond",
     "arc:challenge",
     "truthfulqa:mc",
+    "commonsenseqa",
     "natural_questions",
     "triviaqa",
     "squad_v2",
