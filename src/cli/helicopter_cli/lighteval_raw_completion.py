@@ -174,6 +174,15 @@ def _completion_url(base_url: str | None) -> str:
     return f"{base}/completions" if base.endswith("/v1") else f"{base}/v1/completions"
 
 
+def _tokenize_url(base_url: str | None) -> str:
+    if not base_url:
+        raise RuntimeError("raw completion mode requires a base_url")
+    base = base_url.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    return f"{base}/tokenize"
+
+
 def _served_model(model: str) -> str:
     return model.split("/", 1)[1] if model.startswith("openai/") else model
 
@@ -182,6 +191,65 @@ def _strip_terminal_flower(text: str) -> str:
     if os.environ.get(_STRIP_FLOWER_ENV, "").strip().lower() not in {"1", "true", "yes", "on"}:
         return text
     return re.sub(r"✿\s*$", "", text)
+
+
+def _api_headers(self: LiteLLMClient) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    api_key = os.environ.get("HELICOPTER_EVAL_API_KEY") or self.api_key or os.environ.get("OPENAI_API_KEY")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def _effective_max_tokens(task_name: str | None, default: int | None) -> int | None:
+    global_sampling = load_sampling_overrides()
+    value = global_sampling.get("max_tokens", default)
+    task_sampling = _configured_sampling(task_name)
+    return task_sampling.get("max_tokens", value)
+
+
+def _fit_max_tokens_to_context(
+    self: LiteLLMClient,
+    *,
+    prompt: str,
+    requested_max_tokens: int | None,
+) -> int | None:
+    """Fit output tokens to the exact context window without truncating input."""
+
+    if requested_max_tokens is None:
+        return None
+    requested = int(requested_max_tokens)
+    if requested <= 0:
+        raise RuntimeError(f"max_tokens must be positive, got {requested}")
+    max_model_length = int(self.max_length)
+    # RWKV token count is bounded by UTF-8 bytes plus BOS. Only potentially
+    # tight prompts need an authoritative endpoint tokenization round trip.
+    if len(prompt.encode("utf-8")) + 1 + requested <= max_model_length:
+        return requested
+
+    response = requests.post(
+        _tokenize_url(self.base_url),
+        headers=_api_headers(self),
+        json={"model": _served_model(self.model), "prompt": prompt},
+        timeout=self.timeout or 180,
+    )
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as error:
+        raise RuntimeError(
+            f"tokenize endpoint returned HTTP {response.status_code}: {response.text[:2_000]}"
+        ) from error
+    body = response.json()
+    prompt_tokens = int(body["count"])
+    endpoint_max = int(body.get("max_model_len") or max_model_length)
+    context_limit = min(max_model_length, endpoint_max)
+    available = context_limit - prompt_tokens
+    if available < 1:
+        raise RuntimeError(
+            f"prompt has {prompt_tokens} tokens but model context is {context_limit}; "
+            "input truncation is disabled"
+        )
+    return min(requested, available)
 
 
 def _request(
@@ -198,8 +266,9 @@ def _request(
 ) -> ModelResponse:
     overrides = load_sampling_overrides()
     configured_stop = overrides.pop("stop", None)
-    configured_max = overrides.pop("max_tokens", None)
+    overrides.pop("max_tokens", None)
     overrides.update(_configured_sampling(task_name))
+    overrides.pop("max_tokens", None)
     task_policy = _task_request_policy(task_name)
     task_policy_stop = _configured_stops(task_name, stops)
     effective_stop = task_policy_stop if task_policy else (
@@ -208,16 +277,13 @@ def _request(
     payload: dict[str, Any] = {
         "model": _served_model(self.model),
         "prompt": prompt,
-        "max_tokens": max_tokens if force_max_tokens else (configured_max if configured_max is not None else max_tokens),
+        "max_tokens": max_tokens if force_max_tokens else _effective_max_tokens(task_name, max_tokens),
         "n": int(num_samples),
         "stop": stops if force_stops else effective_stop,
         **overrides,
     }
     payload = {key: value for key, value in payload.items() if value is not None}
-    headers = {"Content-Type": "application/json"}
-    api_key = os.environ.get("HELICOPTER_EVAL_API_KEY") or self.api_key or os.environ.get("OPENAI_API_KEY")
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    headers = _api_headers(self)
     last_error: Exception | None = None
     for attempt in range(self.API_MAX_RETRY):
         try:
@@ -315,8 +381,71 @@ def _stored_generation(task_id: str | None) -> dict[int, dict[int, dict[str, Any
         model_response = agent_result.get("model_response")
         if not isinstance(model_response, dict):
             continue
-        grouped.setdefault(int(row["sample_index"]), {})[int(row["repeat_index"])] = model_response
+        stats = context.get("stats") if isinstance(context.get("stats"), dict) else {}
+        doc = agent_result.get("doc") if isinstance(agent_result.get("doc"), dict) else {}
+        stages = context.get("stages") if isinstance(context.get("stages"), list) else []
+        first_stage = stages[0] if stages and isinstance(stages[0], dict) else {}
+        grouped.setdefault(int(row["sample_index"]), {})[int(row["repeat_index"])] = {
+            "model_response": model_response,
+            "dataset_row_id": stats.get(
+                "dataset_row_id",
+                stats.get("lighteval_doc_id", doc.get("id", context.get("task_id"))),
+            ),
+            "prompt": first_stage.get("prompt"),
+        }
     return grouped
+
+
+def _doc_id(doc: Any) -> Any:
+    if isinstance(doc, dict):
+        return doc.get("id")
+    return getattr(doc, "id", None)
+
+
+def _identity_value(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _validated_stored_rollouts(
+    checkpoints: dict[int, dict[str, Any]],
+    *,
+    sample_index: int,
+    doc: Any,
+    prompt: str,
+) -> dict[int, dict[str, Any]]:
+    """Reject stale checkpoints whose raw dataset identity no longer matches."""
+
+    current_doc_id = _doc_id(doc)
+    rollouts: dict[int, dict[str, Any]] = {}
+    for repeat_index, checkpoint in checkpoints.items():
+        stored_doc_id = checkpoint.get("dataset_row_id")
+        stored_prompt = checkpoint.get("prompt")
+        if stored_doc_id is None and not isinstance(stored_prompt, str):
+            raise RuntimeError(
+                f"generation checkpoint {sample_index}/{repeat_index} has no dataset identity; "
+                "refusing unsafe index-only resume"
+            )
+        if (
+            stored_doc_id is not None
+            and current_doc_id is not None
+            and _identity_value(stored_doc_id) != _identity_value(current_doc_id)
+        ):
+            raise RuntimeError(
+                f"generation checkpoint {sample_index}/{repeat_index} belongs to dataset row "
+                f"{stored_doc_id!r}, not current row {current_doc_id!r}; refusing mismatched resume"
+            )
+        if isinstance(stored_prompt, str) and stored_prompt != prompt:
+            raise RuntimeError(
+                f"generation checkpoint {sample_index}/{repeat_index} prompt changed for dataset "
+                f"row {current_doc_id!r}; refusing mismatched resume"
+            )
+        model_response = checkpoint.get("model_response")
+        if not isinstance(model_response, dict):
+            raise RuntimeError(
+                f"generation checkpoint {sample_index}/{repeat_index} has no model response"
+            )
+        rollouts[int(repeat_index)] = model_response
+    return rollouts
 
 
 def _response_rollouts(response: ModelResponse) -> list[dict[str, Any]]:
@@ -435,36 +564,98 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
             stops = split[0].stop_sequences
             responses: list[ModelResponse | None] = [None] * len(split_docs)
 
-            def generate_one(position: int, missing: list[int]) -> ModelResponse:
+            work_items: list[
+                tuple[int, int, list[int], dict[int, dict[str, Any]], int | None, int | None]
+            ] = []
+            for position, doc in enumerate(split_docs):
+                sample_index = original_indices.get(id(doc))
+                if sample_index is None:
+                    raise RuntimeError("LightEval changed document identity; cannot assign a stable sample_index")
+                existing = _validated_stored_rollouts(
+                    stored.get(sample_index, {}),
+                    sample_index=sample_index,
+                    doc=doc,
+                    prompt=prompts[position],
+                )
+                missing = [index for index in range(rollout_n) if index not in existing]
+                if not missing:
+                    responses[position] = _merge_response_rollouts(
+                        existing=existing,
+                        generated=None,
+                        generated_indices=[],
+                        rollout_n=rollout_n,
+                    )
+                    continue
+                requested_max_tokens = _effective_max_tokens(task_names[position], max_tokens)
+                fitted_max_tokens = _fit_max_tokens_to_context(
+                    self,
+                    prompt=prompts[position],
+                    requested_max_tokens=requested_max_tokens,
+                )
+                work_items.append(
+                    (
+                        position,
+                        sample_index,
+                        missing,
+                        existing,
+                        requested_max_tokens,
+                        fitted_max_tokens,
+                    )
+                )
+
+            if checkpoint_session is not None:
+                checkpoint_session.register_pending(
+                    {
+                        "task_name": task_names[position],
+                        "sample_index": sample_index,
+                        "doc": split_docs[position],
+                        "prompt": prompts[position],
+                        "repeat_indices": missing,
+                        "generation_size": fitted_max_tokens,
+                        "requested_generation_size": requested_max_tokens,
+                    }
+                    for (
+                        position,
+                        sample_index,
+                        missing,
+                        _existing,
+                        requested_max_tokens,
+                        fitted_max_tokens,
+                    ) in work_items
+                )
+
+            def generate_one(
+                position: int,
+                missing: list[int],
+                fitted_max_tokens: int | None,
+            ) -> ModelResponse:
                 response = _request(
                     self,
                     prompts[position],
-                    max_tokens,
+                    fitted_max_tokens,
                     len(missing),
                     stops,
                     prompt_template=templates[position],
+                    force_max_tokens=True,
                     task_name=task_names[position],
                 )
                 return _postprocess_choice_response(split_docs[position], response)
 
             with ThreadPoolExecutor(self.concurrent_requests) as executor:
-                futures: dict[Any, tuple[int, int, list[int], dict[int, dict[str, Any]]]] = {}
-                for position, doc in enumerate(split_docs):
-                    sample_index = original_indices.get(id(doc))
-                    if sample_index is None:
-                        raise RuntimeError("LightEval changed document identity; cannot assign a stable sample_index")
-                    existing = stored.get(sample_index, {})
-                    missing = [index for index in range(rollout_n) if index not in existing]
-                    if not missing:
-                        responses[position] = _merge_response_rollouts(
-                            existing=existing,
-                            generated=None,
-                            generated_indices=[],
-                            rollout_n=rollout_n,
-                        )
-                        continue
-                    future = executor.submit(generate_one, position, missing)
-                    futures[future] = (position, sample_index, missing, existing)
+                futures: dict[
+                    Any,
+                    tuple[int, int, list[int], dict[int, dict[str, Any]], int | None],
+                ] = {}
+                for (
+                    position,
+                    sample_index,
+                    missing,
+                    existing,
+                    _requested_max_tokens,
+                    fitted_max_tokens,
+                ) in work_items:
+                    future = executor.submit(generate_one, position, missing, fitted_max_tokens)
+                    futures[future] = (position, sample_index, missing, existing, fitted_max_tokens)
 
                 for future in tqdm(
                     as_completed(futures),
@@ -474,7 +665,7 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                     leave=False,
                     disable=self.disable_tqdm,
                 ):
-                    position, sample_index, missing, existing = futures[future]
+                    position, sample_index, missing, existing, fitted_max_tokens = futures[future]
                     generated = future.result()
                     doc = split_docs[position]
                     task_name = str(getattr(doc, "task_name", "") or dataset_name)
@@ -487,7 +678,7 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                         doc=doc,
                         response=generated,
                         repeat_indices=missing,
-                        generation_size=max_tokens,
+                        generation_size=int(fitted_max_tokens or max_tokens),
                         checkpoint_session=checkpoint_session,
                     )
                     responses[position] = _merge_response_rollouts(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -1054,6 +1055,55 @@ def _generation_payloads(
     return payloads
 
 
+def _pending_generation_payloads(
+    *,
+    task_name: str,
+    sample_index: int,
+    doc: Any,
+    prompt: str,
+    repeat_indices: Iterable[int],
+    generation_size: int | None = None,
+    requested_generation_size: int | None = None,
+) -> list[dict[str, Any]]:
+    """Build pre-request rows so failed samples retain an exact DB identity."""
+
+    doc_payload = _jsonable(doc)
+    if not isinstance(doc_payload, dict):
+        doc_payload = {"value": doc_payload}
+    sampling_config = _sampling_config()
+    if generation_size is not None:
+        sampling_config["effective_generation_size"] = int(generation_size)
+    if requested_generation_size is not None:
+        sampling_config["requested_generation_size"] = int(requested_generation_size)
+    doc_id = doc_payload.get("id")
+    prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    return [
+        {
+            "_stage": "generation",
+            "status": "Running",
+            "sample_index": int(sample_index),
+            "repeat_index": int(repeat_index),
+            "pass_index": 0,
+            "prompt1": prompt,
+            "completion1": "",
+            "stop_reason1": None,
+            "sampling_config": sampling_config,
+            "stats": {
+                "lighteval_task": task_name,
+                "generation_manifest": True,
+                "stable_sample_index": int(sample_index),
+                "lighteval_doc_id": doc_id,
+                "dataset_row_id": doc_id,
+                "prompt_sha256": prompt_sha256,
+                "identity_contract": "lighteval_sample_index+dataset_row_id+prompt_sha256",
+            },
+            "agent_result": {"doc": _compact_lighteval_doc(doc_payload)},
+            "task_id": doc_id,
+        }
+        for repeat_index in repeat_indices
+    ]
+
+
 async def _checkpoint_generation(
     *,
     task_id: str,
@@ -1149,6 +1199,26 @@ class LightevalCheckpointSession:
             repeat_indices=repeat_indices,
             generation_size=generation_size,
         )
+        return self._loop.run_until_complete(self._write(payloads))
+
+    def register_pending(self, requests: Iterable[Mapping[str, Any]]) -> int:
+        """Persist every request identity before any endpoint call is submitted."""
+
+        if self._loop is None:
+            raise RuntimeError("LightEval checkpoint session is not open")
+        payloads: list[dict[str, Any]] = []
+        for request in requests:
+            payloads.extend(
+                _pending_generation_payloads(
+                    task_name=str(request["task_name"]),
+                    sample_index=int(request["sample_index"]),
+                    doc=request["doc"],
+                    prompt=str(request["prompt"]),
+                    repeat_indices=request["repeat_indices"],
+                    generation_size=request.get("generation_size"),
+                    requested_generation_size=request.get("requested_generation_size"),
+                )
+            )
         return self._loop.run_until_complete(self._write(payloads))
 
     def __exit__(self, exc_type: Any, exc: BaseException | None, traceback: Any) -> None:

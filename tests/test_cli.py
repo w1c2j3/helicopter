@@ -589,6 +589,93 @@ class RawCompletionTests(unittest.TestCase):
             ):
                 lighteval_raw_completion._request(client, "prompt", 32, 1, None)
 
+    def test_context_budget_uses_endpoint_token_count_only_for_tight_prompts(self) -> None:
+        client = SimpleNamespace(
+            model="openai/rwkv-test",
+            base_url="http://127.0.0.1:19315/v1",
+            api_key="key",
+            timeout=10,
+            max_length=10240,
+        )
+        with mock.patch.object(lighteval_raw_completion.requests, "post") as post:
+            self.assertEqual(
+                lighteval_raw_completion._fit_max_tokens_to_context(
+                    client,
+                    prompt="short prompt",
+                    requested_max_tokens=1280,
+                ),
+                1280,
+            )
+            post.assert_not_called()
+
+        tokenized = mock.Mock()
+        tokenized.raise_for_status.return_value = None
+        tokenized.json.return_value = {"count": 8961, "max_model_len": 10240}
+        with mock.patch.object(
+            lighteval_raw_completion.requests,
+            "post",
+            return_value=tokenized,
+        ) as post:
+            self.assertEqual(
+                lighteval_raw_completion._fit_max_tokens_to_context(
+                    client,
+                    prompt="x" * 9000,
+                    requested_max_tokens=1280,
+                ),
+                1279,
+            )
+
+        self.assertEqual(post.call_args.args[0], "http://127.0.0.1:19315/tokenize")
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "rwkv-test")
+
+    def test_forced_context_budget_cannot_be_overridden_by_task_sampling(self) -> None:
+        response = mock.Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [{"index": 0, "text": "answer", "finish_reason": "stop"}],
+            "usage": {},
+        }
+        client = SimpleNamespace(
+            model="openai/model",
+            base_url="http://127.0.0.1:29573/v1",
+            api_key="key",
+            timeout=10,
+            API_MAX_RETRY=1,
+            API_RETRY_SLEEP=0,
+            API_RETRY_MULTIPLIER=1,
+        )
+        policy = {
+            "tasks": {
+                "ifbench_multiturn": {
+                    "sampling": {"max_tokens": 1280, "temperature": 0.96},
+                }
+            }
+        }
+        with mock.patch.dict(
+            os.environ,
+            {"HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY": json.dumps(policy)},
+            clear=False,
+        ), mock.patch.object(
+            lighteval_raw_completion,
+            "load_sampling_overrides",
+            return_value={"max_tokens": 1280},
+        ), mock.patch.object(
+            lighteval_raw_completion.requests,
+            "post",
+            return_value=response,
+        ) as post:
+            lighteval_raw_completion._request(
+                client,
+                "prompt",
+                1279,
+                1,
+                None,
+                force_max_tokens=True,
+                task_name="g1h__ifbench_multiturn|0",
+            )
+
+        self.assertEqual(post.call_args.kwargs["json"]["max_tokens"], 1279)
+
     def test_scoreboard_keeps_full_completion_and_extracted_eval_answer_separate(self) -> None:
         response = ModelResponse(text=["Reasoning. Answer: B"], text_post_processed=[" B"])
         response.finish_reason = "stop"
@@ -643,6 +730,65 @@ class RawCompletionTests(unittest.TestCase):
         close_db.assert_awaited_once()
         store.ensure_benchmark_num_samples.assert_awaited_once_with(dataset="gsm8k", num_samples=2)
         self.assertEqual(store.insert_completion_payloads_batch.await_count, 2)
+
+    def test_pending_generation_manifest_keeps_exact_prompt_and_doc_identity(self) -> None:
+        payload = scoreboard_bridge._pending_generation_payloads(
+            task_name="g1h__ifbench_multiturn|0",
+            sample_index=247,
+            doc={"id": "raw-row-1309", "task_name": "g1h__ifbench_multiturn|0"},
+            prompt="User: exact long prompt\nAssistant: <think></think",
+            repeat_indices=[0],
+            generation_size=1279,
+            requested_generation_size=1280,
+        )[0]
+
+        self.assertEqual(payload["status"], "Running")
+        self.assertEqual(payload["sample_index"], 247)
+        self.assertEqual(payload["task_id"], "raw-row-1309")
+        self.assertEqual(payload["prompt1"], "User: exact long prompt\nAssistant: <think></think")
+        self.assertEqual(payload["agent_result"]["doc"]["id"], "raw-row-1309")
+        self.assertEqual(payload["stats"]["stable_sample_index"], 247)
+        self.assertEqual(payload["stats"]["lighteval_doc_id"], "raw-row-1309")
+        self.assertEqual(payload["stats"]["dataset_row_id"], "raw-row-1309")
+        self.assertEqual(len(payload["stats"]["prompt_sha256"]), 64)
+        self.assertEqual(payload["sampling_config"]["effective_generation_size"], 1279)
+        self.assertEqual(payload["sampling_config"]["requested_generation_size"], 1280)
+
+    def test_resume_rejects_lighteval_index_to_dataset_row_mismatch(self) -> None:
+        checkpoint = {
+            0: {
+                "model_response": {"text": ["stale answer"]},
+                "dataset_row_id": 1309,
+                "prompt": "User: old row\nAssistant: <think></think",
+            }
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "not current row 1386"):
+            lighteval_raw_completion._validated_stored_rollouts(
+                checkpoint,
+                sample_index=1386,
+                doc={"id": 1386},
+                prompt="User: new row\nAssistant: <think></think",
+            )
+
+    def test_resume_accepts_only_matching_dataset_row_and_prompt(self) -> None:
+        model_response = {"text": ["answer"]}
+        checkpoint = {
+            0: {
+                "model_response": model_response,
+                "dataset_row_id": 1309,
+                "prompt": "User: exact row\nAssistant: <think></think",
+            }
+        }
+
+        restored = lighteval_raw_completion._validated_stored_rollouts(
+            checkpoint,
+            sample_index=1386,
+            doc={"id": 1309},
+            prompt="User: exact row\nAssistant: <think></think",
+        )
+
+        self.assertEqual(restored, {0: model_response})
 
     def test_task_request_policy_combines_native_and_toml_stops(self) -> None:
         policy = {
