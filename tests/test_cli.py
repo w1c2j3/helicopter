@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from lighteval.models.model_output import ModelResponse
+from lighteval.tasks.tasks.ifbench import instructions as ifbench_instructions
 
 from helicopter_cli import __main__ as helicopter_main
 from helicopter_cli import (
@@ -428,6 +429,28 @@ def build_takeoff_plan(
 
 
 class RawCompletionTests(unittest.TestCase):
+    def test_ifbench_resource_check_never_downloads_during_scoring(self) -> None:
+        with mock.patch.object(ifbench_instructions.nltk.data, "find"), mock.patch.object(
+            ifbench_instructions.spacy,
+            "load",
+        ), mock.patch.object(ifbench_instructions.nltk, "download") as nltk_download:
+            ifbench_instructions._ensure_local_resources()
+
+        nltk_download.assert_not_called()
+
+    def test_ifbench_missing_resource_fails_before_scoring_without_network(self) -> None:
+        with mock.patch.object(
+            ifbench_instructions.nltk.data,
+            "find",
+            side_effect=LookupError,
+        ), mock.patch.object(ifbench_instructions.nltk, "download") as nltk_download, self.assertRaisesRegex(
+            RuntimeError,
+            "requires preinstalled NLTK resources",
+        ):
+            ifbench_instructions._ensure_local_resources()
+
+        nltk_download.assert_not_called()
+
     def test_database_checkpoint_path_is_not_bypassed_by_lighteval_file_cache(self) -> None:
         from lighteval.models.endpoints.litellm_model import LiteLLMClient, LiteLLMModelConfig
 

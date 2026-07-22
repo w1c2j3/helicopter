@@ -70,6 +70,33 @@ _NUM_CONJUNCTIONS = 6
 RESOURCES_DOWNLOADED: bool = False
 
 
+def _ensure_local_resources() -> None:
+    """Validate IFBench NLP assets without doing network I/O during scoring."""
+
+    missing = []
+    for resource, path in (
+        ("punkt_tab", "tokenizers/punkt_tab"),
+        ("averaged_perceptron_tagger_eng", "taggers/averaged_perceptron_tagger_eng"),
+    ):
+        try:
+            nltk.data.find(path)
+        except LookupError:
+            missing.append(resource)
+    if missing:
+        names = " ".join(missing)
+        raise RuntimeError(
+            "IFBench scoring requires preinstalled NLTK resources; prepare the environment "
+            f"before evaluation with: python -m nltk.downloader {names}"
+        )
+    try:
+        spacy.load("en_core_web_sm")
+    except OSError as error:
+        raise RuntimeError(
+            "IFBench scoring requires the preinstalled spaCy model en_core_web_sm; "
+            "prepare the environment before evaluation with: python -m spacy download en_core_web_sm"
+        ) from error
+
+
 @requires("syllapy", "spacy")
 class Instruction:
     """An instruction template."""
@@ -79,16 +106,7 @@ class Instruction:
 
         global RESOURCES_DOWNLOADED
         if not RESOURCES_DOWNLOADED:
-            nltk.download("punkt_tab")
-            nltk.download("averaged_perceptron_tagger_eng")
-
-            try:
-                spacy.load("en_core_web_sm")
-            except OSError:
-                logger.info("Downloading the spacy en_core_web_sm model\n(don't worry, this will only happen once)")
-                from spacy.cli import download
-
-                download("en_core_web_sm")
+            _ensure_local_resources()
             RESOURCES_DOWNLOADED = True
 
     def build_description(self, **kwargs):
