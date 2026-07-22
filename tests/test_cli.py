@@ -429,6 +429,79 @@ def build_takeoff_plan(
 
 
 class RawCompletionTests(unittest.TestCase):
+    def test_native_logprob_mcq_choices_are_serialized_before_generation(self) -> None:
+        from lighteval.tasks.tasks.arc import arc_challenge
+
+        configured = lighteval_g1h_policy._policy_config(
+            arc_challenge,
+            canonical_name="arc:challenge",
+            policy=G1hConfigTests.POLICY,
+        )
+        with mock.patch.dict(os.environ, {"HELICOPTER_PROMPT_TEMPLATE": "User: {query}"}, clear=False):
+            converted = configured.prompt_function(
+                {
+                    "question": "Which gas do plants absorb?",
+                    "choices": {
+                        "text": ["carbon dioxide", "oxygen", "nitrogen", "helium"],
+                        "label": ["A", "B", "C", "D"],
+                    },
+                    "answerKey": "A",
+                },
+                "arc:challenge",
+            )
+
+        self.assertEqual(
+            converted.query,
+            "Question: Which gas do plants absorb?\n"
+            "A. carbon dioxide\nB. oxygen\nC. nitrogen\nD. helium\nAnswer:",
+        )
+        self.assertEqual(converted.choices, [" A", " B", " C", " D"])
+        self.assertTrue(converted.specific["helicopter_generated_mcq"])
+        self.assertEqual(configured.metrics[0].metric_name, "avg@8")
+
+    def test_native_mcq_choices_already_in_query_are_not_duplicated(self) -> None:
+        query = "Question: Pick one.\nA. first\nB. second\nAnswer:"
+        doc = SimpleNamespace(
+            query=query,
+            choices=[" first", " second"],
+            gold_index=[1],
+            specific={},
+        )
+
+        converted = lighteval_g1h_policy._prepare_generated_mcq(doc, force=True)
+
+        self.assertEqual(converted.query, query)
+        self.assertEqual(converted.choices, [" A", " B"])
+
+    def test_freeform_alias_references_are_not_treated_as_mcq(self) -> None:
+        doc = SimpleNamespace(
+            query="Who founded Microsoft?",
+            choices=["Microsoft Corp", "Microsoft", "MSFT"],
+            gold_index=[0, 1, 2],
+            specific={},
+        )
+
+        converted = lighteval_g1h_policy._prepare_generated_mcq(doc, force=False)
+
+        self.assertEqual(converted.query, "Who founded Microsoft?")
+        self.assertEqual(converted.choices, ["Microsoft Corp", "Microsoft", "MSFT"])
+        self.assertNotIn("helicopter_generated_mcq", converted.specific)
+
+    def test_generated_mcq_accepts_any_declared_gold_choice(self) -> None:
+        doc = SimpleNamespace(
+            gold_index=[0, 2],
+            choices=[" A", " B", " C", " D"],
+        )
+
+        self.assertEqual(
+            lighteval_g1h_policy._choice_letter_score(doc, ModelResponse(text=["Answer: C"])),
+            1.0,
+        )
+        self.assertEqual(
+            lighteval_g1h_policy._choice_letter_score(doc, ModelResponse(text=["Answer: B"])),
+            0.0,
+        )
+
     def test_ifbench_resource_check_never_downloads_during_scoring(self) -> None:
         with mock.patch.object(ifbench_instructions.nltk.data, "find"), mock.patch.object(
             ifbench_instructions.spacy,
@@ -4409,6 +4482,7 @@ class CommandPlanTests(unittest.TestCase):
         doc = SimpleNamespace(
             gold_index=2,
             choices=[" A", " B", " C", " D"],
+            specific={"helicopter_generated_mcq": True},
         )
 
         score = wrapped.sample_level_fn.compute(

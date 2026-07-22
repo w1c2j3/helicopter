@@ -13,6 +13,7 @@ import os
 import re
 from functools import lru_cache
 from pathlib import Path
+from string import ascii_uppercase
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -82,21 +83,33 @@ def _selected_task_names(policy: Mapping[str, Any]) -> list[str]:
     ]
 
 
-def _gold_index(doc: Doc) -> int | None:
+def _gold_indices(doc: Doc) -> set[int]:
     value = doc.gold_index
-    if isinstance(value, (list, tuple)):
-        value = value[0] if value else None
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
+    values = value if isinstance(value, (list, tuple)) else [value]
+    indices: set[int] = set()
+    for item in values:
+        try:
+            if item is not None:
+                indices.add(int(item))
+        except (TypeError, ValueError):
+            continue
+    return indices
+
+
+def _is_generated_mcq(doc: Doc) -> bool:
+    specific = getattr(doc, "specific", None)
+    return isinstance(specific, Mapping) and bool(specific.get("helicopter_generated_mcq"))
 
 
 def _choice_letter_score(doc: Doc, response: ModelResponse) -> float:
     """Score generated multiple-choice answers without log-likelihood calls."""
 
-    gold_index = _gold_index(doc)
-    if gold_index is None or gold_index < 0 or gold_index >= len(doc.choices):
+    gold_indices = {
+        index
+        for index in _gold_indices(doc)
+        if 0 <= index < len(doc.choices)
+    }
+    if not gold_indices:
         return 0.0
     allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ"[: len(doc.choices)])
     generated = getattr(response, "text_post_processed", None)
@@ -159,8 +172,8 @@ def _choice_letter_score(doc: Doc, response: ModelResponse) -> float:
                 prediction = match.group(1).upper()
                 break
 
-    expected = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[gold_index]
-    return 1.0 if prediction == expected else 0.0
+    expected = {ascii_uppercase[index] for index in gold_indices}
+    return 1.0 if prediction in expected else 0.0
 
 
 def _single_prediction_score(sample_fn: Any, doc: Doc, response: ModelResponse) -> Any:
@@ -339,10 +352,26 @@ def _is_g_pass(metric: Any) -> bool:
 def _score_prediction(sample_fn: Any, doc: Doc, response: ModelResponse) -> Any:
     if "olympiad_bench:" in str(getattr(doc, "task_name", "")):
         return _olympiad_bench_score(doc, response)
-    choices = getattr(doc, "choices", None)
-    if isinstance(choices, (list, tuple)) and len(choices) > 1:
+    if _is_generated_mcq(doc):
         return _choice_letter_score(doc, response)
     return _single_prediction_score(sample_fn, doc, response)
+
+
+def _generated_choice_avg_metric(*, k: int, name: str) -> SampleLevelMetric:
+    """Represent a native log-likelihood MCQ as generated label accuracy."""
+
+    return SampleLevelMetric(
+        metric_name=name,
+        sample_level_fn=_RecordingAvgAtN(
+            record_key=name,
+            n=k,
+            sample_scoring_function=_choice_letter_score,
+        ),
+        category=SamplingMethod.GENERATIVE,
+        corpus_level_fn=np.mean,
+        higher_is_better=True,
+        batched_compute=False,
+    )
 
 
 def _avg_metric(metric: Any, *, k: int, name: str) -> Any:
@@ -422,11 +451,93 @@ def _g_pass_metrics(
     return preserved, effective_n
 
 
+_TERMINAL_ANSWER_CUE_RE = re.compile(r"^[^\n]{1,40}[:：]\s*$")
+
+
+def _choice_text(choice: Any, label: str) -> str:
+    text = str(choice).strip()
+    return re.sub(
+        rf"^\s*(?:\({re.escape(label)}\)|{re.escape(label)}[.\):：])\s*",
+        "",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    ).strip()
+
+
+def _query_contains_choices(query: str, choices: list[Any]) -> bool:
+    """Detect native prompts that already serialize their answer choices."""
+
+    labels = ascii_uppercase[: len(choices)]
+    labelled = sum(
+        bool(re.search(rf"(?m)^\s*(?:\({label}\)|{label}[.\):：])\s*\S", query, re.IGNORECASE))
+        for label in labels
+    )
+    if labelled == len(choices):
+        return True
+
+    normalized_query = re.sub(r"\s+", " ", query).casefold()
+    matched = 0
+    for label, choice in zip(labels, choices):
+        text = re.sub(r"\s+", " ", _choice_text(choice, label)).casefold()
+        if len(text) >= 2 and text in normalized_query:
+            matched += 1
+    return matched == len(choices)
+
+
+def _serialize_choices(query: str, choices: list[Any]) -> str:
+    labels = ascii_uppercase[: len(choices)]
+    option_lines = [
+        f"{label}. {_choice_text(choice, label)}"
+        for label, choice in zip(labels, choices)
+    ]
+    stripped = str(query).rstrip()
+    lines = stripped.splitlines()
+    cue = "Answer:"
+    if lines and _TERMINAL_ANSWER_CUE_RE.fullmatch(lines[-1].strip()):
+        cue = lines.pop().strip()
+        stripped = "\n".join(lines).rstrip()
+    sections = [section for section in (stripped, "\n".join(option_lines), cue) if section]
+    return "\n".join(sections)
+
+
+def _prepare_generated_mcq(doc: Doc, *, force: bool) -> Doc:
+    """Preserve native LightEval choices when a task is evaluated by generation.
+
+    Native log-likelihood tasks store candidate continuations in ``Doc.choices``
+    and intentionally omit them from ``Doc.query``. Once the policy changes
+    such a task to avg@k generation, those continuations must become labelled
+    prompt options. Native generative MCQs are also marked so answer extraction
+    is not accidentally applied to free-form tasks with multiple references.
+    """
+
+    choices = list(getattr(doc, "choices", ()) or ())
+    if not 2 <= len(choices) <= len(ascii_uppercase):
+        return doc
+    gold_indices = _gold_indices(doc)
+    single_gold = len(gold_indices) == 1
+    if not force and not single_gold:
+        return doc
+
+    labels = list(ascii_uppercase[: len(choices)])
+    normalized = [str(choice).strip().upper() for choice in choices]
+    choices_are_labels = normalized == labels
+    query = str(doc.query)
+    if not choices_are_labels and not _query_contains_choices(query, choices):
+        doc.query = _serialize_choices(query, choices)
+    doc.choices = [f" {label}" for label in labels]
+    specific = dict(getattr(doc, "specific", None) or {})
+    specific["helicopter_generated_mcq"] = True
+    doc.specific = specific
+    return doc
+
+
 def _wrap_prompt(
     prompt_function: Any,
     *,
     canonical_name: str,
     policy: Mapping[str, Any],
+    force_choice_generation: bool,
 ) -> Any:
     def wrapped(line: dict[str, Any], task_name: str | None = None) -> Doc | None:
         # Several custom prompt functions branch on the catalog name.  Keep
@@ -435,6 +546,7 @@ def _wrap_prompt(
         doc = prompt_function(line, canonical_name)
         if doc is None:
             return None
+        doc = _prepare_generated_mcq(doc, force=force_choice_generation)
         # The raw endpoint adapter owns the final model prompt. Formatting it
         # here as well would produce nested ``User: ... Assistant:`` wrappers.
         if not os.environ.get("HELICOPTER_PROMPT_TEMPLATE"):
@@ -490,10 +602,15 @@ def _policy_config(
     )
     cloned.name = alias_task_name(canonical_name)
     cloned.full_name = f"{cloned.name}|0"
+    force_choice_generation = any(
+        getattr(metric, "category", None) == SamplingMethod.LOGPROBS
+        for metric in cloned.metrics
+    )
     cloned.prompt_function = _wrap_prompt(
         config.prompt_function,
         canonical_name=canonical_name,
         policy=policy,
+        force_choice_generation=force_choice_generation,
     )
 
     # Explicit zero-shot means no dev/train examples and an explicit |0 in
@@ -515,6 +632,15 @@ def _policy_config(
     metrics = list(cloned.metrics)
     if not metrics:
         raise RuntimeError(f"g1h policy cannot configure task {canonical_name!r}: no metrics")
+    if force_choice_generation:
+        cloned.metrics = (_generated_choice_avg_metric(k=avg_k, name=f"avg@{avg_k}"),)
+        cloned.num_samples = [rollout_n]
+        cloned.generation_size = int(
+            policy["gpass_generation_size"]
+            if canonical_name in long_tasks
+            else policy["generation_size"]
+        )
+        return cloned
     names = ["avg@%d" % avg_k] if len(metrics) == 1 else [f"avg@{avg_k}_{i}" for i in range(len(metrics))]
     cloned.metrics = tuple(
         _avg_metric(metric, k=avg_k, name=name)
