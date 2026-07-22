@@ -59,6 +59,7 @@ def test_primary_matrix_is_naive_only_with_models_as_rows() -> None:
         "agent",
         "instruction_following",
         "function_call",
+        "all",
     ]
     assert {column["label"] for column in knowledge["columns"]} == {"arc_test", "mmlu_test"}
     assert [row["model"] for row in knowledge["rows"]] == [

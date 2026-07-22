@@ -85,9 +85,14 @@ def _leaderboard_matrix(entries: list[dict[str, Any]]) -> dict[str, Any]:
     """Build the primary board: Naive-only, model rows and benchmark columns."""
     naive_entries = [entry for entry in entries if _is_primary_entry(entry)]
     domains = [_matrix_domain(naive_entries, group) for group in _domain_groups_with_naive() if group["key"] != "naive"]
+    all_domain = _matrix_domain(
+        naive_entries,
+        {"key": "all", "label": "All", "title": "All Benchmarks"},
+    )
+    domains.append(all_domain)
     return {
         "model_count": len({str(entry.get("model") or "") for entry in naive_entries if entry.get("model")}),
-        "benchmark_count": sum(len(domain["columns"]) for domain in domains),
+        "benchmark_count": len(all_domain["columns"]),
         "domains": domains,
     }
 
@@ -102,7 +107,7 @@ def _is_primary_entry(entry: dict[str, Any]) -> bool:
 
 
 def _matrix_domain(entries: list[dict[str, Any]], group: dict[str, str]) -> dict[str, Any]:
-    domain_entries = [entry for entry in entries if entry_domain(entry) == group["key"]]
+    domain_entries = entries if group["key"] == "all" else [entry for entry in entries if entry_domain(entry) == group["key"]]
     column_entries: dict[str, list[dict[str, Any]]] = {}
     column_data: dict[str, dict[str, Any]] = {}
     for entry in domain_entries:
