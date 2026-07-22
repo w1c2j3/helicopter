@@ -489,6 +489,10 @@ class RawCompletionTests(unittest.TestCase):
 
         self.assertEqual(converted.query, query)
         self.assertEqual(converted.choices, [" A", " B"])
+        self.assertEqual(
+            converted.specific["helicopter_generated_mcq_choice_texts"],
+            {"A": "first", "B": "second"},
+        )
 
     def test_freeform_alias_references_are_not_treated_as_mcq(self) -> None:
         doc = SimpleNamespace(
@@ -517,6 +521,35 @@ class RawCompletionTests(unittest.TestCase):
         self.assertEqual(
             lighteval_g1h_policy._choice_letter_score(doc, ModelResponse(text=["Answer: B"])),
             0.0,
+        )
+
+    def test_generated_mcq_accepts_observed_equivalent_answer_formats(self) -> None:
+        doc = SimpleNamespace(
+            gold_index=0,
+            choices=[" A", " B", " C", " D"],
+            specific={
+                "helicopter_generated_mcq": True,
+                "helicopter_generated_mcq_choice_texts": {
+                    "A": "True, False",
+                    "B": "False, True",
+                    "C": "Both true",
+                    "D": "Both false",
+                },
+            },
+        )
+        for answer in ("<answer>A</answer>", "True, False"):
+            with self.subTest(answer=answer):
+                self.assertEqual(
+                    lighteval_g1h_policy._choice_letter_score(doc, ModelResponse(text=[answer])),
+                    1.0,
+                )
+        doc.gold_index = 2
+        self.assertEqual(
+            lighteval_g1h_policy._choice_letter_score(
+                doc,
+                ModelResponse(text=["The derivation matches option C."]),
+            ),
+            1.0,
         )
 
     def test_ifbench_resource_check_never_downloads_during_scoring(self) -> None:

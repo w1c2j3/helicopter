@@ -51,6 +51,7 @@ def _choice_mapping(choices: Any) -> dict[str, str]:
 
 
 _CHOICE_PATTERNS = (
+    re.compile(r"<answer>\s*([A-Z])\s*</answer>", re.IGNORECASE),
     re.compile(r"\\boxed\{\s*(?:\\(?:text|mathrm)\{\s*)?([A-Z])", re.IGNORECASE),
     re.compile(
         r"(?:final\s+)?(?:the\s+)?(?:correct\s+)?answer\s*"
@@ -75,6 +76,10 @@ _CHOICE_PATTERNS = (
     ),
     re.compile(
         r"(?:therefore|thus|hence|so),?\s*[*_]{0,3}\s*([A-Z])\s*[\).]",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:matches|corresponds\s+to)\s+(?:option|choice)\s*([A-Z])\b",
         re.IGNORECASE,
     ),
 )
@@ -103,7 +108,39 @@ def _postprocess_choice_response(doc: Any, response: ModelResponse) -> ModelResp
         return response
     processed: list[str] = []
     for text in response.text:
-        label = _extract_choice(str(text or ""), set(mapping))
+        raw_text = str(text or "")
+        label = _extract_choice(raw_text, set(mapping))
+        if not label:
+            specific = getattr(doc, "specific", None)
+            choice_texts = (
+                specific.get("helicopter_generated_mcq_choice_texts")
+                if isinstance(specific, dict)
+                else None
+            )
+            if isinstance(choice_texts, dict):
+                possible = [raw_text.strip()]
+                possible.extend(
+                    match.group(1).strip()
+                    for match in re.finditer(
+                        r"<answer>(.*?)</answer>",
+                        raw_text,
+                        re.IGNORECASE | re.DOTALL,
+                    )
+                )
+                normalized_choices = {
+                    str(key).upper(): re.sub(r"\s+", " ", str(value)).strip().casefold()
+                    for key, value in choice_texts.items()
+                }
+                for value in possible:
+                    normalized = re.sub(r"\s+", " ", value).strip().casefold()
+                    matches = [
+                        key
+                        for key, choice in normalized_choices.items()
+                        if choice and choice == normalized
+                    ]
+                    if len(matches) == 1:
+                        label = matches[0]
+                        break
         processed.append(mapping[label] if label else str(text or ""))
     response.text_post_processed = processed
     return response

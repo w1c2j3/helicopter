@@ -121,6 +121,7 @@ def _choice_letter_score(doc: Doc, response: ModelResponse) -> float:
         text = "\n".join(str(item or "") for item in generated)
     candidates: list[tuple[int, str]] = []
     patterns = (
+        re.compile(r"<answer>\s*([A-Z])\s*</answer>", re.IGNORECASE),
         re.compile(r"\\boxed\{\s*(?:\\(?:text|mathrm)\{\s*)?([A-Z])", re.IGNORECASE),
         re.compile(
             r"(?:final\s+)?(?:the\s+)?(?:correct\s+)?answer\s*"
@@ -147,6 +148,10 @@ def _choice_letter_score(doc: Doc, response: ModelResponse) -> float:
             r"(?:therefore|thus|hence|so),?\s*[*_]{0,3}\s*([A-Z])\s*[\).]",
             re.IGNORECASE,
         ),
+        re.compile(
+            r"\b(?:matches|corresponds\s+to)\s+(?:option|choice)\s*([A-Z])\b",
+            re.IGNORECASE,
+        ),
     )
     for pattern in patterns:
         for match in pattern.finditer(text):
@@ -165,6 +170,43 @@ def _choice_letter_score(doc: Doc, response: ModelResponse) -> float:
             if match and match.group(1).upper() in allowed:
                 prediction = match.group(1).upper()
                 break
+
+    if not prediction:
+        specific = getattr(doc, "specific", None)
+        choice_texts = (
+            specific.get("helicopter_generated_mcq_choice_texts")
+            if isinstance(specific, Mapping)
+            else None
+        )
+        if isinstance(choice_texts, Mapping):
+            possible = [text.strip()]
+            possible.extend(
+                match.group(1).strip()
+                for match in re.finditer(r"<answer>(.*?)</answer>", text, re.IGNORECASE | re.DOTALL)
+            )
+            nonempty_lines = [line.strip() for line in text.splitlines() if line.strip()]
+            if nonempty_lines:
+                possible.append(nonempty_lines[-1])
+
+            def normalized(value: Any) -> str:
+                result = re.sub(r"\s+", " ", str(value)).strip().casefold()
+                return re.sub(r"^(?:answer|option|choice)\s*[:：]\s*", "", result)
+
+            normalized_choices = {
+                str(label).upper(): normalized(value)
+                for label, value in choice_texts.items()
+                if str(label).upper() in allowed
+            }
+            for value in possible:
+                candidate = normalized(value)
+                matches = [
+                    label
+                    for label, choice in normalized_choices.items()
+                    if choice and choice == candidate
+                ]
+                if len(matches) == 1:
+                    prediction = matches[0]
+                    break
     if not prediction:
         for line in reversed(text.splitlines()):
             match = re.match(r"\s*[*_]{0,3}[\[(]?\s*([A-Z])\s*[\]).:]\s+\S", line, re.IGNORECASE)
@@ -520,6 +562,10 @@ def _prepare_generated_mcq(doc: Doc, *, force: bool) -> Doc:
         return doc
 
     labels = list(ascii_uppercase[: len(choices)])
+    choice_texts = {
+        label: _choice_text(choice, label)
+        for label, choice in zip(labels, choices)
+    }
     normalized = [str(choice).strip().upper() for choice in choices]
     choices_are_labels = normalized == labels
     query = str(doc.query)
@@ -528,6 +574,7 @@ def _prepare_generated_mcq(doc: Doc, *, force: bool) -> Doc:
     doc.choices = [f" {label}" for label in labels]
     specific = dict(getattr(doc, "specific", None) or {})
     specific["helicopter_generated_mcq"] = True
+    specific["helicopter_generated_mcq_choice_texts"] = choice_texts
     doc.specific = specific
     return doc
 
