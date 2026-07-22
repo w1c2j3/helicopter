@@ -50,7 +50,7 @@ EXCLUDED_DIRECT_PATTERNS = (
     r"browsecomp",
     r"swe[_-]?bench",
     r"^mathqa$",
-    r"^gpqa(?:-fr|:.*)?$",
+    r"^gpqa-fr$",
     r"^ifeval-fr$",
     r"^qasper$",
     r"^cmmlu_zho_mcf:",
@@ -359,21 +359,6 @@ def domain_for_task(task: str) -> str | None:
     for rule in SELECTION_RULES:
         if rule_matches(rule, name):
             return rule.field
-    return None
-
-
-def request_format_for_task(task: str) -> str | None:
-    """Return the TOML request format for mixed-format benchmark domains."""
-
-    name = str(task).split("|", 1)[0]
-    if name.startswith("g1h__"):
-        name = name[len("g1h__") :]
-    for rule in SELECTION_RULES:
-        if not rule_matches(rule, name):
-            continue
-        if rule.field != "coding":
-            return None
-        return "code" if rule.source_family == "HumanEval / MBPP / LiveCodeBench" else "choice"
     return None
 
 

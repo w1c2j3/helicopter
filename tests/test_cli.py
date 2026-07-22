@@ -1923,6 +1923,27 @@ class CommandPlanTests(unittest.TestCase):
                     self.assertTrue(tasks[task_name]["prompt_template"].startswith(expected_prefix))
                     self.assertEqual(tasks[task_name]["sampling"]["max_tokens"], 512)
 
+    def test_nocot_request_format_recognition_is_toml_driven(self) -> None:
+        preset = "configs/presets/naive-nocot.toml"
+        loaded_config, _ = config.load_config(ROOT, preset)
+        code_format = loaded_config["prompt"]["formats"]["code"]
+        code_format["tasks"] = ["mmlu:machine_learning"]
+        code_format["task_prefixes"] = []
+        plan = commands.build_lighteval_plan(
+            lighteval_args(
+                model="deployed",
+                tasks="lcb:codegeneration|0,mmlu:machine_learning|0",
+                config=preset,
+            ),
+            root=ROOT,
+            env={},
+            config=loaded_config,
+        )
+
+        tasks = json.loads(plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"])["tasks"]
+        self.assertEqual(tasks["mmlu:machine_learning"]["format"], "code")
+        self.assertEqual(tasks["lcb:codegeneration"]["format"], "choice")
+
     def test_nocot_server_preset_keeps_domain_token_budgets_in_toml(self) -> None:
         loaded_config, _ = config.load_config(ROOT, "configs/presets/normal-nocot.toml")
         plan = commands.build_lighteval_plan(
@@ -2590,7 +2611,11 @@ class CommandPlanTests(unittest.TestCase):
         self.assertIn("truthfulqa:mc", names)
         self.assertNotIn("mathqa", names)
         self.assertNotIn("gpqa-fr", names)
-        self.assertFalse(any(name.startswith("gpqa:") for name in names))
+        self.assertIn("gpqa:diamond", names)
+        self.assertTrue(
+            {name for name in names if name.startswith("gpqa:")}
+            <= {"gpqa:mc", "gpqa:main", "gpqa:diamond", "gpqa:extended"}
+        )
         self.assertNotIn("ifeval-fr", names)
         self.assertNotIn("qasper", names)
         self.assertFalse(any(name.startswith("aime") and name.endswith(("_avg", "_gpassk")) for name in names))
@@ -4507,6 +4532,44 @@ class CommandPlanTests(unittest.TestCase):
         self.assertEqual(configured.evaluation_splits, ("test",))
         self.assertIsNone(configured.few_shots_split)
 
+    def test_policy_config_prefers_authorized_local_gpqa_dataset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cached = Path(tmp) / "gpqa/main.jsonl"
+            cached.parent.mkdir(parents=True)
+            cached.write_text('{"question": "q"}\n', encoding="utf-8")
+            source = SimpleNamespace(
+                hf_repo="Idavidrein/gpqa",
+                hf_subset="gpqa_main",
+                hf_data_files=None,
+                hf_avail_splits=("train",),
+                evaluation_splits=("train",),
+                few_shots_split=None,
+                prompt_function=lambda line, task_name=None: None,
+            )
+            with mock.patch.dict(os.environ, {"DATASETS_PATH": tmp}, clear=False):
+                configured = lighteval_g1h_policy._prefer_local_dataset(
+                    source,
+                    canonical_name="gpqa:mc",
+                )
+
+        self.assertEqual(configured.hf_repo, "json")
+        self.assertEqual(configured.hf_subset, "default")
+        self.assertEqual(configured.hf_data_files, {"train": str(cached)})
+        doc = configured.prompt_function(
+            {
+                "question": "Which?",
+                "answer": "C",
+                "A": "one",
+                "B": "two",
+                "C": "three",
+                "D": "four",
+            },
+            "gpqa:mc",
+        )
+        self.assertEqual(doc.gold_index, 2)
+        self.assertEqual(doc.choices, ["A", "B", "C", "D"])
+        self.assertIn("C) three", doc.query)
+
     def test_cached_dataset_file_prefers_existing_datasets_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cached = Path(tmp) / "cache" / "human_eval" / "HumanEval.jsonl.gz"
@@ -4945,7 +5008,7 @@ class CommandPlanTests(unittest.TestCase):
             plan.shown_env,
             {
                 "PYTHON": str(venv_python),
-                "PYTHONPATH": str(ROOT / "src/infer/vllm-rwkv"),
+                "PYTHONPATH": str((ROOT / "../vllm-rwkv").resolve()),
                 "RWKV_LM_PATH": str(ROOT / "src/train/rwkv-lm"),
                 "RWKV_MODEL_PATH": "/weights/RWKV/rwkv7-g1g-1.5b-20260526-ctx8192.pth",
                 "VLLM_RWKV7_EMB_DEVICE": "gpu",
@@ -4980,7 +5043,7 @@ class CommandPlanTests(unittest.TestCase):
             loaded_env={
                 "WEIGHT_PATH": "/weights/RWKV",
                 "DATASETS_PATH": "/datasets",
-                "HELICOPTER_VLLM_RWKV_PATH": "src/infer/vllm-rwkv",
+                "HELICOPTER_VLLM_RWKV_PATH": "../vllm-rwkv",
                 "VLLM_GPU_MEMORY_UTILIZATION": "0.85",
                 "VLLM_MAX_NUM_SEQS": "2048",
                 "VLLM_MAX_NUM_BATCHED_TOKENS": "65536",
@@ -5005,7 +5068,7 @@ class CommandPlanTests(unittest.TestCase):
 
         self.assertEqual(plan.env["VLLM_RWKV7_WKV_MODE"], "fp32io16")
         self.assertEqual(plan.env["VLLM_RWKV7_EMB_DEVICE"], "gpu")
-        self.assertEqual(plan.env["PYTHONPATH"], str(ROOT / "src/infer/vllm-rwkv"))
+        self.assertEqual(plan.env["PYTHONPATH"], str((ROOT / "../vllm-rwkv").resolve()))
         self.assertEqual(forbidden_env_keys & plan.env.keys(), set())
         self.assertEqual(forbidden_override_keys & overrides.keys(), set())
 

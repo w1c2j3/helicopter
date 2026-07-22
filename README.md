@@ -1,8 +1,9 @@
 # Helicopter
 
-Helicopter is an RWKV leaderboard-run framework. It keeps the pieces needed for
-RWKV vLLM serving, verl-based training, and benchmark-oriented experiment runs
-in one repository, with a small CLI for launching common workflows.
+Helicopter is an RWKV leaderboard-run framework. It coordinates external RWKV
+vLLM endpoints, verl-based training, and benchmark-oriented experiment runs
+with a small CLI. The vllm-rwkv inference engine is maintained as an independent
+checkout and is not vendored in this repository.
 
 The current focus is RWKV7:
 
@@ -14,8 +15,8 @@ The current focus is RWKV7:
 - `scripts/install_remote.sh`: prepare the BBT DevPod GPU workspace, sync this
   repository, and run the local installer remotely.
 - `scripts/install_local.sh`: create/update the project `.venv`, install the
-  declared RWKV dependency group, and install local editable `vllm`, `rwkv-lm`,
-  and `verl` packages.
+  declared RWKV dependency group, and install local editable `rwkv-lm` and
+  `verl` packages. Install vllm-rwkv in its own checkout/environment.
 
 ## Repository layout
 
@@ -29,10 +30,13 @@ scripts/
 src/cli/helicopter_cli/     # Python CLI package
 src/scoreboard-server/      # FastAPI scoreboard API and PostgreSQL store
 src/scoreboard-client/      # Next.js scoreboard UI
-src/infer/vllm-rwkv/        # vLLM RWKV implementation
 src/train/rwkv-lm/          # RWKV training code
 src/train/verl-rwkv/        # verl RWKV integration
 ```
+
+Set `[paths].vllm_rwkv_path` or `HELICOPTER_VLLM_RWKV_PATH` only for workflows
+such as `takeoff` that import an external vllm-rwkv checkout. Endpoint-based
+evaluation does not import or install vllm-rwkv.
 
 `AGENTS.md` is intentionally ignored in this repository because it may contain
 machine-specific remote connection details. Use `.env.example` and

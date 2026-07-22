@@ -3,6 +3,10 @@
 # Select experiments with --config; without --config, the CLI uses the newest
 # configs/local/*.toml file.
 
+[paths]
+# vllm-rwkv is an independent checkout, not a Helicopter submodule.
+vllm_rwkv_path = "../vllm-rwkv"
+
 [infer]
 enable_auto_tool_choice = false
 

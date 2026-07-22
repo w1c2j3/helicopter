@@ -6,9 +6,12 @@ template = "User✿{query}✿\nBot✿<think></think"
 allowed_domains = ["math", "coding", "instruction_following", "knowledge"]
 
 [prompt.formats.code]
+tasks = ["mbpp_plus", "longcodeqa"]
+task_prefixes = ["human_eval", "lcb:"]
 template = "User✿{query}\nOutput only one fenced code block.✿\nBot✿<think></think"
 
 [prompt.formats.choice]
+domains = ["coding"]
 template = "User✿{query}\nGive only the final answer. For multiple-choice questions, give only the option letter.✿\nBot✿<think></think"
 
 [prompt.domains.knowledge]

@@ -556,6 +556,31 @@ def _wrap_prompt(
     return wrapped
 
 
+def _local_gpqa_prompt(line: dict[str, Any], task_name: str | None = None) -> Doc:
+    """Adapt the authorized rwkv-skills GPQA cache to LightEval's native task contract."""
+
+    labels = list(ascii_uppercase[:4])
+    answer = str(line.get("answer", "")).strip().upper()
+    if answer not in labels:
+        raise ValueError(f"local GPQA row has invalid answer label: {answer!r}")
+    instruction = (
+        "Answer the following multiple choice question. The last line of your response "
+        "should be of the following format: 'Answer: $LETTER' (without quotes) where "
+        "LETTER is one of ABCD. Think step by step before answering."
+    )
+    query = (
+        f"{instruction}\n\n{str(line.get('question', '')).strip()}\n\n"
+        + "\n".join(f"{label}) {str(line.get(label, '')).strip()}" for label in labels)
+    )
+    return Doc(
+        task_name=task_name,
+        query=query,
+        choices=labels,
+        gold_index=labels.index(answer),
+        instruction=instruction,
+    )
+
+
 def _prefer_local_dataset(
     config: LightevalTaskConfig,
     *,
@@ -573,6 +598,11 @@ def _prefer_local_dataset(
     elif canonical_name.startswith("mmlu:"):
         subject = canonical_name.split(":", 1)[1]
         local = (root / "cache/lighteval_mmlu" / f"{subject}.jsonl", "test")
+    elif canonical_name.startswith("gpqa:"):
+        variant = canonical_name.split(":", 1)[1]
+        split = "main" if variant == "mc" else variant
+        if split in {"main", "diamond", "extended"}:
+            local = (root / "gpqa" / f"{split}.jsonl", "train")
     if local is None or not local[0].is_file():
         return config
 
@@ -583,6 +613,8 @@ def _prefer_local_dataset(
     config.hf_avail_splits = (split,)
     config.evaluation_splits = (split,)
     config.few_shots_split = None
+    if canonical_name.startswith("gpqa:"):
+        config.prompt_function = _local_gpqa_prompt
     return config
 
 
@@ -607,7 +639,7 @@ def _policy_config(
         for metric in cloned.metrics
     )
     cloned.prompt_function = _wrap_prompt(
-        config.prompt_function,
+        cloned.prompt_function,
         canonical_name=canonical_name,
         policy=policy,
         force_choice_generation=force_choice_generation,

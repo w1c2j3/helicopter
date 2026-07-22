@@ -423,7 +423,51 @@ def resolve_lighteval_task_request_policy(
 ) -> dict[str, Any]:
     """Resolve TOML domain settings to exact LightEval task request settings."""
 
-    from .non_fc_lighteval_catalog import domain_for_task, request_format_for_task
+    from .non_fc_lighteval_catalog import domain_for_task
+
+    def string_list(value: Any, *, key: str) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise SystemExit(f"{key} must be a TOML string array")
+        return value
+
+    def configured_request_format(
+        task_name: str,
+        *,
+        domain: str,
+        formats: dict[str, Any],
+    ) -> str | None:
+        canonical = str(task_name).split("|", 1)[0]
+        if canonical.startswith("g1h__"):
+            canonical = canonical[len("g1h__") :]
+        exact_matches: list[str] = []
+        domain_defaults: list[str] = []
+        for format_name, raw_format in formats.items():
+            if not isinstance(raw_format, dict):
+                raise SystemExit(f"[prompt.formats.{format_name}] must be a TOML table")
+            tasks = string_list(raw_format.get("tasks"), key=f"prompt.formats.{format_name}.tasks")
+            prefixes = string_list(
+                raw_format.get("task_prefixes"),
+                key=f"prompt.formats.{format_name}.task_prefixes",
+            )
+            domains = string_list(
+                raw_format.get("domains"),
+                key=f"prompt.formats.{format_name}.domains",
+            )
+            if canonical in tasks or any(canonical.startswith(prefix) for prefix in prefixes):
+                exact_matches.append(format_name)
+            elif domain in domains:
+                domain_defaults.append(format_name)
+        if len(exact_matches) > 1:
+            names = ", ".join(exact_matches)
+            raise SystemExit(f"task {canonical!r} matches multiple prompt formats: {names}")
+        if exact_matches:
+            return exact_matches[0]
+        if len(domain_defaults) > 1:
+            names = ", ".join(domain_defaults)
+            raise SystemExit(f"domain {domain!r} has multiple default prompt formats: {names}")
+        return domain_defaults[0] if domain_defaults else None
 
     stops = table(config, "stops")
     stop_domains = stops.get("domains", {})
@@ -466,7 +510,11 @@ def resolve_lighteval_task_request_policy(
         domain_sampling = sampling_domains.get(domain, {})
         if not isinstance(domain_sampling, dict):
             raise SystemExit(f"[sampling.domains.{domain}] must be a TOML table")
-        request_format = request_format_for_task(task_name)
+        request_format = configured_request_format(
+            task_name,
+            domain=domain,
+            formats=prompt_formats,
+        )
         format_sampling = sampling_formats.get(request_format, {}) if request_format else {}
         if not isinstance(format_sampling, dict):
             raise SystemExit(f"[sampling.formats.{request_format}] must be a TOML table")
@@ -1240,11 +1288,20 @@ def build_takeoff_plan(
         root=root,
         env=env,
     )
+    vllm_rwkv_value = pick(
+        paths.get("vllm_rwkv_path"),
+        env_value(env, "HELICOPTER_VLLM_RWKV_PATH", "VLLM_RWKV_PATH"),
+    )
+    if not vllm_rwkv_value:
+        raise SystemExit(
+            "takeoff requires an external vllm-rwkv checkout via "
+            "[paths].vllm_rwkv_path or HELICOPTER_VLLM_RWKV_PATH"
+        )
     vllm_rwkv_path = resolve_path(
-        str(pick(paths.get("vllm_rwkv_path"), env_value(env, "HELICOPTER_VLLM_RWKV_PATH", "VLLM_RWKV_PATH"), "src/infer/vllm-rwkv")),
+        str(vllm_rwkv_value),
         root=root,
         env=env,
-    )
+    ).resolve()
 
     has_train_files = "train_files" in dataset or env_value(env, "TRAIN_FILES") is not None
     has_val_files = "val_files" in dataset or env_value(env, "VAL_FILES") is not None

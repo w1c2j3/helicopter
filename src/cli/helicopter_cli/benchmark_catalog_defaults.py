@@ -11,6 +11,7 @@ REQUIRED_TASKS = (
     "mmlu:professional_law",
     "arc:challenge",
     "truthfulqa:mc",
+    "gpqa:diamond",
     "commonsenseqa",
     "natural_questions",
     "triviaqa",

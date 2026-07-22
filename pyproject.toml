@@ -134,6 +134,9 @@ full = [
 [tool.uv]
 package = true
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.uv.sources]
 helicopter-scoreboard-server = { path = "src/scoreboard-server", editable = true }
 lighteval = { path = "src/eval/lighteval", editable = true }
