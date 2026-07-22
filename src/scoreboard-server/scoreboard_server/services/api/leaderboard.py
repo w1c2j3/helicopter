@@ -11,5 +11,11 @@ async def leaderboard_response(
     model: str | None,
     view: str,
 ) -> LeaderboardResponse:
-    entries = await store.list_latest_scores_for_space()
-    return build_leaderboard_payload(entries, selected_model=model, view=view)
+    entries_with_tuning = await store.list_latest_scores_for_space(include_param_search=True)
+    entries = [entry for entry in entries_with_tuning if not entry.get("is_param_search")]
+    return build_leaderboard_payload(
+        entries,
+        selected_model=model,
+        view=view,
+        tuning_entries=entries_with_tuning,
+    )

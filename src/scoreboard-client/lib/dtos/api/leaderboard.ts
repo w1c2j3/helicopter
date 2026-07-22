@@ -105,6 +105,72 @@ export interface ChartPayload {
   agent: AgentChart | null;
 }
 
+export interface MatrixCell {
+  percent: number | null;
+  meta: CellMeta | null;
+  metric: string | null;
+  num_samples: number | null;
+  created_at: string | null;
+}
+
+export interface MatrixColumn {
+  key: string;
+  label: string;
+  metric: string | null;
+  eval_method: string;
+  num_samples: number | null;
+}
+
+export interface MatrixRow {
+  rank: number;
+  model: string;
+  param: string;
+  average: number | null;
+  coverage: number;
+  cells: MatrixCell[];
+}
+
+export interface MatrixDomain {
+  key: string;
+  label: string;
+  title: string;
+  columns: MatrixColumn[];
+  rows: MatrixRow[];
+}
+
+export interface LeaderboardMatrix {
+  model_count: number;
+  benchmark_count: number;
+  domains: MatrixDomain[];
+}
+
+export interface TuningColumn {
+  key: string;
+  label: string;
+  prompt_profile: string;
+  cot_mode: string;
+  sampling_config: Record<string, unknown>;
+}
+
+export interface TuningRow extends Omit<MatrixRow, "average"> {
+  best: number | null;
+  average: number | null;
+}
+
+export interface TuningBenchmark {
+  key: string;
+  label: string;
+  metric: string | null;
+  num_samples: number | null;
+  columns: TuningColumn[];
+  rows: TuningRow[];
+}
+
+export interface TuningMatrix {
+  benchmark_count: number;
+  benchmarks: TuningBenchmark[];
+}
+
 export interface LeaderboardResponse {
   view: string;
   view_label: string;
@@ -124,5 +190,7 @@ export interface LeaderboardResponse {
     auto_label: string;
   };
   charts: ChartPayload;
+  matrix: LeaderboardMatrix;
+  tuning_matrix: TuningMatrix;
   errors: string[];
 }

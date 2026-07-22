@@ -6,6 +6,7 @@ import os
 from typing import Any
 
 from tortoise.transactions import in_transaction
+from tortoise.expressions import Q
 
 from scoreboard_server.cores.normalize import (
     canonical_completion_status,
@@ -24,7 +25,16 @@ from scoreboard_server.cores.normalize import (
     split_dataset,
 )
 from scoreboard_server.db.connection import init_db
-from scoreboard_server.db.models import Benchmark, BenchmarkCatalog, Checker, Completion, EvalRecord, Score, ScoreModel, Task
+from scoreboard_server.db.models import (
+    Benchmark,
+    BenchmarkCatalog,
+    Checker,
+    Completion,
+    EvalRecord,
+    Score,
+    ScoreModel,
+    Task,
+)
 from scoreboard_server.db.resume import ResumeContext, TaskLookup
 from scoreboard_server.db.settings import DatabaseSettings
 
@@ -353,10 +363,7 @@ class ScoreboardStore:
     async def ingest_eval_payloads(self, *, payloads: Iterable[dict[str, Any]], task_id: str) -> int:
         await self._ensure_db()
         mapping = await self._completion_id_map(task_id=task_id, status="Completed")
-        existing = {
-            row.completion_id
-            for row in await EvalRecord.filter(completion__task_id=int(task_id)).only("completion_id")
-        }
+        existing = {row.completion_id for row in await EvalRecord.filter(completion__task_id=int(task_id)).only("completion_id")}
         inserted = 0
         for payload in payloads:
             key = (
@@ -385,10 +392,7 @@ class ScoreboardStore:
     async def ingest_checker_payloads(self, *, payloads: Iterable[dict[str, Any]], task_id: str) -> int:
         await self._ensure_db()
         mapping = await self._completion_id_map(task_id=task_id, status="Completed")
-        existing = {
-            row.completion_id
-            for row in await Checker.filter(completion__task_id=int(task_id)).only("completion_id")
-        }
+        existing = {row.completion_id for row in await Checker.filter(completion__task_id=int(task_id)).only("completion_id")}
         inserted = 0
         for payload in payloads:
             key = (
@@ -526,17 +530,30 @@ class ScoreboardStore:
         return payloads
 
     async def list_latest_scores_for_space(self, *, include_param_search: bool = False) -> list[dict[str, Any]]:
-        rows = await Score.all().select_related("task", "task__model", "task__benchmark")
+        query = Score.all().select_related("task", "task__model", "task__benchmark")
+        if include_param_search:
+            query = query.filter(Q(task__is_tmp=False) | Q(task__is_param_search=True))
+        else:
+            query = query.filter(task__is_tmp=False, task__is_param_search=False)
+        rows = await query
         grouped: dict[tuple[int, int, str, str], Score] = {}
         for row in rows:
             task = row.task
-            if task.is_tmp:
+            if task.is_tmp and not (include_param_search and task.is_param_search):
                 continue
             if task.is_param_search and not include_param_search:
                 continue
-            key = (task.model_id, task.benchmark_id, task.evaluator, json_key(task.sampling_config))
+            key = (
+                task.model_id,
+                task.benchmark_id,
+                task.evaluator,
+                json_key(task.sampling_config),
+            )
             prev = grouped.get(key)
-            if prev is None or (row.created_at, row.score_id) > (prev.created_at, prev.score_id):
+            if prev is None or (row.created_at, row.score_id) > (
+                prev.created_at,
+                prev.score_id,
+            ):
                 grouped[key] = row
         result = [self._score_row_for_space(row) for row in sorted(grouped.values(), key=lambda item: item.created_at)]
         await self._attach_catalog_fields(result)
@@ -547,7 +564,10 @@ class ScoreboardStore:
         pairs = {
             (
                 score.task.model.model_name,
-                join_dataset(score.task.benchmark.benchmark_name, score.task.benchmark.benchmark_split),
+                join_dataset(
+                    score.task.benchmark.benchmark_name,
+                    score.task.benchmark.benchmark_split,
+                ),
             )
             for score in scores
             if not score.task.is_tmp and not score.task.is_param_search
@@ -556,13 +576,17 @@ class ScoreboardStore:
 
     async def list_score_history(self, *, model: str, dataset: str) -> list[dict[str, Any]]:
         benchmark_name, benchmark_split = split_dataset(dataset)
-        rows = await Score.filter(
-            task__model__model_name=normalize_model_name(model),
-            task__benchmark__benchmark_name=benchmark_name,
-            task__benchmark__benchmark_split=benchmark_split,
-            task__is_tmp=False,
-            task__is_param_search=False,
-        ).select_related("task", "task__model", "task__benchmark").order_by("created_at", "score_id")
+        rows = (
+            await Score.filter(
+                task__model__model_name=normalize_model_name(model),
+                task__benchmark__benchmark_name=benchmark_name,
+                task__benchmark__benchmark_split=benchmark_split,
+                task__is_tmp=False,
+                task__is_param_search=False,
+            )
+            .select_related("task", "task__model", "task__benchmark")
+            .order_by("created_at", "score_id")
+        )
         return [self._history_row(row) for row in rows]
 
     async def list_scores_by_dataset(
@@ -573,13 +597,17 @@ class ScoreboardStore:
         is_param_search: bool,
     ) -> list[dict[str, Any]]:
         benchmark_name, benchmark_split = split_dataset(dataset)
-        rows = await Score.filter(
-            task__benchmark__benchmark_name=benchmark_name,
-            task__benchmark__benchmark_split=benchmark_split,
-            task__model__model_name=normalize_model_name(model),
-            task__is_param_search=bool(is_param_search),
-            task__is_tmp=False,
-        ).select_related("task", "task__model", "task__benchmark").order_by("-created_at", "-score_id")
+        rows = (
+            await Score.filter(
+                task__benchmark__benchmark_name=benchmark_name,
+                task__benchmark__benchmark_split=benchmark_split,
+                task__model__model_name=normalize_model_name(model),
+                task__is_param_search=bool(is_param_search),
+                task__is_tmp=False,
+            )
+            .select_related("task", "task__model", "task__benchmark")
+            .order_by("-created_at", "-score_id")
+        )
         result = [self._score_row_for_space(row) for row in rows]
         await self._attach_catalog_fields(result)
         return result
@@ -612,14 +640,18 @@ class ScoreboardStore:
         benchmark_name: str,
         benchmark_split: str,
     ) -> dict[str, Any] | None:
-        task = await Task.filter(
-            evaluator=evaluator,
-            model__model_name=normalize_model_name(model_name),
-            benchmark__benchmark_name=benchmark_name,
-            benchmark__benchmark_split=benchmark_split,
-            is_param_search=False,
-            is_tmp=False,
-        ).order_by("-task_id").first()
+        task = (
+            await Task.filter(
+                evaluator=evaluator,
+                model__model_name=normalize_model_name(model_name),
+                benchmark__benchmark_name=benchmark_name,
+                benchmark__benchmark_split=benchmark_split,
+                is_param_search=False,
+                is_tmp=False,
+            )
+            .order_by("-task_id")
+            .first()
+        )
         if task is None:
             return None
         return {
@@ -644,7 +676,12 @@ class ScoreboardStore:
         query = EvalRecord.filter(completion__task_id=int(task_id)).select_related("completion")
         if only_wrong:
             query = query.filter(is_passed=False)
-        query = query.order_by("completion__sample_index", "completion__avg_repeat_index", "completion__pass_index", "eval_id")
+        query = query.order_by(
+            "completion__sample_index",
+            "completion__avg_repeat_index",
+            "completion__pass_index",
+            "eval_id",
+        )
         if offset > 0:
             query = query.offset(offset)
         if limit is not None and limit > 0:
@@ -682,19 +719,28 @@ class ScoreboardStore:
         repeat_index: int,
         pass_index: int = 0,
     ) -> Any | None:
-        row = await EvalRecord.filter(
-            completion__task_id=int(task_id),
-            completion__sample_index=int(sample_index),
-            completion__avg_repeat_index=int(repeat_index),
-            completion__pass_index=int(pass_index),
-        ).select_related("completion").order_by("-eval_id").first()
+        row = (
+            await EvalRecord.filter(
+                completion__task_id=int(task_id),
+                completion__sample_index=int(sample_index),
+                completion__avg_repeat_index=int(repeat_index),
+                completion__pass_index=int(pass_index),
+            )
+            .select_related("completion")
+            .order_by("-eval_id")
+            .first()
+        )
         return row.completion.context if row else None
 
     async def get_task_bundle(self, *, task_id: str) -> dict[str, Any] | None:
         task = await Task.filter(task_id=int(task_id)).select_related("model", "benchmark").first()
         if not task:
             return None
-        return {"task": self._task_dict(task), "model": self._model_dict(task.model), "benchmark": self._benchmark_dict(task.benchmark)}
+        return {
+            "task": self._task_dict(task),
+            "model": self._model_dict(task.model),
+            "benchmark": self._benchmark_dict(task.benchmark),
+        }
 
     async def list_completions_rows(self, *, task_id: str) -> list[dict[str, Any]]:
         rows = await Completion.filter(task_id=int(task_id)).order_by("completions_id")
@@ -711,7 +757,11 @@ class ScoreboardStore:
     async def list_checker_keys(self, *, task_id: str) -> set[tuple[int, int, int]]:
         rows = await Checker.filter(completion__task_id=int(task_id)).select_related("completion")
         return {
-            (row.completion.sample_index, row.completion.avg_repeat_index, row.completion.pass_index)
+            (
+                row.completion.sample_index,
+                row.completion.avg_repeat_index,
+                row.completion.pass_index,
+            )
             for row in rows
         }
 
@@ -729,10 +779,7 @@ class ScoreboardStore:
             catalog_rows = await BenchmarkCatalog.filter(benchmark_name__in=names)
         except Exception:  # noqa: BLE001 - old DBs may not have the catalog table until seeded.
             return
-        lookup = {
-            join_dataset(row.benchmark_name, row.benchmark_split): row.field
-            for row in catalog_rows
-        }
+        lookup = {join_dataset(row.benchmark_name, row.benchmark_split): row.field for row in catalog_rows}
         for row in rows:
             field = lookup.get(str(row.get("dataset") or ""))
             if field:
@@ -762,8 +809,19 @@ class ScoreboardStore:
                     "stop_reason": payload.get(f"stop_reason{idx}"),
                 }
             )
-        context = {"stages": stages, "sampling_config": payload.get("sampling_config", {})}
-        for key in ("stats", "agent_result", "agent_info", "agent_trace", "task_id", "domain", "instruction"):
+        context = {
+            "stages": stages,
+            "sampling_config": payload.get("sampling_config", {}),
+        }
+        for key in (
+            "stats",
+            "agent_result",
+            "agent_info",
+            "agent_trace",
+            "task_id",
+            "domain",
+            "instruction",
+        ):
             if key in payload:
                 context[key] = payload[key]
         sanitized = sanitize_json(context)
@@ -784,7 +842,12 @@ class ScoreboardStore:
 
     @staticmethod
     def _task_is_tmp() -> bool:
-        return os.environ.get("RWKV_TASK_IS_TMP", "").strip().lower() in {"1", "true", "yes", "on"}
+        return os.environ.get("RWKV_TASK_IS_TMP", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
     @staticmethod
     def _normalize_reference_value(value: Any) -> str | None:
@@ -956,7 +1019,9 @@ class ScoreboardStore:
         return name, str(row.get("benchmark_split") or "").strip()
 
     @staticmethod
-    def _benchmark_catalog_input(row: Mapping[str, Any]) -> BenchmarkCatalogInput | None:
+    def _benchmark_catalog_input(
+        row: Mapping[str, Any],
+    ) -> BenchmarkCatalogInput | None:
         key = ScoreboardStore._benchmark_catalog_key(row)
         if key is None:
             return None
