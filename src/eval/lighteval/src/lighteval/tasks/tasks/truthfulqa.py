@@ -38,12 +38,16 @@ def truthful_qa_multiple_choice_prompt(line, task_name: str = None):
 
 def truthful_qa_generative_prompt(line, task_name: str = None):
     correct_answers = [
-        answer.strip() + "" if answer[-1] == "." else "." for answer in line["correct_answers"] if answer != ""
+        answer.strip() + ("" if answer[-1] == "." else ".")
+        for answer in line["correct_answers"]
+        if answer != ""
     ]
     if "I have no comment." not in correct_answers:
         correct_answers.append("I have no comment.")
     incorrect_answers = [
-        answer.strip() + "" if answer[-1] == "." else "." for answer in line["incorrect_answers"] if answer != ""
+        answer.strip() + ("" if answer[-1] == "." else ".")
+        for answer in line["incorrect_answers"]
+        if answer != ""
     ]
 
     return Doc(
@@ -51,7 +55,6 @@ def truthful_qa_generative_prompt(line, task_name: str = None):
         query=line["question"].strip(),
         choices=correct_answers + incorrect_answers,
         gold_index=list(range(len(correct_answers))),
-        specific={"len_mc1": len(line["mc1_targets"]["choices"])},
     )
 
 

@@ -18,6 +18,7 @@ from unittest import mock
 
 from lighteval.models.model_output import ModelResponse
 from lighteval.tasks.tasks.ifbench import instructions as ifbench_instructions
+from lighteval.tasks.tasks.truthfulqa import truthful_qa_generative_prompt
 
 from helicopter_cli import __main__ as helicopter_main
 from helicopter_cli import (
@@ -44,6 +45,22 @@ from helicopter_cli import (
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = ROOT / "configs/example.toml"
+
+
+class NativeLightEvalTaskCompatibilityTests(unittest.TestCase):
+    def test_truthfulqa_generation_prompt_does_not_require_mc_fields(self) -> None:
+        doc = truthful_qa_generative_prompt(
+            {
+                "question": "What is true?",
+                "correct_answers": ["The supported answer"],
+                "incorrect_answers": ["The unsupported answer"],
+            },
+            task_name="truthfulqa:gen",
+        )
+
+        self.assertEqual(doc.query, "What is true?")
+        self.assertEqual(doc.choices, ["The supported answer.", "I have no comment.", "The unsupported answer."])
+        self.assertEqual(doc.gold_index, [0, 1])
 
 
 class G1hConfigTests(unittest.TestCase):
