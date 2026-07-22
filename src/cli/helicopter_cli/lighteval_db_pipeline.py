@@ -9,7 +9,7 @@ from lighteval.pipeline import Pipeline
 from lighteval.tasks.lighteval_task import LightevalTask
 from lighteval.tasks.requests import SamplingMethod
 
-from helicopter_cli.lighteval_raw_completion import _response_from_rollouts
+from helicopter_cli.lighteval_raw_completion import _doc_id, _identity_value, _response_from_rollouts
 from helicopter_cli.scoreboard_bridge import load_lighteval_generation
 
 
@@ -142,7 +142,15 @@ def _responses_from_database(pipeline: Pipeline) -> dict[Any, list[Any]]:
         response = agent_result.get("model_response") if isinstance(agent_result, dict) else None
         if not isinstance(response, dict):
             continue
-        grouped.setdefault(int(row["sample_index"]), {})[int(row["repeat_index"])] = response
+        stats = context.get("stats") if isinstance(context.get("stats"), dict) else {}
+        stored_doc = agent_result.get("doc") if isinstance(agent_result.get("doc"), dict) else {}
+        grouped.setdefault(int(row["sample_index"]), {})[int(row["repeat_index"])] = {
+            "model_response": response,
+            "dataset_row_id": stats.get(
+                "dataset_row_id",
+                stats.get("lighteval_doc_id", stored_doc.get("id", context.get("task_id"))),
+            ),
+        }
 
     outputs: dict[Any, list[Any]] = {}
     for sampling_method, docs in pipeline.sampling_docs.items():
@@ -157,8 +165,28 @@ def _responses_from_database(pipeline: Pipeline) -> dict[Any, list[Any]]:
                 raise RuntimeError(
                     f"task {task_id} generation is incomplete at sample {sample_index}: missing repeats {missing}"
                 )
+            current_doc_id = _doc_id(doc)
+            rollouts = []
+            for repeat_index in range(rollout_n):
+                checkpoint = stored[repeat_index]
+                stored_doc_id = checkpoint.get("dataset_row_id")
+                if stored_doc_id is None:
+                    raise RuntimeError(
+                        f"task {task_id} checkpoint {sample_index}/{repeat_index} has no dataset "
+                        "identity; refusing unsafe index-only scoring"
+                    )
+                if (
+                    current_doc_id is not None
+                    and _identity_value(stored_doc_id) != _identity_value(current_doc_id)
+                ):
+                    raise RuntimeError(
+                        f"task {task_id} checkpoint {sample_index}/{repeat_index} belongs to dataset "
+                        f"row {stored_doc_id!r}, not current row {current_doc_id!r}; refusing "
+                        "mismatched scoring"
+                    )
+                rollouts.append(checkpoint["model_response"])
             responses.append(
-                _response_from_rollouts([stored[index] for index in range(rollout_n)])
+                _response_from_rollouts(rollouts)
             )
         outputs[sampling_method] = responses
     return outputs

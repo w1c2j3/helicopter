@@ -802,6 +802,38 @@ class RawCompletionTests(unittest.TestCase):
 
         self.assertEqual(restored, {0: model_response})
 
+    def test_database_scoring_rejects_sample_index_dataset_row_mismatch(self) -> None:
+        pipeline = SimpleNamespace(
+            sampling_docs={
+                lighteval_db_pipeline.SamplingMethod.GENERATIVE: [
+                    SimpleNamespace(id="current-row-1386", num_samples=1)
+                ]
+            }
+        )
+        stored = [{
+            "sample_index": 0,
+            "repeat_index": 0,
+            "status": "Completed",
+            "context": {
+                "stats": {"dataset_row_id": "raw-row-1309"},
+                "agent_result": {
+                    "doc": {"id": "raw-row-1309"},
+                    "model_response": {"text": ["stale answer"]},
+                },
+            },
+        }]
+
+        with mock.patch.dict(
+            os.environ,
+            {"HELICOPTER_SCOREBOARD_TASK_ID": "42"},
+            clear=False,
+        ), mock.patch.object(
+            lighteval_db_pipeline,
+            "load_lighteval_generation",
+            return_value=stored,
+        ), self.assertRaisesRegex(RuntimeError, "not current row 'current-row-1386'"):
+            lighteval_db_pipeline._responses_from_database(pipeline)
+
     def test_task_request_policy_combines_native_and_toml_stops(self) -> None:
         policy = {
             "tasks": {
