@@ -188,7 +188,7 @@ class BenchmarkSamplingPolicyTests(unittest.TestCase):
 
         self.assertEqual(
             response.text_post_processed,
-            ["Answer", "Answer 2", "Final answer", ""],
+            ["Answer", "Answer 2", "Final answer", "unfinished"],
         )
         self.assertEqual(
             response.text,

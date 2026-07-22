@@ -212,7 +212,12 @@ def _post_process_outputs(
                 if empty_reasoning_prefill:
                     scored.append(str(text))
                 elif requires_closing and "</think>" not in str(text).lower():
-                    scored.append("")
+                    # Match native LightEval: an unmatched prefilled opening
+                    # tag is not present in the continuation, so the native
+                    # reasoning-tag remover leaves that continuation intact.
+                    # Math extractors can still recover a boxed/final answer
+                    # from a response that reached its token limit.
+                    scored.append(str(candidate))
                 elif requires_closing:
                     # The prompt owns the opening think tag. Work from the raw
                     # response before LightEval removes any quoted tag pair in
