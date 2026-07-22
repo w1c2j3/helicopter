@@ -75,8 +75,10 @@ def _ensure_local_resources() -> None:
 
     missing = []
     for resource, path in (
+        ("punkt", "tokenizers/punkt"),
         ("punkt_tab", "tokenizers/punkt_tab"),
         ("averaged_perceptron_tagger_eng", "taggers/averaged_perceptron_tagger_eng"),
+        ("stopwords", "corpora/stopwords"),
     ):
         try:
             nltk.data.find(path)
@@ -915,12 +917,16 @@ class EmojiSentenceChecker(Instruction):
         sentences = instructions_util.split_into_sentences(value)
         for i, sentence in enumerate(sentences):
             stripped = sentence.translate(str.maketrans("", "", string.punctuation)).strip()
+            if not stripped:
+                return False
             last_char = stripped[-1]
             # because blank spaces are treated oddly
             second_last_char = stripped[-2] if len(stripped) > 1 else stripped[-1]
             if not emoji.is_emoji(last_char) and not emoji.is_emoji(second_last_char):
                 if i < len(sentences) - 1:
                     stripped = sentences[i + 1].translate(str.maketrans("", "", string.punctuation)).strip()
+                    if not stripped:
+                        return False
                     first_char = stripped[0]
                     if not emoji.is_emoji(first_char):
                         return False

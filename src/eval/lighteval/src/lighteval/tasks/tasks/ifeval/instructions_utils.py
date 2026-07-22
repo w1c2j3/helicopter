@@ -21,20 +21,26 @@ import re
 import nltk
 
 
-def download_nltk_resources():
-    """Download 'punkt' if not already installed"""
-    try:
-        nltk.data.find("tokenizers/punkt")
-    except LookupError:
-        nltk.download("punkt")
+def _ensure_local_nltk_resources():
+    """Validate sentence-tokenizer assets without network I/O."""
+    missing = []
+    for resource, path in (
+        ("punkt", "tokenizers/punkt"),
+        ("punkt_tab", "tokenizers/punkt_tab"),
+    ):
+        try:
+            nltk.data.find(path)
+        except LookupError:
+            missing.append(resource)
+    if missing:
+        names = " ".join(missing)
+        raise RuntimeError(
+            "IFEval scoring requires preinstalled NLTK resources; prepare the environment "
+            f"before evaluation with: python -m nltk.downloader {names}"
+        )
 
-    try:
-        nltk.data.find("tokenizers/punkt_tab")
-    except LookupError:
-        nltk.download("punkt_tab")
 
-
-download_nltk_resources()
+_ensure_local_nltk_resources()
 
 WORD_LIST = [
     "western",
@@ -1678,10 +1684,21 @@ def _get_sentence_tokenizer():
     return nltk.data.load("nltk:tokenizers/punkt/english.pickle")
 
 
+@functools.lru_cache(maxsize=1)
+def _english_stopwords():
+    try:
+        nltk.data.find("corpora/stopwords")
+    except LookupError as error:
+        raise RuntimeError(
+            "IFEval scoring requires the preinstalled NLTK stopwords corpus; prepare the "
+            "environment before evaluation with: python -m nltk.downloader stopwords"
+        ) from error
+    return frozenset(nltk.corpus.stopwords.words("english"))
+
+
 def count_stopwords(text):
     """Counts the number of stopwords."""
-    nltk.download("stopwords")
-    stopwords = nltk.corpus.stopwords.words("english")
+    stopwords = _english_stopwords()
     tokenizer = nltk.tokenize.RegexpTokenizer(r"\w+")
     tokens = tokenizer.tokenize(text)
     num_stopwords = len([t for t in tokens if t.lower() in stopwords])

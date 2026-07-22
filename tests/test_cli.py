@@ -451,6 +451,32 @@ class RawCompletionTests(unittest.TestCase):
 
         nltk_download.assert_not_called()
 
+    def test_ifbench_emoji_checker_rejects_punctuation_only_sentence_without_crashing(self) -> None:
+        checker = object.__new__(ifbench_instructions.EmojiSentenceChecker)
+
+        self.assertFalse(checker.check_following('Hello. "!"'))
+        self.assertFalse(checker.check_following('"!"'))
+
+    def test_ifeval_stopwords_are_loaded_once_without_runtime_downloads(self) -> None:
+        instructions_util = ifbench_instructions.instructions_util
+        instructions_util._english_stopwords.cache_clear()
+        words = mock.Mock(return_value=["the", "and"])
+        with (
+            mock.patch.object(instructions_util.nltk.data, "find"),
+            mock.patch.object(
+                instructions_util.nltk.corpus,
+                "stopwords",
+                SimpleNamespace(words=words),
+            ),
+            mock.patch.object(instructions_util.nltk, "download") as nltk_download,
+        ):
+            self.assertEqual(instructions_util.count_stopwords("the fox and the dog"), 3)
+            self.assertEqual(instructions_util.count_stopwords("and then"), 1)
+        instructions_util._english_stopwords.cache_clear()
+
+        words.assert_called_once_with("english")
+        nltk_download.assert_not_called()
+
     def test_database_checkpoint_path_is_not_bypassed_by_lighteval_file_cache(self) -> None:
         from lighteval.models.endpoints.litellm_model import LiteLLMClient, LiteLLMModelConfig
 
@@ -4156,6 +4182,21 @@ class CommandPlanTests(unittest.TestCase):
         )
 
         self.assertEqual(score, 1.0)
+
+    def test_avg_wrapper_does_not_hide_native_metric_errors_as_choice_scores(self) -> None:
+        from lighteval.metrics.metrics_sample import SampleLevelComputation
+        from lighteval.tasks.requests import Doc
+
+        class BrokenGroupedMetric(SampleLevelComputation):
+            def compute(self, doc, model_response, **kwargs):
+                raise IndexError("native grouped metric failed")
+
+        with self.assertRaisesRegex(IndexError, "native grouped metric failed"):
+            lighteval_g1h_policy._single_prediction_score(
+                BrokenGroupedMetric(),
+                Doc(query="Q", choices=[""], gold_index=0),
+                ModelResponse(text=["answer"]),
+            )
 
     def test_sampling_metric_per_rollout_applies_legacy_math_normalizers(self) -> None:
         from lighteval.metrics.metrics_sample import MajAtN

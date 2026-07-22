@@ -211,16 +211,16 @@ def _single_prediction_score(sample_fn: Any, doc: Doc, response: ModelResponse) 
     else:
         scorer = getattr(sample_fn, "compute", sample_fn)
     if callable(scorer):
-        try:
-            # LightEval calls sample computations by keyword. Several native
-            # and custom metrics declare these parameters in opposite orders,
-            # so positional invocation is not a valid interface.
-            value = scorer(doc=score_doc, model_response=score_response)
-            if isinstance(value, Mapping):
-                return dict(value)
-            return float(value)
-        except (IndexError, KeyError, TypeError, ValueError):
-            return _choice_letter_score(doc, response)
+        # LightEval calls sample computations by keyword. Several native and
+        # custom metrics declare these parameters in opposite orders, so
+        # positional invocation is not a valid interface. Do not turn native
+        # metric failures into choice scores: grouped metrics must preserve
+        # their declared mapping contract, and evaluator defects should remain
+        # visible instead of silently changing the benchmark semantics.
+        value = scorer(doc=score_doc, model_response=score_response)
+        if isinstance(value, Mapping):
+            return dict(value)
+        return float(value)
     return _choice_letter_score(doc, response)
 
 
