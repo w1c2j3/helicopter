@@ -211,7 +211,7 @@ def _tuning_matrix(entries: list[dict[str, Any]]) -> dict[str, Any]:
         metric, _ = metric_from_context(entry.get("metrics") or {}, entry.get("sampling_config"))
         if metric is None:
             continue
-        key = json_key([str(entry.get("dataset") or "unknown"), metric])
+        key = str(entry.get("dataset") or "unknown")
         grouped.setdefault(key, []).append(entry)
         benchmark_data[key] = {
             "key": key,
