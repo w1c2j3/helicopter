@@ -4,14 +4,16 @@
 mode = "naive_cot"
 template = "User: {query}\nAssistant: <think"
 strip_terminal_flower = false
+allowed_domains = ["math", "knowledge"]
+
+[prompt.domains.knowledge]
+template = "User: {query}\nAfter reasoning, close </think> and give only the final answer. For multiple-choice questions, give only the option letter.\nAssistant: <think"
 
 [stops]
 inherit_task_stops = false
 
 [stops.domains]
 math = ["\nUser:"]
-coding = ["\nUser:"]
-instruction_following = ["\nUser:"]
 knowledge = ["\nUser:"]
 
 [sampling]
@@ -22,9 +24,6 @@ top_k = 32
 presence_penalty = 1.0
 frequency_penalty = 0.1
 penalty_decay = 0.988
-
-[sampling.domains.instruction_following]
-max_tokens = 1280
 
 [lighteval]
 provider = "openai"

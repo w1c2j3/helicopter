@@ -4,6 +4,13 @@
 mode = "normal_nocot"
 template = "User✿{query}✿\nBot✿<think></think"
 strip_terminal_flower = true
+allowed_domains = ["math", "coding", "instruction_following", "knowledge"]
+
+[prompt.domains.coding]
+template = "User✿{query}\nOutput only one fenced code block.✿\nBot✿<think></think"
+
+[prompt.domains.knowledge]
+template = "User✿{query}\nGive only the final answer. For multiple-choice questions, give only the option letter.✿\nBot✿<think></think"
 
 [stops]
 inherit_task_stops = false
@@ -25,6 +32,12 @@ penalty_decay = 0.988
 
 [sampling.domains.instruction_following]
 max_tokens = 1280
+
+[sampling.domains.math]
+max_tokens = 512
+
+[sampling.domains.knowledge]
+max_tokens = 512
 
 [lighteval]
 provider = "openai"

@@ -159,6 +159,13 @@ def _configured_sampling(task_name: str | None) -> dict[str, Any]:
     return dict(value)
 
 
+def _configured_prompt_template(task_name: str | None, default: str) -> str:
+    value = _task_request_policy(task_name).get("prompt_template", default)
+    if not isinstance(value, str) or "{query}" not in value:
+        raise RuntimeError("task prompt_template must be a string containing {query}")
+    return value
+
+
 def _completion_url(base_url: str | None) -> str:
     if not base_url:
         raise RuntimeError("raw completion mode requires a base_url")
@@ -368,7 +375,7 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
     """
 
     dataset = GenerativeTaskDataset(requests=docs, num_dataset_splits=self.DATASET_SPLITS)
-    template = os.environ[_TEMPLATE_ENV]
+    default_template = os.environ[_TEMPLATE_ENV]
     task_id = os.environ.get("HELICOPTER_SCOREBOARD_TASK_ID", "").strip() or None
     dataset_name = os.environ.get("HELICOPTER_SCOREBOARD_DATASET", "").strip()
     stored = _stored_generation(task_id)
@@ -384,7 +391,12 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
     ):
         split_docs = list(split)
         contexts = [self.prompt_manager._prepare_plain_text(doc) for doc in split_docs]
-        prompts = [template.format(query=context) for context in contexts]
+        task_names = [str(getattr(doc, "task_name", "") or dataset_name) for doc in split_docs]
+        templates = [
+            _configured_prompt_template(task_name, default_template)
+            for task_name in task_names
+        ]
+        prompts = [template.format(query=context) for template, context in zip(templates, contexts)]
         max_tokens = split[0].generation_size
         rollout_n = int(split[0].num_samples)
         stops = split[0].stop_sequences
@@ -397,8 +409,8 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                 max_tokens,
                 len(missing),
                 stops,
-                prompt_template=template,
-                task_name=str(getattr(split_docs[position], "task_name", "") or dataset_name),
+                prompt_template=templates[position],
+                task_name=task_names[position],
             )
             return _postprocess_choice_response(split_docs[position], response)
 

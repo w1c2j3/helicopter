@@ -281,6 +281,7 @@ def _sampling_config() -> dict[str, Any]:
             sampling["task_request_policy"] = {
                 "task": str(task_name),
                 "domain": task_policy.get("domain"),
+                "prompt_template": task_policy.get("prompt_template"),
                 "inherit_task_stops": bool(task_policy.get("inherit_task_stops", True)),
                 "stop": _jsonable(task_policy.get("stop")),
                 "sampling": _jsonable(task_policy.get("sampling")),

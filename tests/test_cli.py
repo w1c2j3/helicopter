@@ -624,6 +624,28 @@ class RawCompletionTests(unittest.TestCase):
                 ["✿"],
             )
 
+    def test_task_request_policy_uses_domain_prompt_template(self) -> None:
+        policy = {
+            "tasks": {
+                "arc:challenge": {
+                    "domain": "knowledge",
+                    "prompt_template": "User: {query}\nFinal answer only.\nAssistant: <think",
+                    "sampling": {},
+                }
+            }
+        }
+        with mock.patch.dict(
+            os.environ,
+            {"HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY": json.dumps(policy)},
+            clear=False,
+        ):
+            self.assertEqual(
+                lighteval_raw_completion._configured_prompt_template(
+                    "g1h__arc:challenge|0", "User: {query}\nAssistant:"
+                ),
+                "User: {query}\nFinal answer only.\nAssistant: <think",
+            )
+
     def test_scoreboard_expands_two_stage_completion_metadata(self) -> None:
         response = {
             "finish_reason": "stop",
@@ -1426,7 +1448,7 @@ class CommandPlanTests(unittest.TestCase):
         plan = commands.build_lighteval_plan(
             lighteval_args(
                 model="deployed",
-                tasks="ifeval|0",
+                tasks="gsm8k|0,arc:challenge|0",
                 config="configs/presets/naive-cot.toml",
                 base_url="http://127.0.0.1:29573/v1",
                 api_key="test-key",
@@ -1443,11 +1465,56 @@ class CommandPlanTests(unittest.TestCase):
         self.assertEqual(policy["large_benchmark_generation_threshold"], 20000)
         self.assertEqual(policy["large_benchmark_sample_rate"], 0.2)
         self.assertEqual(plan.env["HELICOPTER_PROMPT_TEMPLATE"], "User: {query}\nAssistant: <think")
+        request_policy = json.loads(plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"])
+        self.assertEqual(
+            request_policy["tasks"]["gsm8k"]["prompt_template"],
+            "User: {query}\nAssistant: <think",
+        )
+        self.assertIn(
+            "give only the final answer",
+            request_policy["tasks"]["arc:challenge"]["prompt_template"],
+        )
         self.assertEqual(plan.env["HELICOPTER_SCOREBOARD_PROMPT_MODE"], "naive_cot")
         self.assertEqual(
             plan.env["HELICOPTER_SCOREBOARD_CONFIG_PATH"],
             str((ROOT / "configs/presets/naive-cot.toml").resolve()),
         )
+
+    def test_cot_server_preset_rejects_coding_and_instruction_domains(self) -> None:
+        loaded_config, _ = config.load_config(ROOT, "configs/presets/naive-cot.toml")
+        for task in ("lcb:codegeneration_v6|0", "ifeval|0"):
+            with self.subTest(task=task), self.assertRaisesRegex(
+                SystemExit, "prompt mode does not allow"
+            ):
+                commands.build_lighteval_plan(
+                    lighteval_args(
+                        model="deployed",
+                        tasks=task,
+                        config="configs/presets/naive-cot.toml",
+                    ),
+                    root=ROOT,
+                    env={},
+                    config=loaded_config,
+                )
+
+    def test_nocot_server_preset_keeps_domain_token_budgets_in_toml(self) -> None:
+        loaded_config, _ = config.load_config(ROOT, "configs/presets/normal-nocot.toml")
+        plan = commands.build_lighteval_plan(
+            lighteval_args(
+                model="deployed",
+                tasks="gsm8k|0,lcb:codegeneration_v6|0,ifeval|0,arc:challenge|0",
+                config="configs/presets/normal-nocot.toml",
+            ),
+            root=ROOT,
+            env={},
+            config=loaded_config,
+        )
+
+        tasks = json.loads(plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"])["tasks"]
+        self.assertEqual(tasks["gsm8k"]["sampling"]["max_tokens"], 512)
+        self.assertNotIn("max_tokens", tasks["lcb:codegeneration_v6"]["sampling"])
+        self.assertEqual(tasks["ifeval"]["sampling"]["max_tokens"], 1280)
+        self.assertEqual(tasks["arc:challenge"]["sampling"]["max_tokens"], 512)
 
     def test_lighteval_plan_cli_max_new_tokens_overrides_config(self) -> None:
         loaded_config = load_example_config()

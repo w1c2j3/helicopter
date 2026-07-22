@@ -433,12 +433,27 @@ def resolve_lighteval_task_request_policy(
     sampling_domains = sampling.get("domains", {})
     if not isinstance(sampling_domains, dict):
         raise SystemExit("[sampling.domains] must be a TOML table")
+    prompt = table(config, "prompt")
+    prompt_domains = prompt.get("domains", {})
+    if not isinstance(prompt_domains, dict):
+        raise SystemExit("[prompt.domains] must be a TOML table")
+    allowed_domains = prompt.get("allowed_domains")
+    if allowed_domains is not None:
+        if not isinstance(allowed_domains, list) or not all(
+            isinstance(item, str) and item.strip() for item in allowed_domains
+        ):
+            raise SystemExit("[prompt].allowed_domains must be a TOML array of domain names")
+        allowed_domains = {item.strip() for item in allowed_domains}
 
     tasks: dict[str, Any] = {}
     for task_name in selected_tasks:
         domain = domain_for_task(task_name)
         if domain is None:
             raise SystemExit(f"no benchmark domain is registered for LightEval task {task_name!r}")
+        if allowed_domains is not None and domain not in allowed_domains:
+            raise SystemExit(
+                f"prompt mode does not allow the {domain!r} domain for LightEval task {task_name!r}"
+            )
         domain_stops = stop_domains.get(domain)
         if domain_stops is not None and not isinstance(domain_stops, list):
             raise SystemExit(f"[stops.domains].{domain} must be a TOML array")
@@ -449,12 +464,25 @@ def resolve_lighteval_task_request_policy(
         if unknown:
             fields = ", ".join(sorted(unknown))
             raise SystemExit(f"[sampling.domains.{domain}] has unsupported fields: {fields}")
-        tasks[task_name] = {
+        domain_prompt = prompt_domains.get(domain, {})
+        if not isinstance(domain_prompt, dict):
+            raise SystemExit(f"[prompt.domains.{domain}] must be a TOML table")
+        prompt_template = domain_prompt.get("template", prompt.get("template"))
+        if prompt_template is not None and (
+            not isinstance(prompt_template, str) or "{query}" not in prompt_template
+        ):
+            raise SystemExit(
+                f"[prompt.domains.{domain}].template must be a string containing {{query}}"
+            )
+        task_policy = {
             "domain": domain,
             "inherit_task_stops": bool(stops.get("inherit_task_stops", True)),
             "stop": list(domain_stops) if domain_stops is not None else None,
             "sampling": {**base_sampling, **domain_sampling},
         }
+        if prompt_template is not None:
+            task_policy["prompt_template"] = prompt_template
+        tasks[task_name] = task_policy
     return {"tasks": tasks}
 
 
