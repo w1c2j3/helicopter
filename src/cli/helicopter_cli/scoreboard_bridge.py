@@ -1064,6 +1064,10 @@ def _pending_generation_payloads(
     repeat_indices: Iterable[int],
     generation_size: int | None = None,
     requested_generation_size: int | None = None,
+    prompt_tokens: int | None = None,
+    truncate_prompt_tokens: int | None = None,
+    truncated_prompt_tokens: int = 0,
+    context_limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """Build pre-request rows so failed samples retain an exact DB identity."""
 
@@ -1075,6 +1079,14 @@ def _pending_generation_payloads(
         sampling_config["effective_generation_size"] = int(generation_size)
     if requested_generation_size is not None:
         sampling_config["requested_generation_size"] = int(requested_generation_size)
+    if prompt_tokens is not None:
+        sampling_config["prompt_tokens"] = int(prompt_tokens)
+    if truncate_prompt_tokens is not None:
+        sampling_config["truncate_prompt_tokens"] = int(truncate_prompt_tokens)
+        sampling_config["truncation_side"] = "left"
+    sampling_config["truncated_prompt_tokens"] = int(truncated_prompt_tokens)
+    if context_limit is not None:
+        sampling_config["context_limit"] = int(context_limit)
     doc_id = doc_payload.get("id")
     prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     return [
@@ -1217,6 +1229,10 @@ class LightevalCheckpointSession:
                     repeat_indices=request["repeat_indices"],
                     generation_size=request.get("generation_size"),
                     requested_generation_size=request.get("requested_generation_size"),
+                    prompt_tokens=request.get("prompt_tokens"),
+                    truncate_prompt_tokens=request.get("truncate_prompt_tokens"),
+                    truncated_prompt_tokens=int(request.get("truncated_prompt_tokens") or 0),
+                    context_limit=request.get("context_limit"),
                 )
             )
         return self._loop.run_until_complete(self._write(payloads))

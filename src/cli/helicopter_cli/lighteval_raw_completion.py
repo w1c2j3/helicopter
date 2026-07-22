@@ -6,6 +6,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
+from dataclasses import dataclass
 from string import ascii_uppercase
 from typing import Any
 
@@ -208,24 +209,43 @@ def _effective_max_tokens(task_name: str | None, default: int | None) -> int | N
     return task_sampling.get("max_tokens", value)
 
 
-def _fit_max_tokens_to_context(
+@dataclass(frozen=True)
+class _RequestContextFit:
+    max_tokens: int | None
+    truncate_prompt_tokens: int | None
+    prompt_tokens: int | None
+    context_limit: int
+
+    @property
+    def truncated_prompt_tokens(self) -> int:
+        if self.prompt_tokens is None or self.truncate_prompt_tokens is None:
+            return 0
+        return max(self.prompt_tokens - self.truncate_prompt_tokens, 0)
+
+
+def _fit_request_to_context(
     self: LiteLLMClient,
     *,
     prompt: str,
     requested_max_tokens: int | None,
-) -> int | None:
-    """Fit output tokens to the exact context window without truncating input."""
+) -> _RequestContextFit:
+    """Apply LightEval's native vLLM left-truncation contract."""
 
     if requested_max_tokens is None:
-        return None
+        return _RequestContextFit(None, None, None, int(self.max_length))
     requested = int(requested_max_tokens)
     if requested <= 0:
         raise RuntimeError(f"max_tokens must be positive, got {requested}")
     max_model_length = int(self.max_length)
+    if requested >= max_model_length:
+        raise RuntimeError(
+            f"max_tokens is {requested} but model context is {max_model_length}; "
+            "at least one prompt token must remain"
+        )
     # RWKV token count is bounded by UTF-8 bytes plus BOS. Only potentially
     # tight prompts need an authoritative endpoint tokenization round trip.
     if len(prompt.encode("utf-8")) + 1 + requested <= max_model_length:
-        return requested
+        return _RequestContextFit(requested, None, None, max_model_length)
 
     response = requests.post(
         _tokenize_url(self.base_url),
@@ -243,13 +263,18 @@ def _fit_max_tokens_to_context(
     prompt_tokens = int(body["count"])
     endpoint_max = int(body.get("max_model_len") or max_model_length)
     context_limit = min(max_model_length, endpoint_max)
-    available = context_limit - prompt_tokens
-    if available < 1:
+    prompt_budget = context_limit - requested
+    if prompt_budget < 1:
         raise RuntimeError(
-            f"prompt has {prompt_tokens} tokens but model context is {context_limit}; "
-            "input truncation is disabled"
+            f"max_tokens is {requested} but endpoint context is {context_limit}; "
+            "at least one prompt token must remain"
         )
-    return min(requested, available)
+    return _RequestContextFit(
+        max_tokens=requested,
+        truncate_prompt_tokens=prompt_budget if prompt_tokens > prompt_budget else None,
+        prompt_tokens=prompt_tokens,
+        context_limit=context_limit,
+    )
 
 
 def _request(
@@ -262,6 +287,7 @@ def _request(
     prompt_template: str | None = None,
     force_max_tokens: bool = False,
     force_stops: bool = False,
+    truncate_prompt_tokens: int | None = None,
     task_name: str | None = None,
 ) -> ModelResponse:
     overrides = load_sampling_overrides()
@@ -280,6 +306,8 @@ def _request(
         "max_tokens": max_tokens if force_max_tokens else _effective_max_tokens(task_name, max_tokens),
         "n": int(num_samples),
         "stop": stops if force_stops else effective_stop,
+        "truncate_prompt_tokens": truncate_prompt_tokens,
+        "truncation_side": "left" if truncate_prompt_tokens is not None else None,
         **overrides,
     }
     payload = {key: value for key, value in payload.items() if value is not None}
@@ -565,7 +593,7 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
             responses: list[ModelResponse | None] = [None] * len(split_docs)
 
             work_items: list[
-                tuple[int, int, list[int], dict[int, dict[str, Any]], int | None, int | None]
+                tuple[int, int, list[int], dict[int, dict[str, Any]], int | None, _RequestContextFit]
             ] = []
             for position, doc in enumerate(split_docs):
                 sample_index = original_indices.get(id(doc))
@@ -587,7 +615,7 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                     )
                     continue
                 requested_max_tokens = _effective_max_tokens(task_names[position], max_tokens)
-                fitted_max_tokens = _fit_max_tokens_to_context(
+                context_fit = _fit_request_to_context(
                     self,
                     prompt=prompts[position],
                     requested_max_tokens=requested_max_tokens,
@@ -599,7 +627,7 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                         missing,
                         existing,
                         requested_max_tokens,
-                        fitted_max_tokens,
+                        context_fit,
                     )
                 )
 
@@ -611,8 +639,12 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                         "doc": split_docs[position],
                         "prompt": prompts[position],
                         "repeat_indices": missing,
-                        "generation_size": fitted_max_tokens,
+                        "generation_size": context_fit.max_tokens,
                         "requested_generation_size": requested_max_tokens,
+                        "prompt_tokens": context_fit.prompt_tokens,
+                        "truncate_prompt_tokens": context_fit.truncate_prompt_tokens,
+                        "truncated_prompt_tokens": context_fit.truncated_prompt_tokens,
+                        "context_limit": context_fit.context_limit,
                     }
                     for (
                         position,
@@ -620,23 +652,24 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                         missing,
                         _existing,
                         requested_max_tokens,
-                        fitted_max_tokens,
+                        context_fit,
                     ) in work_items
                 )
 
             def generate_one(
                 position: int,
                 missing: list[int],
-                fitted_max_tokens: int | None,
+                context_fit: _RequestContextFit,
             ) -> ModelResponse:
                 response = _request(
                     self,
                     prompts[position],
-                    fitted_max_tokens,
+                    context_fit.max_tokens,
                     len(missing),
                     stops,
                     prompt_template=templates[position],
                     force_max_tokens=True,
+                    truncate_prompt_tokens=context_fit.truncate_prompt_tokens,
                     task_name=task_names[position],
                 )
                 return _postprocess_choice_response(split_docs[position], response)
@@ -644,7 +677,7 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
             with ThreadPoolExecutor(self.concurrent_requests) as executor:
                 futures: dict[
                     Any,
-                    tuple[int, int, list[int], dict[int, dict[str, Any]], int | None],
+                    tuple[int, int, list[int], dict[int, dict[str, Any]], _RequestContextFit],
                 ] = {}
                 for (
                     position,
@@ -652,10 +685,10 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                     missing,
                     existing,
                     _requested_max_tokens,
-                    fitted_max_tokens,
+                    context_fit,
                 ) in work_items:
-                    future = executor.submit(generate_one, position, missing, fitted_max_tokens)
-                    futures[future] = (position, sample_index, missing, existing, fitted_max_tokens)
+                    future = executor.submit(generate_one, position, missing, context_fit)
+                    futures[future] = (position, sample_index, missing, existing, context_fit)
 
                 for future in tqdm(
                     as_completed(futures),
@@ -665,7 +698,7 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                     leave=False,
                     disable=self.disable_tqdm,
                 ):
-                    position, sample_index, missing, existing, fitted_max_tokens = futures[future]
+                    position, sample_index, missing, existing, context_fit = futures[future]
                     generated = future.result()
                     doc = split_docs[position]
                     task_name = str(getattr(doc, "task_name", "") or dataset_name)
@@ -678,7 +711,7 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                         doc=doc,
                         response=generated,
                         repeat_indices=missing,
-                        generation_size=int(fitted_max_tokens or max_tokens),
+                        generation_size=int(context_fit.max_tokens or max_tokens),
                         checkpoint_session=checkpoint_session,
                     )
                     responses[position] = _merge_response_rollouts(

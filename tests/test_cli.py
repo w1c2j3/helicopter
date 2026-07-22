@@ -599,11 +599,11 @@ class RawCompletionTests(unittest.TestCase):
         )
         with mock.patch.object(lighteval_raw_completion.requests, "post") as post:
             self.assertEqual(
-                lighteval_raw_completion._fit_max_tokens_to_context(
+                lighteval_raw_completion._fit_request_to_context(
                     client,
                     prompt="short prompt",
                     requested_max_tokens=1280,
-                ),
+                ).max_tokens,
                 1280,
             )
             post.assert_not_called()
@@ -616,17 +616,17 @@ class RawCompletionTests(unittest.TestCase):
             "post",
             return_value=tokenized,
         ) as post:
-            self.assertEqual(
-                lighteval_raw_completion._fit_max_tokens_to_context(
-                    client,
-                    prompt="x" * 9000,
-                    requested_max_tokens=1280,
-                ),
-                1279,
+            fit = lighteval_raw_completion._fit_request_to_context(
+                client,
+                prompt="x" * 9000,
+                requested_max_tokens=1280,
             )
 
         self.assertEqual(post.call_args.args[0], "http://127.0.0.1:19315/tokenize")
         self.assertEqual(post.call_args.kwargs["json"]["model"], "rwkv-test")
+        self.assertEqual(fit.max_tokens, 1280)
+        self.assertEqual(fit.truncate_prompt_tokens, 8960)
+        self.assertEqual(fit.truncated_prompt_tokens, 1)
 
     def test_forced_context_budget_cannot_be_overridden_by_task_sampling(self) -> None:
         response = mock.Mock()
@@ -671,10 +671,13 @@ class RawCompletionTests(unittest.TestCase):
                 1,
                 None,
                 force_max_tokens=True,
+                truncate_prompt_tokens=8960,
                 task_name="g1h__ifbench_multiturn|0",
             )
 
         self.assertEqual(post.call_args.kwargs["json"]["max_tokens"], 1279)
+        self.assertEqual(post.call_args.kwargs["json"]["truncate_prompt_tokens"], 8960)
+        self.assertEqual(post.call_args.kwargs["json"]["truncation_side"], "left")
 
     def test_scoreboard_keeps_full_completion_and_extracted_eval_answer_separate(self) -> None:
         response = ModelResponse(text=["Reasoning. Answer: B"], text_post_processed=[" B"])
@@ -738,8 +741,12 @@ class RawCompletionTests(unittest.TestCase):
             doc={"id": "raw-row-1309", "task_name": "g1h__ifbench_multiturn|0"},
             prompt="User: exact long prompt\nAssistant: <think></think",
             repeat_indices=[0],
-            generation_size=1279,
+            generation_size=1280,
             requested_generation_size=1280,
+            prompt_tokens=12276,
+            truncate_prompt_tokens=8960,
+            truncated_prompt_tokens=3316,
+            context_limit=10240,
         )[0]
 
         self.assertEqual(payload["status"], "Running")
@@ -751,8 +758,13 @@ class RawCompletionTests(unittest.TestCase):
         self.assertEqual(payload["stats"]["lighteval_doc_id"], "raw-row-1309")
         self.assertEqual(payload["stats"]["dataset_row_id"], "raw-row-1309")
         self.assertEqual(len(payload["stats"]["prompt_sha256"]), 64)
-        self.assertEqual(payload["sampling_config"]["effective_generation_size"], 1279)
+        self.assertEqual(payload["sampling_config"]["effective_generation_size"], 1280)
         self.assertEqual(payload["sampling_config"]["requested_generation_size"], 1280)
+        self.assertEqual(payload["sampling_config"]["prompt_tokens"], 12276)
+        self.assertEqual(payload["sampling_config"]["truncate_prompt_tokens"], 8960)
+        self.assertEqual(payload["sampling_config"]["truncation_side"], "left")
+        self.assertEqual(payload["sampling_config"]["truncated_prompt_tokens"], 3316)
+        self.assertEqual(payload["sampling_config"]["context_limit"], 10240)
 
     def test_resume_rejects_lighteval_index_to_dataset_row_mismatch(self) -> None:
         checkpoint = {
