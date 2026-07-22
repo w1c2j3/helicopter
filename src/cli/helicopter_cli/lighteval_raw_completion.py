@@ -226,7 +226,16 @@ def _request(
                 json=payload,
                 timeout=self.timeout or 180,
             )
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except requests.HTTPError as error:
+                response_body = response.text.strip()
+                if len(response_body) > 2_000:
+                    response_body = f"{response_body[:2_000]}..."
+                raise RuntimeError(
+                    f"completion endpoint returned HTTP {response.status_code}: "
+                    f"{response_body or '<empty response body>'}"
+                ) from error
             body = response.json()
             choices = sorted(body.get("choices") or [], key=lambda item: item.get("index", 0))
             if not choices:

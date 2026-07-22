@@ -564,6 +564,31 @@ class RawCompletionTests(unittest.TestCase):
         for key, value in overrides.items():
             self.assertEqual(payload[key], value)
 
+    def test_raw_request_preserves_completion_endpoint_error_body(self) -> None:
+        response = mock.Mock()
+        response.status_code = 400
+        response.text = '{"error":{"message":"request rejected"}}'
+        response.raise_for_status.side_effect = lighteval_raw_completion.requests.HTTPError(
+            "400 Client Error"
+        )
+        client = SimpleNamespace(
+            model="openai/model",
+            base_url="http://127.0.0.1:29573/v1",
+            api_key="key",
+            timeout=10,
+            API_MAX_RETRY=1,
+            API_RETRY_SLEEP=0,
+            API_RETRY_MULTIPLIER=1,
+        )
+
+        with mock.patch.object(lighteval_raw_completion, "load_sampling_overrides", return_value={}), \
+             mock.patch.object(lighteval_raw_completion.requests, "post", return_value=response):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                'HTTP 400: {"error":{"message":"request rejected"}}',
+            ):
+                lighteval_raw_completion._request(client, "prompt", 32, 1, None)
+
     def test_scoreboard_keeps_full_completion_and_extracted_eval_answer_separate(self) -> None:
         response = ModelResponse(text=["Reasoning. Answer: B"], text_post_processed=[" B"])
         response.finish_reason = "stop"
