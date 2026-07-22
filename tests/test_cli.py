@@ -5202,6 +5202,9 @@ class CommandPlanTests(unittest.TestCase):
             tmp_path = Path(tmp)
             model_path = tmp_path / "model.pth"
             model_path.write_bytes(b"")
+            external_vllm = tmp_path / "vllm-rwkv"
+            external_vllm.mkdir()
+            loaded_config["paths"]["vllm_rwkv_path"] = str(external_vllm)
             missing_dataset_root = tmp_path / "missing-datasets"
             loaded_config["models"]["local-test"] = {
                 "path": str(model_path),
@@ -5245,6 +5248,9 @@ class CommandPlanTests(unittest.TestCase):
             tmp_path = Path(tmp)
             model_path = tmp_path / "model.pth"
             model_path.write_bytes(b"")
+            external_vllm = tmp_path / "vllm-rwkv"
+            external_vllm.mkdir()
+            loaded_config["paths"]["vllm_rwkv_path"] = str(external_vllm)
             missing_dataset_root = tmp_path / "missing-datasets"
             loaded_config["models"]["local-test"] = {
                 "path": str(model_path),
