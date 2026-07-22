@@ -5,6 +5,7 @@ import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from string import ascii_uppercase
 from typing import Any
 
@@ -336,8 +337,19 @@ def _checkpoint_response(
     response: ModelResponse,
     repeat_indices: list[int],
     generation_size: int,
+    checkpoint_session: Any | None = None,
 ) -> None:
     if not task_id:
+        return
+    if checkpoint_session is not None:
+        checkpoint_session.checkpoint(
+            task_name=task_name,
+            sample_index=sample_index,
+            doc=doc,
+            response=response,
+            repeat_indices=repeat_indices,
+            generation_size=generation_size,
+        )
         return
     from helicopter_cli.scoreboard_bridge import checkpoint_lighteval_response
 
@@ -391,90 +403,103 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
     original_indices = {id(doc): index for index, doc in enumerate(docs)}
     results: list[ModelResponse] = []
 
-    for split in tqdm(
-        dataset.splits_iterator(),
-        total=dataset.num_dataset_splits,
-        desc="Splits",
-        position=0,
-        disable=self.disable_tqdm,
-    ):
-        split_docs = list(split)
-        contexts = [self.prompt_manager._prepare_plain_text(doc) for doc in split_docs]
-        task_names = [str(getattr(doc, "task_name", "") or dataset_name) for doc in split_docs]
-        templates = [
-            _configured_prompt_template(task_name, default_template)
-            for task_name in task_names
-        ]
-        prompts = [template.format(query=context) for template, context in zip(templates, contexts)]
-        max_tokens = split[0].generation_size
-        rollout_n = int(split[0].num_samples)
-        stops = split[0].stop_sequences
-        responses: list[ModelResponse | None] = [None] * len(split_docs)
+    if task_id:
+        from helicopter_cli.scoreboard_bridge import LightevalCheckpointSession
 
-        def generate_one(position: int, missing: list[int]) -> ModelResponse:
-            response = _request(
-                self,
-                prompts[position],
-                max_tokens,
-                len(missing),
-                stops,
-                prompt_template=templates[position],
-                task_name=task_names[position],
-            )
-            return _postprocess_choice_response(split_docs[position], response)
+        checkpoint_context = LightevalCheckpointSession(
+            task_id=task_id,
+            dataset=dataset_name,
+            num_samples=len(docs),
+        )
+    else:
+        checkpoint_context = nullcontext(None)
 
-        with ThreadPoolExecutor(self.concurrent_requests) as executor:
-            futures: dict[Any, tuple[int, int, list[int], dict[int, dict[str, Any]]]] = {}
-            for position, doc in enumerate(split_docs):
-                sample_index = original_indices.get(id(doc))
-                if sample_index is None:
-                    raise RuntimeError("LightEval changed document identity; cannot assign a stable sample_index")
-                existing = stored.get(sample_index, {})
-                missing = [index for index in range(rollout_n) if index not in existing]
-                if not missing:
+    with checkpoint_context as checkpoint_session:
+        for split in tqdm(
+            dataset.splits_iterator(),
+            total=dataset.num_dataset_splits,
+            desc="Splits",
+            position=0,
+            disable=self.disable_tqdm,
+        ):
+            split_docs = list(split)
+            contexts = [self.prompt_manager._prepare_plain_text(doc) for doc in split_docs]
+            task_names = [str(getattr(doc, "task_name", "") or dataset_name) for doc in split_docs]
+            templates = [
+                _configured_prompt_template(task_name, default_template)
+                for task_name in task_names
+            ]
+            prompts = [template.format(query=context) for template, context in zip(templates, contexts)]
+            max_tokens = split[0].generation_size
+            rollout_n = int(split[0].num_samples)
+            stops = split[0].stop_sequences
+            responses: list[ModelResponse | None] = [None] * len(split_docs)
+
+            def generate_one(position: int, missing: list[int]) -> ModelResponse:
+                response = _request(
+                    self,
+                    prompts[position],
+                    max_tokens,
+                    len(missing),
+                    stops,
+                    prompt_template=templates[position],
+                    task_name=task_names[position],
+                )
+                return _postprocess_choice_response(split_docs[position], response)
+
+            with ThreadPoolExecutor(self.concurrent_requests) as executor:
+                futures: dict[Any, tuple[int, int, list[int], dict[int, dict[str, Any]]]] = {}
+                for position, doc in enumerate(split_docs):
+                    sample_index = original_indices.get(id(doc))
+                    if sample_index is None:
+                        raise RuntimeError("LightEval changed document identity; cannot assign a stable sample_index")
+                    existing = stored.get(sample_index, {})
+                    missing = [index for index in range(rollout_n) if index not in existing]
+                    if not missing:
+                        responses[position] = _merge_response_rollouts(
+                            existing=existing,
+                            generated=None,
+                            generated_indices=[],
+                            rollout_n=rollout_n,
+                        )
+                        continue
+                    future = executor.submit(generate_one, position, missing)
+                    futures[future] = (position, sample_index, missing, existing)
+
+                for future in tqdm(
+                    as_completed(futures),
+                    total=len(futures),
+                    desc="Raw completions",
+                    position=1,
+                    leave=False,
+                    disable=self.disable_tqdm,
+                ):
+                    position, sample_index, missing, existing = futures[future]
+                    generated = future.result()
+                    doc = split_docs[position]
+                    task_name = str(getattr(doc, "task_name", "") or dataset_name)
+                    _checkpoint_response(
+                        task_id=task_id,
+                        dataset_name=dataset_name or task_name,
+                        task_name=task_name,
+                        total_samples=len(docs),
+                        sample_index=sample_index,
+                        doc=doc,
+                        response=generated,
+                        repeat_indices=missing,
+                        generation_size=max_tokens,
+                        checkpoint_session=checkpoint_session,
+                    )
                     responses[position] = _merge_response_rollouts(
                         existing=existing,
-                        generated=None,
-                        generated_indices=[],
+                        generated=generated,
+                        generated_indices=missing,
                         rollout_n=rollout_n,
                     )
-                    continue
-                future = executor.submit(generate_one, position, missing)
-                futures[future] = (position, sample_index, missing, existing)
 
-            for future in tqdm(
-                as_completed(futures),
-                total=len(futures),
-                desc="Raw completions",
-                position=1,
-                leave=False,
-                disable=self.disable_tqdm,
-            ):
-                position, sample_index, missing, existing = futures[future]
-                generated = future.result()
-                doc = split_docs[position]
-                task_name = str(getattr(doc, "task_name", "") or dataset_name)
-                _checkpoint_response(
-                    task_id=task_id,
-                    dataset_name=dataset_name or task_name,
-                    task_name=task_name,
-                    total_samples=len(docs),
-                    sample_index=sample_index,
-                    doc=doc,
-                    response=generated,
-                    repeat_indices=missing,
-                    generation_size=max_tokens,
-                )
-                responses[position] = _merge_response_rollouts(
-                    existing=existing,
-                    generated=generated,
-                    generated_indices=missing,
-                    rollout_n=rollout_n,
-                )
-
-        if any(response is None for response in responses):
-            raise RuntimeError("generation returned an incomplete response set")
-        results.extend(response for response in responses if response is not None)
+            if any(response is None for response in responses):
+                raise RuntimeError("generation returned an incomplete response set")
+            results.extend(response for response in responses if response is not None)
 
     return dataset.get_original_order(results)
 

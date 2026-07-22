@@ -1075,6 +1075,93 @@ async def _checkpoint_generation(
         await close_db()
 
 
+class LightevalCheckpointSession:
+    """Persist generation checkpoints on one event loop and DB connection."""
+
+    def __init__(self, *, task_id: str, dataset: str, num_samples: int) -> None:
+        self.task_id = task_id
+        self.dataset = dataset
+        self.num_samples = int(num_samples)
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._store: Any | None = None
+
+    async def _open(self) -> None:
+        from scoreboard_server.db.connection import init_db
+        from scoreboard_server.db.repository import ScoreboardStore
+        from scoreboard_server.db.settings import DatabaseSettings
+
+        settings = DatabaseSettings.from_env()
+        await init_db(settings, generate_schemas=False)
+        self._store = ScoreboardStore(settings=settings)
+        await self._store.ensure_benchmark_num_samples(
+            dataset=self.dataset,
+            num_samples=self.num_samples,
+        )
+
+    async def _write(self, payloads: list[dict[str, Any]]) -> int:
+        if self._store is None:
+            raise RuntimeError("LightEval checkpoint session is not open")
+        return await self._store.insert_completion_payloads_batch(
+            payloads=payloads,
+            task_id=self.task_id,
+        )
+
+    async def _close(self) -> None:
+        from scoreboard_server.db.connection import close_db
+
+        try:
+            await close_db()
+        finally:
+            self._store = None
+
+    def __enter__(self) -> LightevalCheckpointSession:
+        if self._loop is not None:
+            raise RuntimeError("LightEval checkpoint session is already open")
+        root = Path(os.environ.get("HELICOPTER_PROJECT_ROOT") or Path.cwd()).resolve()
+        _add_scoreboard(root)
+        loop = asyncio.new_event_loop()
+        self._loop = loop
+        try:
+            loop.run_until_complete(self._open())
+        except BaseException:
+            loop.close()
+            self._loop = None
+            raise
+        return self
+
+    def checkpoint(
+        self,
+        *,
+        task_name: str,
+        sample_index: int,
+        doc: Any,
+        response: Any,
+        repeat_indices: Iterable[int],
+        generation_size: int | None = None,
+    ) -> int:
+        if self._loop is None:
+            raise RuntimeError("LightEval checkpoint session is not open")
+        payloads = _generation_payloads(
+            task_name=task_name,
+            sample_index=sample_index,
+            doc=doc,
+            response=response,
+            repeat_indices=repeat_indices,
+            generation_size=generation_size,
+        )
+        return self._loop.run_until_complete(self._write(payloads))
+
+    def __exit__(self, exc_type: Any, exc: BaseException | None, traceback: Any) -> None:
+        loop = self._loop
+        if loop is None:
+            return
+        try:
+            loop.run_until_complete(self._close())
+        finally:
+            loop.close()
+            self._loop = None
+
+
 def checkpoint_lighteval_response(
     *,
     task_id: str,
@@ -1088,26 +1175,20 @@ def checkpoint_lighteval_response(
     generation_size: int | None = None,
 ) -> int:
     """Persist one prompt's finished rollouts before the next model work."""
-
-    payloads = _generation_payloads(
-        task_name=task_name,
-        sample_index=sample_index,
-        doc=doc,
-        response=response,
-        repeat_indices=repeat_indices,
-        generation_size=generation_size,
-    )
-    root = Path(os.environ.get("HELICOPTER_PROJECT_ROOT") or Path.cwd()).resolve()
-    _add_scoreboard(root)
     with _LOCK:
-        return asyncio.run(
-            _checkpoint_generation(
-                task_id=task_id,
-                dataset=dataset,
-                num_samples=num_samples,
-                payloads=payloads,
+        with LightevalCheckpointSession(
+            task_id=task_id,
+            dataset=dataset,
+            num_samples=num_samples,
+        ) as session:
+            return session.checkpoint(
+                task_name=task_name,
+                sample_index=sample_index,
+                doc=doc,
+                response=response,
+                repeat_indices=repeat_indices,
+                generation_size=generation_size,
             )
-        )
 
 
 async def _load_generation(task_id: str) -> list[dict[str, Any]]:

@@ -601,6 +601,49 @@ class RawCompletionTests(unittest.TestCase):
         self.assertEqual(scoreboard_bridge._stop_reason(payload), "stop")
         self.assertEqual(payload["raw_text"], ["> Reasoning. Answer: B"])
 
+    def test_lighteval_checkpoint_session_reuses_one_db_lifecycle(self) -> None:
+        store = SimpleNamespace(
+            ensure_benchmark_num_samples=mock.AsyncMock(),
+            insert_completion_payloads_batch=mock.AsyncMock(return_value=1),
+        )
+        response = ModelResponse(text=["answer"])
+        response.raw_text = [">answer"]
+        response.finish_reason = "stop"
+        response.usage = {"total_tokens": 2}
+
+        with mock.patch(
+            "scoreboard_server.db.settings.DatabaseSettings.from_env",
+            return_value=SimpleNamespace(),
+        ), mock.patch(
+            "scoreboard_server.db.connection.init_db",
+            new=mock.AsyncMock(),
+        ) as init_db, mock.patch(
+            "scoreboard_server.db.connection.close_db",
+            new=mock.AsyncMock(),
+        ) as close_db, mock.patch(
+            "scoreboard_server.db.repository.ScoreboardStore",
+            return_value=store,
+        ):
+            with scoreboard_bridge.LightevalCheckpointSession(
+                task_id="7",
+                dataset="gsm8k",
+                num_samples=2,
+            ) as session:
+                for sample_index in range(2):
+                    session.checkpoint(
+                        task_name="g1h__gsm8k|0",
+                        sample_index=sample_index,
+                        doc=SimpleNamespace(id=str(sample_index), task_name="g1h__gsm8k|0"),
+                        response=response,
+                        repeat_indices=[0],
+                        generation_size=32,
+                    )
+
+        init_db.assert_awaited_once()
+        close_db.assert_awaited_once()
+        store.ensure_benchmark_num_samples.assert_awaited_once_with(dataset="gsm8k", num_samples=2)
+        self.assertEqual(store.insert_completion_payloads_batch.await_count, 2)
+
     def test_task_request_policy_combines_native_and_toml_stops(self) -> None:
         policy = {
             "tasks": {
