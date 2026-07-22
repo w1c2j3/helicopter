@@ -304,12 +304,13 @@ SWE-Bench patch token F1 or nonempty checks, and TAU static-plan token F1.
 `lighteval-tasks judges` marks these cases explicitly.
 
 The curated directly runnable non-function-calling LightEval catalog is stored
-in the scoreboard database table `benchmark_catalog`. It keeps 100 recognized
-public benchmark rows each for math, coding/CS, instruction/task following, and
-knowledge. The allowlist is generated from common LightEval task families such
-as MATH, GSM8K/MGSM, AIME, OlympiadBench, HumanEval/MBPP/LiveCodeBench,
-IFEval/IFBench/BBH/BIG-Bench, MMLU/GPQA/ARC, TruthfulQA/OpenBookQA, and
-Natural Questions/TriviaQA/SQuAD-style QA; agent, tool-use, function
+in the scoreboard database table `benchmark_catalog`. It keeps 30 diverse,
+recognized public benchmark rows each for math, coding/CS, instruction/task
+following, and knowledge. The allowlist is generated from common task families
+available in the pinned LightEval source, such as MATH, GSM8K/MGSM, AIME,
+OlympiadBench, LiveCodeBench and CS exam suites, IFEval/IFBench/BBH/BIG-Bench,
+MMLU/GPQA/ARC, TruthfulQA/OpenBookQA, and Natural Questions/TriviaQA/SQuAD-style
+QA; agent, tool-use, function
 calling, and endpoint-incompatible perplexity suites stay out of this direct
 HF/LightEval catalog.
 

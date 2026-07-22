@@ -5,7 +5,7 @@ CATALOG_SCOPE = "direct_hf_lighteval_non_function_calling"
 CATALOG_SOURCE = "lighteval"
 CATALOG_TARGET_KIND = "task"
 CATALOG_RUN_STATUS = "direct_lighteval_task"
-TARGET_PER_DOMAIN = 100
+TARGET_PER_DOMAIN = 30
 EXPECTED_FIELDS = ("math", "coding", "instruction_following", "knowledge")
 REQUIRED_TASKS = (
     "mmlu:professional_law",

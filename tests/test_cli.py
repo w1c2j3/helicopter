@@ -2432,7 +2432,7 @@ class CommandPlanTests(unittest.TestCase):
         )
         self.assertEqual(pipelines["stem_tool_agent"], {"hle_with_tools", "hy_euler_pro"})
 
-    def test_non_fc_lighteval_catalog_builder_has_100_recognized_tasks_per_domain(self) -> None:
+    def test_non_fc_lighteval_catalog_builder_has_30_diverse_recognized_tasks_per_domain(self) -> None:
         from helicopter_cli.non_fc_lighteval_catalog import build_manifest
 
         raw_source = build_manifest(root=ROOT)
@@ -2453,13 +2453,13 @@ class CommandPlanTests(unittest.TestCase):
             "swe_bench",
         )
 
-        self.assertEqual(raw_source["target_per_domain"], 100)
+        self.assertEqual(raw_source["target_per_domain"], 30)
         self.assertEqual(raw_source["scope"], "direct_hf_lighteval_non_function_calling")
         self.assertEqual(raw_source["scoreboard_domain_scope"]["included"], ["math", "coding", "instruction_following", "knowledge"])
         self.assertEqual({row["field"] for row in raw_source["scoreboard_domain_scope"]["excluded"]}, {"agent", "function_call"})
         self.assertEqual(
             counts,
-            Counter({"math": 100, "coding": 100, "instruction_following": 100, "knowledge": 100}),
+            Counter({"math": 30, "coding": 30, "instruction_following": 30, "knowledge": 30}),
         )
         self.assertEqual(len(names), len(rows))
         self.assertNotIn("agent", counts)
@@ -2471,8 +2471,14 @@ class CommandPlanTests(unittest.TestCase):
         self.assertNotIn("mathqa", names)
         self.assertNotIn("ifeval-fr", names)
         self.assertNotIn("qasper", names)
+        self.assertFalse(any(name.startswith("aime") and name.endswith(("_avg", "_gpassk")) for name in names))
+        self.assertFalse(any("codegeneration_release_" in name for name in names))
+        self.assertFalse(any(name.startswith("lcb:codegeneration_v") and name.count("_v") >= 2 for name in names))
         self.assertNotIn("the_pile:arxiv", names)
         self.assertTrue(all(row["source_family"] for row in rows))
+        for field in ("math", "coding", "instruction_following", "knowledge"):
+            families = {row["source_family"] for row in rows if row["field"] == field}
+            self.assertGreaterEqual(len(families), 4)
         self.assertFalse(any(any(token in row["name"].lower() for token in disallowed) for row in rows))
 
     def test_agent_harness_source_binds_every_benchmark_to_profile(self) -> None:
