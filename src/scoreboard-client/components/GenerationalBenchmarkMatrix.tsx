@@ -141,30 +141,29 @@ export function GenerationalBenchmarkMatrix({ matrix }: { matrix: LeaderboardMat
           />
           <strong>{rows.length}/{domain.columns.length}</strong>
         </label>
+        <nav className="matrix-domain-tabs generation-domain-tabs" aria-label="领域筛选">
+          {matrix.domains.map((item) => (
+            <button
+              type="button"
+              key={item.key}
+              className={item.key === domain.key ? "active" : ""}
+              disabled={!item.columns.length}
+              onClick={() => {
+                setDomainKey(item.key);
+                setQuery("");
+                setReverseBenchmarks(false);
+              }}
+            >
+              {item.label}<span>{item.columns.length}</span>
+            </button>
+          ))}
+        </nav>
         <div className="generation-toolbar-meta">
           <span>{groups.length} 参数量</span>
           <span>{groups.length * 2} 模型</span>
           <span className="mock-data-badge">SIMULATED DATA</span>
         </div>
       </div>
-
-      <nav className="matrix-domain-tabs generation-domain-tabs" aria-label="领域筛选">
-        {matrix.domains.map((item) => (
-          <button
-            type="button"
-            key={item.key}
-            className={item.key === domain.key ? "active" : ""}
-            disabled={!item.columns.length}
-            onClick={() => {
-              setDomainKey(item.key);
-              setQuery("");
-              setReverseBenchmarks(false);
-            }}
-          >
-            {item.label}<span>{item.columns.length}</span>
-          </button>
-        ))}
-      </nav>
 
       <div className="generation-context">
         <div>

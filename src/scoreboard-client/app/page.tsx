@@ -57,7 +57,7 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
     : null;
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell${isDashboard ? " dashboard-shell" : ""}`}>
       <header className="app-header">
         <div>
           <h1><span className="brand-dot">⦿</span> RWKV Skills</h1>
