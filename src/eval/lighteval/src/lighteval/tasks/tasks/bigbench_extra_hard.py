@@ -33,19 +33,8 @@ from lighteval.tasks.requests import Doc
 
 
 def bbeh_prompt(line, task_name: str = None):
-    line = {k: v for k, v in line.items() if v is not None}
-
-    query = "Question: \n"
-    query += line["input"]
-    query += "\nAnswer:"
-
-    return Doc(
-        task_name=task_name,
-        query=query,
-        choices=line["target"],
-        gold_index=0,
-        instruction="",
-    )
+    return Doc(task_name=task_name, query=str(line["input"]).strip(), choices=line["target"],
+               gold_index=0, instruction=None)
 
 
 def record_to_sample(record):
@@ -70,7 +59,7 @@ COMMON_TASK_ARGS = {
     "generation_size": -1,
     "metrics": [Metrics.loglikelihood_acc],
     "stop_sequence": ["</s>", "Q=", "\n\n"],
-    "version": 0,
+    "version": 1,
     "sample_fields": record_to_sample,
     "solver": [system_message(SYSTEM_MESSAGE), generate(cache=True)],
     "scorer": answer(pattern="line"),

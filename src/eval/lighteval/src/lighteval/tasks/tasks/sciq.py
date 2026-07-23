@@ -30,7 +30,7 @@ from lighteval.tasks.requests import Doc
 def sciq_prompt(line, task_name: str = None):
     return Doc(
         task_name=task_name,
-        query=f"{line['support']}\nQuestion: {line['question']}\nAnswer:".strip(),
+        query=f"{str(line['support']).strip()}\n{str(line['question']).strip()}",
         choices=[
             f" {c}" for c in [line["distractor1"], line["distractor2"], line["distractor3"], line["correct_answer"]]
         ],
@@ -50,7 +50,7 @@ sciq = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 TASKS_TABLE = [

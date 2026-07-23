@@ -532,6 +532,8 @@ class AlphabetLoopChecker(Instruction):
         """Checks if each word of the response starts with the next letter of the alphabet."""
         value = value.translate(str.maketrans("", "", string.punctuation))
         words = value.strip("".join(string.punctuation) + " ").split()
+        if not words:
+            return False
         alphabet = string.ascii_lowercase
         correct_letter = words[0][0].lower()
         if correct_letter not in alphabet:  # numbers are fails
@@ -1243,8 +1245,12 @@ class LastWordFirstNextChecker(Instruction):
         """Checks if the last word of each sentence in the response is the first word of the next sentence."""
         sentences = instructions_util.split_into_sentences(value)
         for i in range(len(sentences) - 1):
-            last_word = sentences[i].rstrip("".join(string.punctuation) + " ").split()[-1]
-            first_word = sentences[i + 1].lstrip("".join(string.punctuation) + " ").split()[0]
+            last_words = sentences[i].rstrip("".join(string.punctuation) + " ").split()
+            first_words = sentences[i + 1].lstrip("".join(string.punctuation) + " ").split()
+            if not last_words or not first_words:
+                return False
+            last_word = last_words[-1]
+            first_word = first_words[0]
             if last_word.lower() != first_word.lower():
                 return False
         return True
@@ -1276,6 +1282,8 @@ class ParagraphLastFirstWordMatchChecker(Instruction):
             if not paragraph:
                 continue
             words = paragraph.strip("".join(string.punctuation) + " ").split()
+            if not words:
+                continue
             if words[0] != words[-1]:
                 return False
         return True

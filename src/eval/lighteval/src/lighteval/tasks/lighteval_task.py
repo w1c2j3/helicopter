@@ -306,19 +306,21 @@ class LightevalTask:
                 item["__few_shots"] = few_shots
                 # Some tasks require to know which is the current item index in order to apply a different prompt template
                 item["__index"] = ix
-                doc = self.formatter(item, self.name)
+                formatted_docs = self.formatter(item, self.name)
                 # Skip if formatter returns None (e.g., to filter out certain samples)
-                if doc is None or doc == []:
+                if formatted_docs is None or formatted_docs == []:
                     continue
 
-                doc.id = str(ix)
+                current_docs = as_list(formatted_docs)
+                for sub_ix, doc in enumerate(current_docs):
+                    doc.id = str(ix) if len(current_docs) == 1 else f"{ix}:{sub_ix}"
 
-                # Transfer task-level generation parameters to the document
-                doc.generation_grammar = self.generation_grammar
-                doc.generation_size = self.generation_size
-                doc.stop_sequences = self.stop_sequence
+                    # Transfer task-level generation parameters to the document
+                    doc.generation_grammar = self.generation_grammar
+                    doc.generation_size = self.generation_size
+                    doc.stop_sequences = self.stop_sequence
 
-                docs.append(doc)
+                    docs.append(doc)
 
         return docs
 

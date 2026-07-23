@@ -48,13 +48,16 @@ def strip_prefilled_reasoning(text: str, *, force: bool = False) -> str:
     """Return the answer after a prefilled think block closes.
 
     The prompt owns the opening think text, so the generated continuation
-    contains only the closing tag. Full in-response tag pairs remain delegated
-    to LightEval's native reasoning-tag remover.
+    contains the closing tag. When the model quotes a literal closing tag from
+    the prompt before closing its real reasoning block, the final closing tag
+    is the only valid answer boundary. Full in-response tag pairs remain
+    delegated to LightEval's native reasoning-tag remover.
     """
 
     value = str(text or "")
-    closing = value.lower().find("</think>")
-    opening = value.lower().find("<think")
+    lowered = value.lower()
+    closing = lowered.rfind("</think>") if force else lowered.find("</think>")
+    opening = lowered.find("<think")
     if closing >= 0 and (force or opening < 0 or opening > closing):
         return value[closing + len("</think>") :].lstrip()
     return value
@@ -94,6 +97,49 @@ def _configured_sample_policy() -> dict[str, Any] | None:
         "large_benchmark_sample_rate",
     }
     return policy if isinstance(policy, dict) and required <= policy.keys() else None
+
+
+def _configured_request_format() -> str | None:
+    raw = os.environ.get("HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY", "").strip()
+    if not raw:
+        return None
+    try:
+        policy = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    tasks = policy.get("tasks") if isinstance(policy, dict) else None
+    if not isinstance(tasks, dict) or len(tasks) != 1:
+        return None
+    entry = next(iter(tasks.values()))
+    if not isinstance(entry, dict):
+        return None
+    value = entry.get("format")
+    return str(value).strip() or None if value is not None else None
+
+
+def normalize_code_fences(text: str) -> str:
+    """Give LightEval's official code extractor exactly one fenced block.
+
+    The official LCB extractor uses the final two fence lines and returns an
+    empty program when fewer than two exist. Preserve that exact extraction
+    choice while closing a truncated single block and removing unrelated
+    earlier blocks from the scoring text.
+    """
+
+    value = str(text or "")
+    lines = value.splitlines()
+    fence_lines = [index for index, line in enumerate(lines) if "```" in line]
+    if not fence_lines:
+        return value
+    if len(fence_lines) == 2:
+        return value
+    if len(fence_lines) == 1:
+        return value.rstrip() + "\n```"
+
+    opening = lines[fence_lines[-2]]
+    language = "python" if "python" in opening.casefold() else ""
+    body = "\n".join(lines[fence_lines[-2] + 1 : fence_lines[-1]])
+    return f"```{language}\n{body.rstrip()}\n```"
 
 
 def _get_docs(self: LightevalTask, max_samples: int | None = None) -> list[Any]:
@@ -197,34 +243,41 @@ def _post_process_outputs(
     sampling_method_responses: dict[str, list[Any]],
 ) -> None:
     _ORIGINAL_POST_PROCESS_OUTPUTS(self, sampling_method_responses)
-    if not self.pipeline_parameters.remove_reasoning_tags:
-        return
+    normalize_code = _configured_request_format() in {
+        "code", "python_function", "python_program", "python_snippet", "diff_patch", "generic_code", "code_completion"
+    }
     for responses in sampling_method_responses.values():
         for response in responses:
             texts = list(getattr(response, "text", None) or [])
             processed = list(getattr(response, "text_post_processed", None) or texts)
-            prompt = getattr(response, "input", None)
-            requires_closing = has_unclosed_reasoning_prefill(prompt)
-            empty_reasoning_prefill = has_empty_reasoning_prefill(prompt)
-            scored: list[str] = []
-            for index, text in enumerate(texts):
-                candidate = processed[index] if index < len(processed) else text
-                if empty_reasoning_prefill:
-                    scored.append(str(text))
-                elif requires_closing and "</think>" not in str(text).lower():
-                    # Match native LightEval: an unmatched prefilled opening
-                    # tag is not present in the continuation, so the native
-                    # reasoning-tag remover leaves that continuation intact.
-                    # Math extractors can still recover a boxed/final answer
-                    # from a response that reached its token limit.
-                    scored.append(str(candidate))
-                elif requires_closing:
-                    # The prompt owns the opening think tag. Work from the raw
-                    # response before LightEval removes any quoted tag pair in
-                    # the reasoning, then take everything after its first close.
-                    scored.append(strip_prefilled_reasoning(text, force=True))
-                else:
-                    scored.append(strip_prefilled_reasoning(candidate))
+            scored: list[str]
+            if self.pipeline_parameters.remove_reasoning_tags:
+                prompt = getattr(response, "input", None)
+                requires_closing = has_unclosed_reasoning_prefill(prompt)
+                empty_reasoning_prefill = has_empty_reasoning_prefill(prompt)
+                scored = []
+                for index, text in enumerate(texts):
+                    candidate = processed[index] if index < len(processed) else text
+                    if empty_reasoning_prefill:
+                        scored.append(str(text))
+                    elif requires_closing and "</think>" not in str(text).lower():
+                        # Match native LightEval: an unmatched prefilled opening
+                        # tag is not present in the continuation, so the native
+                        # reasoning-tag remover leaves that continuation intact.
+                        # Math extractors can still recover a boxed/final answer
+                        # from a response that reached its token limit.
+                        scored.append(str(candidate))
+                    elif requires_closing:
+                        # The prompt owns the opening think tag. Work from the raw
+                        # response before LightEval removes any quoted tag pair in
+                        # the reasoning, then take everything after its first close.
+                        scored.append(strip_prefilled_reasoning(text, force=True))
+                    else:
+                        scored.append(strip_prefilled_reasoning(candidate))
+            else:
+                scored = [str(value) for value in processed]
+            if normalize_code:
+                scored = [normalize_code_fences(value) for value in scored]
             response.text_post_processed = scored
 
 

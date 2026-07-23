@@ -31,15 +31,10 @@ from lighteval.tasks.requests import Doc
 
 
 def bbq_prompt(line, task_name: str = None):
-    query = f"The following are multiple choice questions (with answers).\nPassage: {line['context']}\nQuestion: {line['question']}"
-    query += "".join([f"\n{key}. {choice}" for key, choice in zip(ascii_uppercase, line["choices"])])
-    query += "\nAnswer:"
-    return Doc(
-        task_name=task_name,
-        query=query,
-        choices=list(ascii_uppercase)[: len(line["choices"])],
-        gold_index=int(line["gold_index"]),
-    )
+    query = f"{str(line['context']).strip()}\n{str(line['question']).strip()}"
+    query += "".join(f"\n{key}. {choice}" for key, choice in zip(ascii_uppercase, line["choices"]))
+    return Doc(task_name=task_name, query=query, choices=list(ascii_uppercase)[: len(line["choices"])],
+               gold_index=int(line["gold_index"]), instruction=None)
 
 
 def record_to_sample(record):
@@ -61,7 +56,7 @@ bbq = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -79,7 +74,7 @@ bbq_Age = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -97,7 +92,7 @@ bbq_Disability_status = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -115,7 +110,7 @@ bbq_Gender_identity = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -133,7 +128,7 @@ bbq_Nationality = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -151,7 +146,7 @@ bbq_Physical_appearance = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -169,7 +164,7 @@ bbq_Race_ethnicity = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -187,7 +182,7 @@ bbq_Race_x_SES = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -205,7 +200,7 @@ bbq_Race_x_gender = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -223,7 +218,7 @@ bbq_Religion = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -241,7 +236,7 @@ bbq_SES = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -259,7 +254,7 @@ bbq_Sexual_orientation = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),

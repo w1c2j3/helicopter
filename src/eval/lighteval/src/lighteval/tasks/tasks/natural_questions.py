@@ -31,6 +31,7 @@ natural_questions = LightevalTaskConfig(
     prompt_function=get_qa_prompt_function(
         Language.ENGLISH,
         lambda line: {"question": line["question"], "choices": [line["answer"]]},
+        raw_question=True,
     ),
     hf_repo="lighteval/small_natural_questions",
     hf_subset="default",
@@ -39,7 +40,7 @@ natural_questions = LightevalTaskConfig(
     generation_size=250,
     stop_sequence=["\n", "Question:", "question:"],
     metrics=[Metrics.exact_match],
-    version=1,
+    version=2,
 )
 
 TASKS_TABLE = [

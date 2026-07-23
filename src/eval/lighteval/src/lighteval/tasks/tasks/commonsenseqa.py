@@ -35,19 +35,11 @@ from lighteval.tasks.requests import Doc
 
 
 def commonsenseqa_prompt(line, task_name: str = None):
-    query = f"The following are multiple choice questions (with answers) about common sense.\nQuestion: {line['question']}\n"
-    query += "".join(
-        [f"{key}. {choice}\n" for key, choice in zip(ascii_uppercase, [f" {c}" for c in line["choices"]["text"]])]
-    )
-    query += "Answer:"
-
-    return Doc(
-        task_name=task_name,
-        query=query,
-        choices=list(ascii_uppercase)[: len(line["choices"]["text"])],
-        gold_index=list(ascii_uppercase).index(line["answerKey"].strip()),
-        instruction="The following are multiple choice questions (with answers) about common sense.\n",
-    )
+    choices = [str(choice).strip() for choice in line["choices"]["text"]]
+    query = str(line["question"]).strip()
+    query += "".join(f"\n{key}. {choice}" for key, choice in zip(ascii_uppercase, choices))
+    return Doc(task_name=task_name, query=query, choices=list(ascii_uppercase)[: len(choices)],
+               gold_index=list(ascii_uppercase).index(line["answerKey"].strip()), instruction=None)
 
 
 def record_to_sample(record):
@@ -69,7 +61,7 @@ commonsenseqa = LightevalTaskConfig(
     generation_size=1,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),

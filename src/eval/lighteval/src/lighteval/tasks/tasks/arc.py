@@ -32,12 +32,9 @@ from lighteval.tasks.requests import Doc
 
 
 def arc_prompt(line, task_name: str = None):
-    return Doc(
-        task_name=task_name,
-        query=f"Question: {line['question']}\nAnswer:",
-        choices=[f" {c}" for c in line["choices"]["text"]],
-        gold_index=line["choices"]["label"].index(line["answerKey"]),
-    )
+    return Doc(task_name=task_name, query=str(line["question"]).strip(),
+               choices=[str(choice).strip() for choice in line["choices"]["text"]],
+               gold_index=line["choices"]["label"].index(line["answerKey"]), instruction=None)
 
 
 def record_to_sample(record):
@@ -62,7 +59,7 @@ arc_challenge = LightevalTaskConfig(
         Metrics.loglikelihood_acc,
     ],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -82,7 +79,7 @@ arc_easy = LightevalTaskConfig(
         Metrics.loglikelihood_acc,
     ],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),

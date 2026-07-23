@@ -1,0 +1,37 @@
+# famous120 benchmark specification; prompt text remains the raw official item.
+
+[benchmark]
+field = "instruction_following"
+ordinal = 6
+name = "complexbench"
+label = "ComplexBench"
+task = "complexbench"
+allowed_modes = ["naive_nocot", "normal_nocot"]
+
+[dataset]
+source = "ComplexBench official source pending verification"
+source_status = "pending_verification"
+prompt_contract = "raw_question_only"
+gold_contract = "final_answer_only"
+
+[prompt]
+format = "instruction"
+raw_question_only = true
+add_instructions = false
+add_fewshot_cue = false
+
+[judge]
+enabled = true
+contract = "reference_candidate"
+primary_score = false
+
+[evaluation]
+metric = "avg"
+avg_k = 8
+rollout_n = 8
+target_generations_per_benchmark = 5000
+large_benchmark_generation_threshold = 20000
+large_benchmark_sample_rate = 0.2
+
+[sampling]
+max_tokens = 1280

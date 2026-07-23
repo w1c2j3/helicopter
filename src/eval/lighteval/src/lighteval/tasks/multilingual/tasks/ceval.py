@@ -93,6 +93,7 @@ CEVAL_SUBSET = [
 ]
 
 
+
 TASKS_TABLE = [
     LightevalTaskConfig(
         name=f"ceval_{Language.CHINESE.value}_{formulation.name.lower()}:{subset}",
@@ -104,11 +105,13 @@ TASKS_TABLE = [
                 formulation,
             ),
             formulation=formulation,
+            raw_question=True,
         ),
         hf_repo="ceval/ceval-exam",
         hf_subset=subset,
         evaluation_splits=("val",),
         few_shots_split="dev",
+        version=1,
         metrics=get_metrics_for_formulation(
             formulation,
             [

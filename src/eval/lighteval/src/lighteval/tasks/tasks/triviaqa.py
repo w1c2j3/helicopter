@@ -45,7 +45,7 @@ def triviaqa_prompt(line, task_name: str = None):
 
     return Doc(
         task_name=task_name,
-        query=f"Question: {line['question']}\nAnswer:",
+        query=str(line["question"]).strip(),
         gold_index=0,
         choices=[list_of_candidates],
     )
@@ -63,7 +63,7 @@ triviaqa = LightevalTaskConfig(
     generation_size=20,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n", ".", ","],
-    version=0,
+    version=1,
 )
 
 TASKS_TABLE = [

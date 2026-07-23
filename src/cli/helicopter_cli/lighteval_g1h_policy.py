@@ -535,11 +535,10 @@ def _serialize_choices(query: str, choices: list[Any]) -> str:
     ]
     stripped = str(query).rstrip()
     lines = stripped.splitlines()
-    cue = "Answer:"
     if lines and _TERMINAL_ANSWER_CUE_RE.fullmatch(lines[-1].strip()):
-        cue = lines.pop().strip()
+        lines.pop()
         stripped = "\n".join(lines).rstrip()
-    sections = [section for section in (stripped, "\n".join(option_lines), cue) if section]
+    sections = [section for section in (stripped, "\n".join(option_lines)) if section]
     return "\n".join(sections)
 
 
@@ -590,41 +589,42 @@ def _wrap_prompt(
         # Several custom prompt functions branch on the catalog name.  Keep
         # that name for the inner formatter even though LightEval sees the
         # private alias.
-        doc = prompt_function(line, canonical_name)
-        if doc is None:
+        formatted = prompt_function(line, canonical_name)
+        if formatted is None:
             return None
-        doc = _prepare_generated_mcq(doc, force=force_choice_generation)
-        # The raw endpoint adapter owns the final model prompt. Formatting it
-        # here as well would produce nested ``User: ... Assistant:`` wrappers.
-        if not os.environ.get("HELICOPTER_PROMPT_TEMPLATE"):
-            doc.query = format_query(doc.query, canonical_name=canonical_name, policy=policy)
-        return doc
+
+        def prepare(doc: Doc) -> Doc:
+            doc = _prepare_generated_mcq(doc, force=force_choice_generation)
+            # The raw endpoint adapter owns the final model prompt. Formatting it
+            # here as well would produce nested ``User: ... Assistant:`` wrappers.
+            if not os.environ.get("HELICOPTER_PROMPT_TEMPLATE"):
+                doc.query = format_query(doc.query, canonical_name=canonical_name, policy=policy)
+            return doc
+
+        if isinstance(formatted, list):
+            return [prepare(doc) for doc in formatted]
+        return prepare(formatted)
 
     return wrapped
 
 
 def _local_gpqa_prompt(line: dict[str, Any], task_name: str | None = None) -> Doc:
-    """Adapt the authorized rwkv-skills GPQA cache to LightEval's native task contract."""
+    """Adapt the authorized local GPQA row without adding evaluator instructions."""
 
     labels = list(ascii_uppercase[:4])
     answer = str(line.get("answer", "")).strip().upper()
     if answer not in labels:
         raise ValueError(f"local GPQA row has invalid answer label: {answer!r}")
-    instruction = (
-        "Answer the following multiple choice question. The last line of your response "
-        "should be of the following format: 'Answer: $LETTER' (without quotes) where "
-        "LETTER is one of ABCD. Think step by step before answering."
-    )
-    query = (
-        f"{instruction}\n\n{str(line.get('question', '')).strip()}\n\n"
-        + "\n".join(f"{label}) {str(line.get(label, '')).strip()}" for label in labels)
+    query = str(line.get("question", "")).strip()
+    query += "\n" + "\n".join(
+        f"{label}. {str(line.get(label, '')).strip()}" for label in labels
     )
     return Doc(
         task_name=task_name,
         query=query,
         choices=labels,
         gold_index=labels.index(answer),
-        instruction=instruction,
+        instruction=None,
     )
 
 

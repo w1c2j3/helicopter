@@ -408,6 +408,14 @@ def resolve_lighteval_g1h_policy(
             else:
                 raw_specs = [item.strip() for item in str(tasks).split(",") if item.strip()]
             selected = select_task_specs(raw_specs, resolved)
+            benchmark_specs = config.get("_benchmark_specs", {})
+            if len(selected) == 1 and isinstance(benchmark_specs, dict):
+                benchmark_spec = benchmark_specs.get(selected[0][0])
+                if isinstance(benchmark_spec, dict):
+                    evaluation = benchmark_spec.get("evaluation", {})
+                    if not isinstance(evaluation, dict):
+                        raise ValueError("benchmark evaluation settings must be a TOML table")
+                    resolved = normalize_policy({**resolved, **evaluation})
             resolved["selected_tasks"] = [name for name, _fewshot in selected]
             resolved["tasks"] = alias_task_specs(selected, resolved)
         return resolved
@@ -473,6 +481,9 @@ def resolve_lighteval_task_request_policy(
     stop_domains = stops.get("domains", {})
     if not isinstance(stop_domains, dict):
         raise SystemExit("[stops.domains] must be a TOML table")
+    stop_formats = stops.get("formats", {})
+    if not isinstance(stop_formats, dict):
+        raise SystemExit("[stops.formats] must be a TOML table")
     sampling = table(config, "sampling")
     sampling_domains = sampling.get("domains", {})
     if not isinstance(sampling_domains, dict):
@@ -495,11 +506,35 @@ def resolve_lighteval_task_request_policy(
             raise SystemExit("[prompt].allowed_domains must be a TOML array of domain names")
         allowed_domains = {item.strip() for item in allowed_domains}
 
+    benchmark_specs = config.get("_benchmark_specs", {})
+    if not isinstance(benchmark_specs, dict):
+        raise SystemExit("internal benchmark specification map must be a table")
+    prompt_mode = str(prompt.get("mode", "")).strip()
+
     tasks: dict[str, Any] = {}
     for task_name in selected_tasks:
-        domain = domain_for_task(task_name)
-        if domain is None:
+        canonical = str(task_name).split("|", 1)[0]
+        if canonical.startswith("g1h__"):
+            canonical = canonical[len("g1h__") :]
+        benchmark_spec = benchmark_specs.get(canonical)
+        if benchmark_spec is not None and not isinstance(benchmark_spec, dict):
+            raise SystemExit(f"benchmark specification for {canonical!r} must be a table")
+        benchmark = benchmark_spec.get("benchmark", {}) if benchmark_spec else {}
+        spec_prompt = benchmark_spec.get("prompt", {}) if benchmark_spec else {}
+        benchmark_sampling = benchmark_spec.get("sampling", {}) if benchmark_spec else {}
+        if not isinstance(benchmark, dict) or not isinstance(spec_prompt, dict):
+            raise SystemExit(f"benchmark specification for {canonical!r} is malformed")
+        if not isinstance(benchmark_sampling, dict):
+            raise SystemExit(f"benchmark sampling for {canonical!r} must be a TOML table")
+        domain = str(benchmark.get("field")) if benchmark else domain_for_task(task_name)
+        if not domain:
             raise SystemExit(f"no benchmark domain is registered for LightEval task {task_name!r}")
+        allowed_modes = benchmark.get("allowed_modes") if benchmark else None
+        if allowed_modes is not None and prompt_mode not in allowed_modes:
+            raise SystemExit(
+                f"prompt mode does not allow benchmark {canonical!r}: "
+                f"mode={prompt_mode!r} allowed={allowed_modes}"
+            )
         if allowed_domains is not None and domain not in allowed_domains:
             raise SystemExit(
                 f"prompt mode does not allow the {domain!r} domain for LightEval task {task_name!r}"
@@ -510,11 +545,19 @@ def resolve_lighteval_task_request_policy(
         domain_sampling = sampling_domains.get(domain, {})
         if not isinstance(domain_sampling, dict):
             raise SystemExit(f"[sampling.domains.{domain}] must be a TOML table")
-        request_format = configured_request_format(
-            task_name,
-            domain=domain,
-            formats=prompt_formats,
+        request_format = (
+            str(spec_prompt.get("format"))
+            if spec_prompt.get("format")
+            else configured_request_format(
+                task_name,
+                domain=domain,
+                formats=prompt_formats,
+            )
         )
+        format_stops = stop_formats.get(request_format) if request_format else None
+        if format_stops is not None and not isinstance(format_stops, list):
+            raise SystemExit(f"[stops.formats].{request_format} must be a TOML array")
+        resolved_stops = list(dict.fromkeys([*(domain_stops or []), *(format_stops or [])])) or None
         format_sampling = sampling_formats.get(request_format, {}) if request_format else {}
         if not isinstance(format_sampling, dict):
             raise SystemExit(f"[sampling.formats.{request_format}] must be a TOML table")
@@ -526,6 +569,10 @@ def resolve_lighteval_task_request_policy(
         if unknown_format:
             fields = ", ".join(sorted(unknown_format))
             raise SystemExit(f"[sampling.formats.{request_format}] has unsupported fields: {fields}")
+        unknown_benchmark = set(benchmark_sampling) - set(VLLM_SAMPLING_FIELDS)
+        if unknown_benchmark:
+            fields = ", ".join(sorted(unknown_benchmark))
+            raise SystemExit(f"benchmark {canonical!r} has unsupported sampling fields: {fields}")
         domain_prompt = prompt_domains.get(domain, {})
         if not isinstance(domain_prompt, dict):
             raise SystemExit(f"[prompt.domains.{domain}] must be a TOML table")
@@ -542,15 +589,35 @@ def resolve_lighteval_task_request_policy(
             raise SystemExit(
                 f"[prompt.domains.{domain}].template must be a string containing {{query}}"
             )
+        multi_turn_template = format_prompt.get(
+            "multi_turn_template",
+            domain_prompt.get("multi_turn_template", prompt.get("multi_turn_template")),
+        )
+        required_multi_turn_fields = ("{first_prompt}", "{first_answer}", "{query}")
+        if multi_turn_template is not None and (
+            not isinstance(multi_turn_template, str)
+            or any(field not in multi_turn_template for field in required_multi_turn_fields)
+        ):
+            raise SystemExit("prompt multi_turn_template must contain {first_prompt}, {first_answer}, and {query}")
         task_policy = {
             "domain": domain,
             "format": request_format,
             "inherit_task_stops": bool(stops.get("inherit_task_stops", True)),
-            "stop": list(domain_stops) if domain_stops is not None else None,
-            "sampling": {**base_sampling, **domain_sampling, **format_sampling},
+            "stop": resolved_stops,
+            "sampling": {
+                **base_sampling,
+                **domain_sampling,
+                **format_sampling,
+                **benchmark_sampling,
+            },
         }
+        if benchmark_spec:
+            task_policy["benchmark_config_path"] = str(benchmark_spec.get("_path", ""))
+            task_policy["judge"] = dict(benchmark_spec.get("judge", {}))
         if prompt_template is not None:
             task_policy["prompt_template"] = prompt_template
+        if multi_turn_template is not None:
+            task_policy["multi_turn_template"] = multi_turn_template
         tasks[task_name] = task_policy
     return {"tasks": tasks}
 

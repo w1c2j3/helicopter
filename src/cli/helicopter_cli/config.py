@@ -35,7 +35,34 @@ def load_config(
     if not path.exists():
         raise SystemExit(f"config file not found: {path}")
     with path.open("rb") as file:
-        return tomllib.load(file), path
+        config = tomllib.load(file)
+    model_catalog = config.get("model_catalog", {})
+    if isinstance(model_catalog, dict) and model_catalog.get("path"):
+        catalog_path = Path(str(model_catalog["path"]))
+        if not catalog_path.is_absolute():
+            catalog_path = root / catalog_path
+        with catalog_path.open("rb") as file:
+            catalog = tomllib.load(file)
+        catalog_models = catalog.get("models", {})
+        if not isinstance(catalog_models, dict):
+            raise SystemExit(f"[models] must be a TOML table in {catalog_path}")
+        local_models = config.get("models", {})
+        if not isinstance(local_models, dict):
+            raise SystemExit("[models] must be a TOML table")
+        config["models"] = {**catalog_models, **local_models}
+        config["_model_catalog_path"] = str(catalog_path.resolve())
+        config["_model_runtime"] = catalog.get("runtime", {})
+    benchmark_config = config.get("benchmarks", {})
+    if isinstance(benchmark_config, dict) and benchmark_config.get("index"):
+        from .benchmark_specs import benchmark_specs_by_task, load_benchmark_index
+
+        index_path = Path(str(benchmark_config["index"]))
+        if not index_path.is_absolute():
+            index_path = root / index_path
+        specs = load_benchmark_index(index_path)
+        config["_benchmark_specs"] = benchmark_specs_by_task(specs)
+        config["_benchmark_index_path"] = str(index_path.resolve())
+    return config, path
 
 
 def table(config: dict[str, Any], name: str) -> dict[str, Any]:

@@ -485,6 +485,68 @@ async def test_resume_reuses_running_task_and_upserts_completion(
     assert payloads[0]["prompt1"] == "new"
     assert payloads[0]["sampling_config"]["effective_generation_size"] == 4096
 
+
+async def test_completion_write_owns_task_creation(
+    database_settings: DatabaseSettings,
+) -> None:
+    service = ScoreboardStore(settings=database_settings)
+    before = await Task.all().count()
+
+    task_id, inserted = await service.insert_completion_payloads_with_task(
+        payloads=[],
+        task_id=None,
+        job_name="lighteval",
+        dataset="gsm8k_test",
+        model="rwkv7-test",
+        is_param_search=False,
+        sampling_config={"avg_k": 8},
+        num_samples=1,
+    )
+    assert task_id is None
+    assert inserted == 0
+    assert await Task.all().count() == before
+
+    task_id, inserted = await service.insert_completion_payloads_with_task(
+        payloads=[{"_stage": "eval", "sample_index": 0, "repeat_index": 0}],
+        task_id=None,
+        job_name="lighteval",
+        dataset="gsm8k_test",
+        model="rwkv7-test",
+        is_param_search=False,
+        sampling_config={"avg_k": 8},
+        num_samples=1,
+    )
+    assert task_id is None
+    assert inserted == 0
+    assert await Task.all().count() == before
+
+    task_id, inserted = await service.insert_completion_payloads_with_task(
+        payloads=[
+            {
+                "_stage": "generation",
+                "status": "Completed",
+                "sample_index": 0,
+                "repeat_index": 0,
+                "pass_index": 0,
+                "prompt1": "question",
+                "completion1": "answer",
+                "sampling_config": {},
+            }
+        ],
+        task_id=None,
+        job_name="lighteval",
+        dataset="gsm8k_test",
+        model="rwkv7-test",
+        is_param_search=False,
+        sampling_config={"avg_k": 8},
+        num_samples=1,
+    )
+    assert task_id is not None
+    assert inserted == 1
+    assert await Task.filter(task_id=int(task_id)).count() == 1
+    assert await Completion.filter(task_id=int(task_id)).count() == 1
+
+
 async def test_resume_ignores_git_hash_for_uploaded_running_task(
     database_settings: DatabaseSettings,
     monkeypatch: pytest.MonkeyPatch,

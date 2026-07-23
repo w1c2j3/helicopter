@@ -25,22 +25,22 @@ from lighteval.tasks.lighteval_task import LightevalTaskConfig
 from lighteval.tasks.requests import Doc
 
 
+
 def mmlu_prompt(line, task_name: str = None):
-    subject = line["subject"]
-    query = f"The following are multiple choice questions (with answers) about {subject.replace('_', ' ')}.\n\nQuestion: {line['question']}"
-    query += "".join([f"\n{key}. {choice}" for key, choice in zip(ascii_uppercase, line["choices"])])
-    query += "\nAnswer:"
-
+    query = str(line["question"]).strip().replace("\r\n", "\n")
+    query += "".join(
+        f"\n{key}. {choice}" for key, choice in zip(ascii_uppercase, line["choices"])
+    )
     gold_ix = ascii_uppercase.index(line["answer"]) if isinstance(line["answer"], str) else line["answer"]
-
     return Doc(
         task_name=task_name,
         query=query,
         choices=[" A", " B", " C", " D"],
         gold_index=gold_ix,
         fewshot_sorting_class=line["choices"][gold_ix],
-        instruction=f"The following are multiple choice questions (with answers) about {subject.replace('_', ' ')}.\n\n",
+        instruction=None,
     )
+
 
 
 mmlu_abstract_algebra = LightevalTaskConfig(
@@ -55,7 +55,7 @@ mmlu_abstract_algebra = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_anatomy = LightevalTaskConfig(
@@ -70,7 +70,7 @@ mmlu_anatomy = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_astronomy = LightevalTaskConfig(
@@ -85,7 +85,7 @@ mmlu_astronomy = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_business_ethics = LightevalTaskConfig(
@@ -100,7 +100,7 @@ mmlu_business_ethics = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_clinical_knowledge = LightevalTaskConfig(
@@ -115,7 +115,7 @@ mmlu_clinical_knowledge = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_college_biology = LightevalTaskConfig(
@@ -130,7 +130,7 @@ mmlu_college_biology = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_college_chemistry = LightevalTaskConfig(
@@ -145,7 +145,7 @@ mmlu_college_chemistry = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_college_computer_science = LightevalTaskConfig(
@@ -160,7 +160,7 @@ mmlu_college_computer_science = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_college_mathematics = LightevalTaskConfig(
@@ -175,7 +175,7 @@ mmlu_college_mathematics = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_college_medicine = LightevalTaskConfig(
@@ -190,7 +190,7 @@ mmlu_college_medicine = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_college_physics = LightevalTaskConfig(
@@ -205,7 +205,7 @@ mmlu_college_physics = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_computer_security = LightevalTaskConfig(
@@ -220,7 +220,7 @@ mmlu_computer_security = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_conceptual_physics = LightevalTaskConfig(
@@ -235,7 +235,7 @@ mmlu_conceptual_physics = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_econometrics = LightevalTaskConfig(
@@ -250,7 +250,7 @@ mmlu_econometrics = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_electrical_engineering = LightevalTaskConfig(
@@ -265,7 +265,7 @@ mmlu_electrical_engineering = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_elementary_mathematics = LightevalTaskConfig(
@@ -280,7 +280,7 @@ mmlu_elementary_mathematics = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_formal_logic = LightevalTaskConfig(
@@ -295,7 +295,7 @@ mmlu_formal_logic = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_global_facts = LightevalTaskConfig(
@@ -310,7 +310,7 @@ mmlu_global_facts = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_high_school_biology = LightevalTaskConfig(
@@ -325,7 +325,7 @@ mmlu_high_school_biology = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_high_school_chemistry = LightevalTaskConfig(
@@ -340,7 +340,7 @@ mmlu_high_school_chemistry = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_high_school_computer_science = LightevalTaskConfig(
@@ -355,7 +355,7 @@ mmlu_high_school_computer_science = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_high_school_european_history = LightevalTaskConfig(
@@ -370,7 +370,7 @@ mmlu_high_school_european_history = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_high_school_geography = LightevalTaskConfig(
@@ -385,7 +385,7 @@ mmlu_high_school_geography = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_high_school_government_and_politics = LightevalTaskConfig(
@@ -400,7 +400,7 @@ mmlu_high_school_government_and_politics = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_high_school_macroeconomics = LightevalTaskConfig(
@@ -415,7 +415,7 @@ mmlu_high_school_macroeconomics = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_high_school_mathematics = LightevalTaskConfig(
@@ -430,7 +430,7 @@ mmlu_high_school_mathematics = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_high_school_microeconomics = LightevalTaskConfig(
@@ -445,7 +445,7 @@ mmlu_high_school_microeconomics = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_high_school_physics = LightevalTaskConfig(
@@ -460,7 +460,7 @@ mmlu_high_school_physics = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_high_school_psychology = LightevalTaskConfig(
@@ -475,7 +475,7 @@ mmlu_high_school_psychology = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_high_school_statistics = LightevalTaskConfig(
@@ -490,7 +490,7 @@ mmlu_high_school_statistics = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_high_school_us_history = LightevalTaskConfig(
@@ -505,7 +505,7 @@ mmlu_high_school_us_history = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_high_school_world_history = LightevalTaskConfig(
@@ -520,7 +520,7 @@ mmlu_high_school_world_history = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_human_aging = LightevalTaskConfig(
@@ -535,7 +535,7 @@ mmlu_human_aging = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_human_sexuality = LightevalTaskConfig(
@@ -550,7 +550,7 @@ mmlu_human_sexuality = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_international_law = LightevalTaskConfig(
@@ -565,7 +565,7 @@ mmlu_international_law = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_jurisprudence = LightevalTaskConfig(
@@ -580,7 +580,7 @@ mmlu_jurisprudence = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_logical_fallacies = LightevalTaskConfig(
@@ -595,7 +595,7 @@ mmlu_logical_fallacies = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_machine_learning = LightevalTaskConfig(
@@ -610,7 +610,7 @@ mmlu_machine_learning = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_management = LightevalTaskConfig(
@@ -625,7 +625,7 @@ mmlu_management = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_marketing = LightevalTaskConfig(
@@ -640,7 +640,7 @@ mmlu_marketing = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_medical_genetics = LightevalTaskConfig(
@@ -655,7 +655,7 @@ mmlu_medical_genetics = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_miscellaneous = LightevalTaskConfig(
@@ -670,7 +670,7 @@ mmlu_miscellaneous = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_moral_disputes = LightevalTaskConfig(
@@ -685,7 +685,7 @@ mmlu_moral_disputes = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_moral_scenarios = LightevalTaskConfig(
@@ -700,7 +700,7 @@ mmlu_moral_scenarios = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_nutrition = LightevalTaskConfig(
@@ -715,7 +715,7 @@ mmlu_nutrition = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_philosophy = LightevalTaskConfig(
@@ -730,7 +730,7 @@ mmlu_philosophy = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_prehistory = LightevalTaskConfig(
@@ -745,7 +745,7 @@ mmlu_prehistory = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_professional_accounting = LightevalTaskConfig(
@@ -760,7 +760,7 @@ mmlu_professional_accounting = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_professional_law = LightevalTaskConfig(
@@ -775,7 +775,7 @@ mmlu_professional_law = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_professional_medicine = LightevalTaskConfig(
@@ -790,7 +790,7 @@ mmlu_professional_medicine = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_professional_psychology = LightevalTaskConfig(
@@ -805,7 +805,7 @@ mmlu_professional_psychology = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_public_relations = LightevalTaskConfig(
@@ -820,7 +820,7 @@ mmlu_public_relations = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_security_studies = LightevalTaskConfig(
@@ -835,7 +835,7 @@ mmlu_security_studies = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_sociology = LightevalTaskConfig(
@@ -850,7 +850,7 @@ mmlu_sociology = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_us_foreign_policy = LightevalTaskConfig(
@@ -865,7 +865,7 @@ mmlu_us_foreign_policy = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_virology = LightevalTaskConfig(
@@ -880,7 +880,7 @@ mmlu_virology = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 mmlu_world_religions = LightevalTaskConfig(
@@ -895,7 +895,7 @@ mmlu_world_religions = LightevalTaskConfig(
     generation_size=5,
     metrics=[Metrics.exact_match],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 TASKS_TABLE = [

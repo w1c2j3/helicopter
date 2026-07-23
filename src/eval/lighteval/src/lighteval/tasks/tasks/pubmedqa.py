@@ -24,9 +24,10 @@ from lighteval.tasks.requests import Doc
 
 
 def pubmed_qa_prompt(line, task_name: str = None):
+    contexts = "\n".join(line["context"]["contexts"])
     return Doc(
         task_name=task_name,
-        query=f"{line['QUESTION']}\n{line['CONTEXTS']}\nAnswer: ",
+        query=f"{str(line['question']).strip()}\n{contexts.strip()}",
         choices=[line["final_decision"]],
         gold_index=0,
     )
@@ -35,7 +36,7 @@ def pubmed_qa_prompt(line, task_name: str = None):
 pubmedqa = LightevalTaskConfig(
     name="pubmedqa",
     prompt_function=pubmed_qa_prompt,
-    hf_repo="pubmed_qa",
+    hf_repo="qiaojin/PubMedQA",
     hf_subset="pqa_labeled",
     hf_avail_splits=["train"],
     evaluation_splits=["train"],
@@ -46,7 +47,7 @@ pubmedqa = LightevalTaskConfig(
         Metrics.exact_match,
     ],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 TASKS_TABLE = [

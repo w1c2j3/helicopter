@@ -572,28 +572,12 @@ def swebench_prompt(line: dict[str, Any], task_name: str | None = None) -> Doc |
     hints = str(line.get("hints_text") or "").strip()
     context = _swebench_context(line)
 
-    lines = [
-        "You are resolving a real GitHub issue from SWE-bench.",
-        "Return only a unified git diff patch. Do not include prose, commands, markdown, or analysis outside the patch.",
-        "The patch must be applicable with git apply from the repository root.",
-        "",
-        f"Instance: {instance_id}",
-    ]
-    if repo:
-        lines.append(f"Repository: {repo}")
-    if base_commit:
-        lines.append(f"Base commit: {base_commit}")
-    lines.extend(["", "Issue:", problem])
-    if hints:
-        lines.extend(["", "Hints:", hints])
-    if context:
-        lines.extend(["", "Retrieved repository context:", context])
-    lines.extend(["", "Patch:"])
+    query = problem
 
     source_dataset, harness_dataset = SWE_BENCH_DATASETS.get(task_name or "", ("", ""))
     return Doc(
         task_name=task_name,
-        query="\n".join(lines),
+        query=query,
         choices=[""],
         gold_index=0,
         specific={
@@ -3025,11 +3009,7 @@ def _human_eval_code_prompt(line: dict[str, Any], task_name: str | None) -> Doc 
         query_body = prompt
         base_prompt = prompt
 
-    query = (
-        "Write Python code that solves the programming task. "
-        "Return only executable Python code, without explanations.\n\n"
-        f"{query_body.rstrip()}\n"
-    )
+    query = query_body.rstrip()
     return Doc(
         task_name=task_name,
         query=query,
@@ -3059,11 +3039,7 @@ def _mbpp_code_prompt(line: dict[str, Any], task_name: str | None) -> Doc | None
         return None
 
     entry_point = str(line.get("entry_point") or _extract_entry_point_from_code(line.get("code")) or "")
-    query = (
-        "Write a complete Python function that solves the programming task. "
-        "Return only executable Python code, without explanations.\n\n"
-        f"Task: {prompt.strip()}\n"
-    )
+    query = prompt.strip()
     return Doc(
         task_name=task_name,
         query=query,
@@ -3398,7 +3374,7 @@ def swebench_task(name: str) -> LightevalTaskConfig:
         generation_size=2048,
         metrics=[Metrics.rwkv_swebench_patch_f1, Metrics.rwkv_swebench_patch_nonempty],
         stop_sequence=[],
-        version=0,
+        version=1,
     )
 
 
@@ -3489,7 +3465,7 @@ def code_generation_task(
         generation_size=generation_size,
         metrics=[Metrics.rwkv_code_pass_at_1],
         stop_sequence=[],
-        version=0,
+        version=1,
     )
 
 

@@ -82,6 +82,7 @@ def get_mcq_prompt_function(
     language: Language,
     adapter: Callable[[dict], MCQInput | None] | MCQDictAdapter,
     formulation: Formulation = MCFFormulation(),
+    raw_question: bool = False,
 ):
     """Create a templated prompt function for a Multiple Choice Question (MCQ) task.
     Example tasks:
@@ -133,8 +134,15 @@ def get_mcq_prompt_function(
         context_val = mcq_input.get("context")
         context = f"{capitalize(fix_ending_punct(context_val, translation_literals))}\n" if context_val else ""
 
-        question = capitalize(fix_ending_punct(mcq_input["question"], translation_literals))
-        answers = [capitalize(fix_ending_punct(str(answer), translation_literals)) for answer in mcq_input["choices"]]
+        if raw_question:
+            question = str(mcq_input["question"]).strip()
+            answers = [str(answer).strip() for answer in mcq_input["choices"]]
+        else:
+            question = capitalize(fix_ending_punct(mcq_input["question"], translation_literals))
+            answers = [
+                capitalize(fix_ending_punct(str(answer), translation_literals))
+                for answer in mcq_input["choices"]
+            ]
 
         options = build_choices(answers, formulation, translation_literals)
         options = f"{options}\n" if options else ""
@@ -143,16 +151,20 @@ def get_mcq_prompt_function(
         answer_word = capitalize(translation_literals.answer)
         question_word = capitalize(translation_literals.question_word)
 
-        query = MULTI_CHOICE_QA_QUERY.format(
-            instruction=instruction,
-            question=question,
-            context=context,
-            question_word=question_word,
-            answer_word=answer_word,
-            colon=translation_literals.colon,
-            sentence_space=translation_literals.sentence_space,
-            options=options,
-        )
+        if raw_question:
+            query = "\n".join(section for section in (context.strip(), question, options.strip()) if section)
+            instruction_val = None
+        else:
+            query = MULTI_CHOICE_QA_QUERY.format(
+                instruction=instruction,
+                question=question,
+                context=context,
+                question_word=question_word,
+                answer_word=answer_word,
+                colon=translation_literals.colon,
+                sentence_space=translation_literals.sentence_space,
+                options=options,
+            )
 
         return Doc(
             task_name=task_name,

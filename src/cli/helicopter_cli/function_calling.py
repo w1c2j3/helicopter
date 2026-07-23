@@ -884,10 +884,14 @@ def run_function_calling_eval(args: Any, *, root: Path, env: dict[str, str], con
             root=root,
             env=env,
         )
-        stored_rows = load_function_calling_generation(
-            task_id=scoreboard_task_id,
-            root=root,
-            env=env,
+        stored_rows = (
+            load_function_calling_generation(
+                task_id=scoreboard_task_id,
+                root=root,
+                env=env,
+            )
+            if scoreboard_task_id
+            else []
         )
         for row in stored_rows:
             if str(row.get("status") or "").lower() != "completed":
@@ -958,15 +962,18 @@ def run_function_calling_eval(args: Any, *, root: Path, env: dict[str, str], con
         generation_samples = [samples[index] for index in generation_indices]
 
         def persist_result(local_index: int, result: FunctionCallingRunResult) -> None:
+            nonlocal scoreboard_task_id
             original_index = generation_indices[local_index]
-            checkpoint_function_calling_result(
-                task_id=str(scoreboard_task_id),
+            scoreboard_task_id = checkpoint_function_calling_result(
+                task_id=scoreboard_task_id,
                 dataset=task_names[0],
+                model=model_name,
                 num_samples=len(samples),
                 sample_index=original_index,
                 sample=samples[original_index],
                 result=result,
                 sampling_config=sampling_config,
+                config_path=getattr(args, "config", None),
                 root=root,
                 env=env,
             )
@@ -1028,12 +1035,13 @@ def run_function_calling_eval(args: Any, *, root: Path, env: dict[str, str], con
     if pipeline_stage == "generate":
         failed = [result for result in results if result.error]
         if failed:
-            set_function_calling_task_status(
-                task_id=str(scoreboard_task_id),
-                status="Failed",
-                root=root,
-                env=env,
-            )
+            if scoreboard_task_id:
+                set_function_calling_task_status(
+                    task_id=scoreboard_task_id,
+                    status="Failed",
+                    root=root,
+                    env=env,
+                )
             print(
                 f"function-calling: {len(failed)} request(s) failed; "
                 "successful checkpoints will be reused"

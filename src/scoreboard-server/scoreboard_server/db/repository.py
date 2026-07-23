@@ -376,6 +376,79 @@ class ScoreboardStore:
                 count += 1
         return count
 
+    async def insert_completion_payloads_with_task(
+        self,
+        *,
+        payloads: Sequence[dict[str, Any]],
+        task_id: str | None,
+        job_name: str | None,
+        dataset: str,
+        model: str,
+        is_param_search: bool,
+        sampling_config: dict[str, Any] | None = None,
+        config_path: str | None = None,
+        allow_resume: bool = True,
+        num_samples: int | None = None,
+    ) -> tuple[str | None, int]:
+        """Persist real completions and let that write own task creation.
+
+        An empty or non-completion batch performs no database writes. For a
+        new run, task creation and the first completion batch share one
+        transaction, so either both exist or neither exists.
+        """
+
+        accepted = [
+            payload
+            for payload in payloads
+            if str(payload.get("_stage", "answer")).strip().lower()
+            in {"answer", "generation"}
+        ]
+        if not accepted:
+            return task_id, 0
+
+        await self._ensure_db()
+        resolved_task_id = str(task_id).strip() if task_id is not None else ""
+        async with in_transaction():
+            if not resolved_task_id:
+                ctx = await self.get_resume_context(
+                    dataset=dataset,
+                    model=model,
+                    is_param_search=is_param_search,
+                    job_name=job_name,
+                    sampling_config=sampling_config,
+                    config_path=config_path,
+                    force_new_task=not allow_resume,
+                )
+                if (
+                    ctx.can_resume
+                    and ctx.task_id is not None
+                    and await self.count_completions(
+                        task_id=str(ctx.task_id),
+                        status="Completed",
+                    )
+                    <= 0
+                ):
+                    ctx = ResumeContext()
+                resolved_task_id = await self.create_task_from_context(
+                    ctx=ctx,
+                    job_name=job_name,
+                    dataset=dataset,
+                    model=model,
+                    is_param_search=is_param_search,
+                    sampling_config=sampling_config,
+                    config_path=config_path,
+                )
+            if num_samples is not None and int(num_samples) > 0:
+                await self.ensure_benchmark_num_samples(
+                    dataset=dataset,
+                    num_samples=int(num_samples),
+                )
+            inserted = await self.insert_completion_payloads_batch(
+                payloads=accepted,
+                task_id=resolved_task_id,
+            )
+        return resolved_task_id, inserted
+
     async def insert_completion_payload(self, *, payload: dict[str, Any], task_id: str) -> None:
         await self.insert_completion_payloads_batch(payloads=[payload], task_id=task_id)
 

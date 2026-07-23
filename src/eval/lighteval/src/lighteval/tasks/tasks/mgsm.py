@@ -27,12 +27,11 @@ from lighteval.tasks.requests import Doc
 
 
 def mgsm_prompt(line, question_key, answer_key, task_name: str = None):
-    if line["answer"] is not None:
-        query = f"{line['question']}\n{answer_key}"
-        gold = f" {line['answer'][len(answer_key) + 1 :]}"
-    else:
-        query = f"{question_key} {line['question']}\n{answer_key}"
-        gold = f" {str(line['answer_number'])}"
+    del question_key, answer_key
+    if line.get("answer_number") is None:
+        raise ValueError("MGSM row has no final answer_number")
+    query = str(line["question"]).strip().replace("\r\n", "\n")
+    gold = f"$\\boxed{{{line['answer_number']}}}$"
     return Doc(task_name=task_name, query=query, choices=[gold], gold_index=0)
 
 
@@ -112,9 +111,9 @@ mgsm_en = LightevalTaskConfig(
     few_shots_split=None,
     few_shots_select=None,
     generation_size=None,
-    metrics=[Metrics.exact_match],
+    metrics=[Metrics.expr_gold_metric],
     stop_sequence=None,
-    version=0,
+    version=1,
 )
 
 mgsm_es = LightevalTaskConfig(
@@ -127,9 +126,9 @@ mgsm_es = LightevalTaskConfig(
     few_shots_split=None,
     few_shots_select=None,
     generation_size=None,
-    metrics=[Metrics.exact_match],
+    metrics=[Metrics.expr_gold_metric],
     stop_sequence=None,
-    version=0,
+    version=1,
 )
 
 mgsm_fr = LightevalTaskConfig(
@@ -142,9 +141,9 @@ mgsm_fr = LightevalTaskConfig(
     few_shots_split=None,
     few_shots_select=None,
     generation_size=None,
-    metrics=[Metrics.exact_match],
+    metrics=[Metrics.expr_gold_metric],
     stop_sequence=None,
-    version=0,
+    version=1,
 )
 
 mgsm_de = LightevalTaskConfig(
@@ -157,9 +156,9 @@ mgsm_de = LightevalTaskConfig(
     few_shots_split=None,
     few_shots_select=None,
     generation_size=None,
-    metrics=[Metrics.exact_match],
+    metrics=[Metrics.expr_gold_metric],
     stop_sequence=None,
-    version=0,
+    version=1,
 )
 
 mgsm_ru = LightevalTaskConfig(
@@ -172,9 +171,9 @@ mgsm_ru = LightevalTaskConfig(
     few_shots_split=None,
     few_shots_select=None,
     generation_size=None,
-    metrics=[Metrics.exact_match],
+    metrics=[Metrics.expr_gold_metric],
     stop_sequence=None,
-    version=0,
+    version=1,
 )
 
 mgsm_zh = LightevalTaskConfig(
@@ -187,9 +186,9 @@ mgsm_zh = LightevalTaskConfig(
     few_shots_split=None,
     few_shots_select=None,
     generation_size=None,
-    metrics=[Metrics.exact_match],
+    metrics=[Metrics.expr_gold_metric],
     stop_sequence=None,
-    version=0,
+    version=1,
 )
 
 mgsm_ja = LightevalTaskConfig(
@@ -202,9 +201,9 @@ mgsm_ja = LightevalTaskConfig(
     few_shots_split=None,
     few_shots_select=None,
     generation_size=None,
-    metrics=[Metrics.exact_match],
+    metrics=[Metrics.expr_gold_metric],
     stop_sequence=None,
-    version=0,
+    version=1,
 )
 
 mgsm_th = LightevalTaskConfig(
@@ -217,9 +216,9 @@ mgsm_th = LightevalTaskConfig(
     few_shots_split=None,
     few_shots_select=None,
     generation_size=None,
-    metrics=[Metrics.exact_match],
+    metrics=[Metrics.expr_gold_metric],
     stop_sequence=None,
-    version=0,
+    version=1,
 )
 
 mgsm_sw = LightevalTaskConfig(
@@ -232,9 +231,9 @@ mgsm_sw = LightevalTaskConfig(
     few_shots_split=None,
     few_shots_select=None,
     generation_size=None,
-    metrics=[Metrics.exact_match],
+    metrics=[Metrics.expr_gold_metric],
     stop_sequence=None,
-    version=0,
+    version=1,
 )
 
 mgsm_bn = LightevalTaskConfig(
@@ -247,9 +246,9 @@ mgsm_bn = LightevalTaskConfig(
     few_shots_split=None,
     few_shots_select=None,
     generation_size=None,
-    metrics=[Metrics.exact_match],
+    metrics=[Metrics.expr_gold_metric],
     stop_sequence=None,
-    version=0,
+    version=1,
 )
 
 mgsm_te = LightevalTaskConfig(
@@ -262,9 +261,9 @@ mgsm_te = LightevalTaskConfig(
     few_shots_split=None,
     few_shots_select=None,
     generation_size=None,
-    metrics=[Metrics.exact_match],
+    metrics=[Metrics.expr_gold_metric],
     stop_sequence=None,
-    version=0,
+    version=1,
 )
 
 TASKS_TABLE = [

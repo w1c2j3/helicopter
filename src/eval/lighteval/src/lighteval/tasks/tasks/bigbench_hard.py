@@ -27,22 +27,10 @@ from lighteval.tasks.requests import Doc
 
 
 def bbh_prompt(line, task_name: str = None):
-    line = {k: v for k, v in line.items() if v is not None}
-
-    query = line.get("task_prefix", "")
-    query += line.get("example_input_prefix", "\nQuestion: ")
-    query += line["input"]
-    query += line.get("choice_prefix", "\n  Choices: ")
-    query += "".join([f"\n{key}. {choice}" for key, choice in zip(ascii_uppercase, line["choices"])])
-    query += line.get("example_output_prefix", "\nAnswer: ")
-
-    return Doc(
-        task_name=task_name,
-        query=query,
-        choices=list(ascii_uppercase[: len(line["choices"])]),
-        gold_index=line["target_idx"],
-        instruction=line.get("task_prefix", None),
-    )
+    query = "\n".join(part.strip() for part in (line.get("task_prefix", ""), line["input"]) if str(part).strip())
+    query += "".join(f"\n{key}. {choice}" for key, choice in zip(ascii_uppercase, line["choices"]))
+    return Doc(task_name=task_name, query=query, choices=list(ascii_uppercase[: len(line["choices"])]),
+               gold_index=line["target_idx"], instruction=None)
 
 
 def record_to_sample(record):
@@ -65,7 +53,7 @@ causal_judgment = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["</s>", "Q=", "\n\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -83,7 +71,7 @@ date_understanding = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["</s>", "Q=", "\n\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -101,7 +89,7 @@ disambiguation_qa = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["</s>", "Q=", "\n\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -119,7 +107,7 @@ geometric_shapes = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["</s>", "Q=", "\n\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -137,7 +125,7 @@ logical_deduction_five_objects = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["</s>", "Q=", "\n\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -155,7 +143,7 @@ logical_deduction_seven_objects = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["</s>", "Q=", "\n\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -173,7 +161,7 @@ logical_deduction_three_objects = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["</s>", "Q=", "\n\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -191,7 +179,7 @@ movie_recommendation = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["</s>", "Q=", "\n\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -209,7 +197,7 @@ navigate = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["</s>", "Q=", "\n\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -227,7 +215,7 @@ reasoning_about_colored_objects = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["</s>", "Q=", "\n\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -245,7 +233,7 @@ ruin_names = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["</s>", "Q=", "\n\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -263,7 +251,7 @@ salient_translation_error_detection = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["</s>", "Q=", "\n\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -281,7 +269,7 @@ snarks = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["</s>", "Q=", "\n\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -299,7 +287,7 @@ sports_understanding = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["</s>", "Q=", "\n\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -317,7 +305,7 @@ temporal_sequences = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["</s>", "Q=", "\n\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -335,7 +323,7 @@ tracking_shuffled_objects_five_objects = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["</s>", "Q=", "\n\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -353,7 +341,7 @@ tracking_shuffled_objects_seven_objects = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["</s>", "Q=", "\n\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -371,7 +359,7 @@ tracking_shuffled_objects_three_objects = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["</s>", "Q=", "\n\n"],
-    version=0,
+    version=1,
     sample_fields=record_to_sample,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),

@@ -36,12 +36,9 @@ def boolq_harness_prompt(line, task_name: str = None):
 
 
 def cb_prompt(line, task_name: str = None):
-    return Doc(
-        task_name=task_name,
-        query=f"{line['premise']}\nQuestion: {line['hypothesis']}. True, False or Neither?\nAnswer:",
-        choices=[" True", " False", " Neither"],
-        gold_index=int(line["label"]),
-    )
+    return Doc(task_name=task_name,
+               query=f"{str(line['premise']).strip()}\n{str(line['hypothesis']).strip()}",
+               choices=[" True", " False", " Neither"], gold_index=int(line["label"]), instruction=None)
 
 
 def copa_prompt(line, task_name: str = None):
@@ -134,6 +131,12 @@ def rte_prompt(line, task_name: str = None):
         choices=[" True", " False"],
         gold_index=int(line["label"]),
     )
+
+
+def super_glue_rte_prompt(line, task_name: str = None):
+    return Doc(task_name=task_name,
+               query=f"{str(line['premise']).strip()}\n{str(line['hypothesis']).strip()}",
+               choices=[" True", " False"], gold_index=int(line["label"]), instruction=None)
 
 
 def sst_prompt(line, task_name: str = None):
@@ -349,7 +352,7 @@ super_glue_cb = LightevalTaskConfig(
     generation_size=1,
     metrics=[Metrics.loglikelihood_acc, Metrics.multi_f1_numeric],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 super_glue_copa = LightevalTaskConfig(
@@ -369,7 +372,7 @@ super_glue_copa = LightevalTaskConfig(
 
 super_glue_rte = LightevalTaskConfig(
     name="super_glue:rte",
-    prompt_function=rte_prompt,
+    prompt_function=super_glue_rte_prompt,
     hf_repo="aps/super_glue",
     hf_subset="rte",
     hf_avail_splits=["test", "train", "validation"],
@@ -379,7 +382,7 @@ super_glue_rte = LightevalTaskConfig(
     generation_size=-1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 super_glue_multirc = LightevalTaskConfig(

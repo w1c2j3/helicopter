@@ -28,29 +28,22 @@ from lighteval.tasks.requests import Doc
 
 def piqa_prompt(line, task_name: str = None):
     letters = list(ascii_uppercase)[:2]
-    query = "The following are multiple choice questions (with answers) about common sense.\n"
-    query += f"Question: {line['goal']}\n"
-    query += "".join([f"{key}. {choice}\n" for key, choice in zip(letters, [line["sol1"], line["sol2"]])])
-    query += "Answer: "
-
-    gold_ix = int(line["label"])
-    is_few_shots = line.get("__few_shots", False)
-    return Doc(
-        task_name=task_name,
-        query=query,
-        choices=letters if not is_few_shots else [line["sol1"], line["sol2"]],
-        gold_index=gold_ix,
-        instruction="The following are multiple choice questions (with answers) about common sense.\n",
-    )
+    solutions = [str(line["sol1"]).strip(), str(line["sol2"]).strip()]
+    query = str(line["goal"]).strip()
+    query += "".join(f"\n{key}. {choice}" for key, choice in zip(letters, solutions))
+    return Doc(task_name=task_name, query=query, choices=letters,
+               gold_index=int(line["label"]), instruction=None)
 
 
 piqa = LightevalTaskConfig(
     name="piqa",
     prompt_function=piqa_prompt,
-    hf_repo="ybisk/piqa",
+    # Script-free official LightEval mirror. Its three parquet splits are
+    # row-for-row identical to the original ybisk/piqa parquet revision.
+    hf_repo="lighteval/piqa",
     hf_subset="plain_text",
     hf_avail_splits=["train", "test", "validation"],
-    evaluation_splits=["validation", "test"],
+    evaluation_splits=["validation"],
     few_shots_split=None,
     few_shots_select=None,
     generation_size=1,
@@ -58,7 +51,7 @@ piqa = LightevalTaskConfig(
         Metrics.exact_match,
     ],
     stop_sequence=["\n"],
-    version=0,
+    version=1,
 )
 
 TASKS_TABLE = [

@@ -48,7 +48,6 @@ EXCLUDED_DIRECT_PATTERNS = (
     r"tau[23]?[_-]?bench",
     r"agentbench",
     r"browsecomp",
-    r"swe[_-]?bench",
     r"^mathqa$",
     r"^gpqa-fr$",
     r"^ifeval-fr$",
@@ -250,7 +249,13 @@ SELECTION_RULES = (
         "Global MMLU Math/Science",
         exact=global_mmlu_exact(GLOBAL_MMLU_MATH_SCIENCE_SUBJECTS),
     ),
-    SelectionRule("coding", "HumanEval / MBPP / LiveCodeBench", ("human_eval", "lcb:"), ("mbpp_plus", "longcodeqa")),
+    SelectionRule("coding", "HumanEval / MBPP / LiveCodeBench", ("human_eval", "lcb:"), ("mbpp", "mbpp_plus", "longcodeqa")),
+    SelectionRule(
+        "coding",
+        "SWE-bench patch generation",
+        ("swe_bench", "multi_swe_bench"),
+        ("aider_polyglot", "debugbench"),
+    ),
     SelectionRule(
         "coding",
         "MMLU CS",

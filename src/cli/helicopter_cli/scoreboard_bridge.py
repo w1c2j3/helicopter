@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import re
@@ -17,7 +16,8 @@ from typing import Any, Iterable, Mapping
 import requests
 
 _LOCK = threading.Lock()
-_JUDGE_CONTRACT = "answer-only-knowledge-v2"
+_JUDGE_CONTRACT = "answer-only-ordered-gates-v3"
+_MTBENCH_JUDGE_CONTRACT = "mt-bench-official-rubric-1to5-v1"
 
 
 def _jsonable(value: Any) -> Any:
@@ -280,7 +280,7 @@ def sampling_config_from_env(values: Mapping[str, str]) -> dict[str, Any]:
     if isinstance(task_policies, Mapping) and len(task_policies) == 1:
         task_name, task_policy = next(iter(task_policies.items()))
         if isinstance(task_policy, Mapping):
-            sampling["task_request_policy"] = {
+            task_request_policy = {
                 "task": str(task_name),
                 "domain": task_policy.get("domain"),
                 "prompt_template": task_policy.get("prompt_template"),
@@ -288,6 +288,10 @@ def sampling_config_from_env(values: Mapping[str, str]) -> dict[str, Any]:
                 "stop": _jsonable(task_policy.get("stop")),
                 "sampling": _jsonable(task_policy.get("sampling")),
             }
+            multi_turn_template = task_policy.get("multi_turn_template")
+            if multi_turn_template is not None:
+                task_request_policy["multi_turn_template"] = multi_turn_template
+            sampling["task_request_policy"] = task_request_policy
     return sampling
 
 
@@ -356,17 +360,20 @@ def _judge_one(item: Mapping[str, Any], settings: tuple[str, str, str]) -> dict[
             {
                 "role": "system",
                 "content": (
-                    "Judge whether candidate_answer gives the answer represented by reference_answer. "
-                    "Use only those two user fields; exact wording is not required. A reference JSON "
-                    "array contains alternative acceptable answers, so matching any one item is enough. "
-                    "Accept mathematically equivalent expressions, semantic equivalence, aliases, and "
-                    "harmless formatting differences. Pass an explanatory sentence when it clearly "
-                    "identifies exactly one reference answer and adds no conflicting answer or false "
-                    "claim. Reject answers that merely mention the reference while asserting something "
-                    "different, offer incompatible alternatives, contradict it, omit material answer "
-                    "content, or add a false claim. Never infer from a hidden question or outside "
-                    "knowledge. Return only JSON: "
-                    "{\"passed\": true|false, \"reason\": \"brief reason\"}."
+                    "Use only reference_answer and candidate_answer. Follow these gates in order and "
+                    "never skip a failure gate merely because a reference word appears. Gate 1: fail "
+                    "if the candidate leaves multiple incompatible answers possible, requests "
+                    "clarification, or says it cannot decide without later resolving that uncertainty "
+                    "to one answer. Gate 2: fail if substantive claims in the candidate contradict its "
+                    "final conclusion or each other in a way that affects the answer. Long but "
+                    "consistent reasoning is allowed; alternatives explicitly rejected are allowed; "
+                    "a result clearly derived or stated at the end is a committed answer even without "
+                    "a label. Only after both gates pass, test equivalence. A reference array contains "
+                    "alternative acceptable aliases, not jointly required content. Case-insensitive "
+                    "exact match of the committed answer to any one array item must pass; never demand "
+                    "that it cover the rest of the array. Otherwise allow mathematical or semantic "
+                    "equivalence. Do not pass keyword overlap without a committed answer. Return only "
+                    "JSON with passed and a brief reason."
                 ),
             },
             {"role": "user", "content": content},
@@ -404,6 +411,73 @@ def _judge_one(item: Mapping[str, Any], settings: tuple[str, str, str]) -> dict[
     raise RuntimeError(f"judge request failed after {retries} attempts: {last_error}")
 
 
+def _mtbench_turn_judge_one(
+    item: Mapping[str, Any],
+    settings: tuple[str, str, str],
+) -> dict[str, Any]:
+    from lighteval.tasks.tasks.mt_bench.judge_prompt_templates import (
+        flow_judge_prompt_mt_bench_with_ref,
+        flow_judge_prompt_mt_bench_without_ref,
+    )
+
+    url, api_key, model = settings
+    reference = str(item.get("reference") or "")
+    template = (
+        flow_judge_prompt_mt_bench_with_ref
+        if reference
+        else flow_judge_prompt_mt_bench_without_ref
+    )
+    messages = template(
+        str(item["question"]),
+        [],
+        str(item["candidate_answer"]),
+        reference,
+    )
+    payload = {"model": model, "temperature": 0, "messages": messages}
+    try:
+        timeout = max(1, int(os.environ.get("HELICOPTER_JUDGE_TIMEOUT", "120")))
+        retries = max(1, int(os.environ.get("HELICOPTER_JUDGE_MAX_RETRIES", "2")))
+    except ValueError as error:
+        raise RuntimeError("judge timeout/retry settings must be integers") from error
+    last_error: Exception | None = None
+    for _attempt in range(retries):
+        try:
+            response = requests.post(
+                url,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+            choices = body.get("choices") or []
+            if not choices:
+                raise RuntimeError(f"MT-Bench judge response has no choices: {body!r}")
+            content = str(choices[0].get("message", {}).get("content", ""))
+            score_match = re.search(r"<score>\s*([1-5])\s*</score>", content, re.IGNORECASE)
+            if score_match is None:
+                raise RuntimeError(f"MT-Bench judge returned no 1-5 score: {content[:500]!r}")
+            feedback_match = re.search(
+                r"<feedback>(.*?)</feedback>",
+                content,
+                re.IGNORECASE | re.DOTALL,
+            )
+            reason = (
+                feedback_match.group(1).strip()
+                if feedback_match is not None
+                else content.strip()
+            )
+            return {
+                "score": float(score_match.group(1)),
+                "reason": reason[:1800],
+                "model": model,
+                "contract": _MTBENCH_JUDGE_CONTRACT,
+            }
+        except Exception as error:  # noqa: BLE001
+            last_error = error
+    raise RuntimeError(f"MT-Bench judge request failed after {retries} attempts: {last_error}")
+
+
 def _completion_key(payload: Mapping[str, Any]) -> tuple[int, int, int]:
     return (
         int(payload.get("sample_index", 0)),
@@ -425,6 +499,49 @@ def _stored_judge_result(completion: Mapping[str, Any]) -> dict[str, Any] | None
     return dict(result)
 
 
+def _stored_mtbench_result(completion: Mapping[str, Any]) -> dict[str, Any] | None:
+    stats = completion.get("stats")
+    result = stats.get("judge") if isinstance(stats, Mapping) else None
+    scores = result.get("turn_scores") if isinstance(result, Mapping) else None
+    if (
+        not isinstance(result, Mapping)
+        or result.get("contract") != _MTBENCH_JUDGE_CONTRACT
+        or not isinstance(scores, list)
+        or len(scores) != 2
+        or not all(isinstance(score, (int, float)) for score in scores)
+    ):
+        return None
+    return dict(result)
+
+
+def _judge_format_gate(completion: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Reject prefilled CoT output that never produced a final boundary.
+
+    The prompt owns the opening ``<think`` marker. Without a response-side
+    ``</think>`` there is no candidate final answer, only unfinished reasoning.
+    NoCoT responses and adapters without raw response text keep using the
+    regular judge path.
+    """
+
+    sampling = completion.get("sampling_config")
+    prompt_mode = sampling.get("prompt_mode") if isinstance(sampling, Mapping) else None
+    if prompt_mode not in {"naive_cot", "normal_cot"}:
+        return None
+    agent_result = completion.get("agent_result")
+    response = agent_result.get("model_response") if isinstance(agent_result, Mapping) else None
+    raw_text = response.get("raw_text") if isinstance(response, Mapping) else None
+    if not isinstance(raw_text, str) or "</think>" in raw_text.lower():
+        return None
+    return {
+        "passed": False,
+        "score": 0.0,
+        "reason": "missing final answer after required </think> boundary",
+        "model": "local-format-gate",
+        "contract": _JUDGE_CONTRACT,
+        "gate": "missing_cot_final_boundary",
+    }
+
+
 def _record_judge_result(
     completion: dict[str, Any],
     evaluation: dict[str, Any],
@@ -438,6 +555,95 @@ def _record_judge_result(
         "" if passed else str(result.get("reason") or "judge rejected")
     )
     return score
+
+
+def _mtbench_rollout_item(
+    completion: Mapping[str, Any],
+    evaluation: Mapping[str, Any],
+) -> dict[str, Any]:
+    raw_record = evaluation.get("raw_record")
+    specific = raw_record.get("specific") if isinstance(raw_record, Mapping) else None
+    queries = specific.get("multi_turn_queries") if isinstance(specific, Mapping) else None
+    references = specific.get("reference") if isinstance(specific, Mapping) else None
+    if not isinstance(queries, list) or len(queries) != 2:
+        raise RuntimeError("MT-Bench scoring requires exactly two official queries")
+    refs = list(references) if isinstance(references, list) else []
+    refs = [str(refs[index]) if index < len(refs) else "" for index in range(2)]
+    agent_result = completion.get("agent_result")
+    response = agent_result.get("model_response") if isinstance(agent_result, Mapping) else None
+    stages = response.get("stages") if isinstance(response, Mapping) else None
+    if not isinstance(stages, list) or len(stages) != 2:
+        raise RuntimeError("MT-Bench scoring requires two persisted generation stages")
+    answers = [
+        str(stage.get("completion") or "") if isinstance(stage, Mapping) else ""
+        for stage in stages
+    ]
+    if any(not answer.strip() for answer in answers):
+        raise RuntimeError("MT-Bench scoring requires non-empty answers for both turns")
+    return {
+        "answers": answers,
+        "references": refs,
+        "turns": [
+            {
+                "question": json.dumps(
+                    {"query": str(queries[0]), "context": ""},
+                    ensure_ascii=False,
+                ),
+                "candidate_answer": answers[0],
+                "reference": refs[0],
+            },
+            {
+                "question": json.dumps(
+                    {"query": str(queries[1]), "context": answers[0]},
+                    ensure_ascii=False,
+                ),
+                "candidate_answer": answers[1],
+                "reference": refs[1],
+            },
+        ],
+    }
+
+
+def _judge_mtbench_rollout(
+    item: Mapping[str, Any],
+    settings: tuple[str, str, str],
+) -> dict[str, Any]:
+    turn_results = [
+        _mtbench_turn_judge_one(turn, settings)
+        for turn in item["turns"]
+    ]
+    scores = [float(result["score"]) for result in turn_results]
+    return {
+        "passed": all(score >= 5.0 for score in scores),
+        "score": sum(scores) / len(scores),
+        "turn_scores": scores,
+        "turn_feedback": [str(result.get("reason") or "") for result in turn_results],
+        "model": turn_results[0]["model"],
+        "contract": _MTBENCH_JUDGE_CONTRACT,
+    }
+
+
+def _record_mtbench_result(
+    completion: dict[str, Any],
+    evaluation: dict[str, Any],
+    result: Mapping[str, Any],
+    item: Mapping[str, Any] | None = None,
+) -> tuple[float, float]:
+    payload = dict(item or _mtbench_rollout_item(completion, evaluation))
+    scores = [float(value) for value in result["turn_scores"]]
+    passed = all(score >= 5.0 for score in scores)
+    completion.setdefault("stats", {})["judge"] = dict(result)
+    evaluation["answer"] = json.dumps(payload["answers"], ensure_ascii=False)
+    evaluation["ref_answer"] = json.dumps(payload["references"], ensure_ascii=False)
+    evaluation["is_passed"] = passed
+    feedback = result.get("turn_feedback")
+    reason = (
+        f"MT-Bench turn scores: {scores[0]:g}, {scores[1]:g}"
+        if passed
+        else f"MT-Bench turn scores: {scores[0]:g}, {scores[1]:g}; {feedback}"
+    )
+    evaluation["fail_reason"] = "" if passed else reason[:2000]
+    return scores[0], scores[1]
 
 
 async def _restore_judge_checkpoints(
@@ -460,13 +666,22 @@ async def _restore_judge_checkpoints(
         key = (row.sample_index, row.avg_repeat_index, row.pass_index)
         completion = completion_targets.get(key)
         evaluation = eval_targets.get(key)
-        if completion is None or evaluation is None or _stored_judge_result(completion) is not None:
+        if completion is None or evaluation is None:
+            continue
+        if (
+            _stored_judge_result(completion) is not None
+            or _stored_mtbench_result(completion) is not None
+        ):
             continue
         context = row.context if isinstance(row.context, Mapping) else {}
         result = _stored_judge_result(context)
-        if result is None:
-            continue
-        _record_judge_result(completion, evaluation, result)
+        if result is not None:
+            _record_judge_result(completion, evaluation, result)
+        else:
+            mtbench_result = _stored_mtbench_result(context)
+            if mtbench_result is None:
+                continue
+            _record_mtbench_result(completion, evaluation, mtbench_result)
         restored += 1
     return restored
 
@@ -507,7 +722,7 @@ def _persist_judge_checkpoint_batch(
         asyncio.run(_persist_judge_checkpoint_batch_async(task_id, pairs))
 
 
-def _apply_judge(
+def _apply_answer_only_judge(
     rows: Mapping[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]],
 ) -> dict[str, dict[str, float | int]] | None:
     settings = _judge_settings()
@@ -521,6 +736,7 @@ def _apply_judge(
 
     counts: dict[str, list[float | int]] = defaultdict(lambda: [0.0, 0, 0])
     work: list[tuple[str, dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+    local_pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
     cached = 0
     for task, (completions, evals) in rows.items():
         for completion, evaluation in zip(completions, evals):
@@ -533,6 +749,14 @@ def _apply_judge(
                 counts[task][1] += 1
                 counts[task][2] += int(score >= 1.0)
                 cached += 1
+                continue
+            local_result = _judge_format_gate(completion)
+            if local_result is not None:
+                score = _record_judge_result(completion, evaluation, local_result)
+                counts[task][0] += score
+                counts[task][1] += 1
+                counts[task][2] += int(score >= 1.0)
+                local_pairs.append((completion, evaluation))
                 continue
             stages = completion.get("agent_result", {}).get("model_response", {})
             answer = evaluation.get("answer")
@@ -551,7 +775,7 @@ def _apply_judge(
             )
 
     task_id = os.environ.get("HELICOPTER_SCOREBOARD_TASK_ID", "").strip()
-    total = cached + len(work)
+    total = cached + len(local_pairs) + len(work)
     persisted_new = 0
     checkpoint: list[tuple[dict[str, Any], dict[str, Any]]] = []
 
@@ -566,6 +790,11 @@ def _apply_judge(
 
     if cached:
         print(f"judge: resumed {cached}/{total} rollout(s) from database checkpoints")
+    for pair in local_pairs:
+        checkpoint.append(pair)
+        if len(checkpoint) >= checkpoint_size:
+            flush_checkpoint()
+    flush_checkpoint()
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
             executor.submit(_judge_one, item[3], settings): item
@@ -599,6 +828,168 @@ def _apply_judge(
         }
         for task, (score_sum, total, fully_correct) in counts.items()
     }
+
+
+def _apply_mtbench_judge(
+    rows: Mapping[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]],
+) -> dict[str, dict[str, float | int]] | None:
+    settings = _judge_settings()
+    if settings is None:
+        return None
+    try:
+        workers = max(1, int(os.environ.get("HELICOPTER_JUDGE_CONCURRENT_REQUESTS", "10")))
+        checkpoint_size = max(1, int(os.environ.get("HELICOPTER_JUDGE_CHECKPOINT_BATCH_SIZE", "50")))
+    except ValueError as error:
+        raise RuntimeError("judge concurrency and checkpoint settings must be integers") from error
+
+    counts: dict[str, list[float | int]] = defaultdict(lambda: [0.0, 0.0, 0, 0])
+    work: list[
+        tuple[str, dict[str, Any], dict[str, Any], dict[str, Any]]
+    ] = []
+    cached = 0
+    for task, (completions, evals) in rows.items():
+        for completion, evaluation in zip(completions, evals):
+            item = _mtbench_rollout_item(completion, evaluation)
+            existing = _stored_mtbench_result(completion)
+            if existing is not None:
+                first, second = _record_mtbench_result(
+                    completion,
+                    evaluation,
+                    existing,
+                    item,
+                )
+                counts[task][0] += first
+                counts[task][1] += second
+                counts[task][2] += 1
+                counts[task][3] += int(first >= 5.0 and second >= 5.0)
+                cached += 1
+                continue
+            work.append((task, completion, evaluation, item))
+
+    task_id = os.environ.get("HELICOPTER_SCOREBOARD_TASK_ID", "").strip()
+    total = cached + len(work)
+    persisted_new = 0
+    checkpoint: list[tuple[dict[str, Any], dict[str, Any]]] = []
+
+    def flush_checkpoint() -> None:
+        nonlocal persisted_new
+        if not task_id or not checkpoint:
+            return
+        _persist_judge_checkpoint_batch(task_id, list(checkpoint))
+        persisted_new += len(checkpoint)
+        checkpoint.clear()
+        print(f"MT-Bench judge: checkpointed {cached + persisted_new}/{total} rollout(s)")
+
+    if cached:
+        print(f"MT-Bench judge: resumed {cached}/{total} rollout(s) from database checkpoints")
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(_judge_mtbench_rollout, item[3], settings): item
+            for item in work
+        }
+        try:
+            for future in as_completed(futures):
+                task, completion, evaluation, item = futures[future]
+                result = future.result()
+                first, second = _record_mtbench_result(
+                    completion,
+                    evaluation,
+                    result,
+                    item,
+                )
+                counts[task][0] += first
+                counts[task][1] += second
+                counts[task][2] += 1
+                counts[task][3] += int(first >= 5.0 and second >= 5.0)
+                checkpoint.append((completion, evaluation))
+                if len(checkpoint) >= checkpoint_size:
+                    flush_checkpoint()
+        finally:
+            flush_checkpoint()
+
+    sampling = _sampling_config()
+    configured_k = sampling.get("avg_k")
+    if configured_k is None:
+        raise RuntimeError("MT-Bench avg@k requires [lighteval.g1h].avg_k from TOML")
+    suffix = f"avg@{int(configured_k)}"
+    return {
+        task: {
+            f"judge_score_turn_1_{suffix}": first_sum / count if count else 0.0,
+            f"judge_score_turn_2_{suffix}": second_sum / count if count else 0.0,
+            f"judge_score_{suffix}": (first_sum + second_sum) / (2 * count) if count else 0.0,
+            "judge_fully_correct": fully_correct,
+            "judge_total": count,
+        }
+        for task, (first_sum, second_sum, count, fully_correct) in counts.items()
+    }
+
+
+def _apply_judge(
+    rows: Mapping[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]],
+) -> dict[str, dict[str, float | int]] | None:
+    mtbench_rows = {
+        task: value
+        for task, value in rows.items()
+        if _dataset(task) == "mt_bench"
+    }
+    answer_only_rows = {
+        task: value
+        for task, value in rows.items()
+        if _dataset(task) != "mt_bench"
+    }
+    metrics: dict[str, dict[str, float | int]] = {}
+    if answer_only_rows:
+        metrics.update(_apply_answer_only_judge(answer_only_rows) or {})
+    if mtbench_rows:
+        metrics.update(_apply_mtbench_judge(mtbench_rows) or {})
+    return metrics or None
+
+
+def _merge_judge_metrics(
+    official_metrics: Mapping[str, Mapping[str, Any]],
+    judged_metrics: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    request_policy = _json_env("HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY", os.environ)
+    task_policies = request_policy.get("tasks")
+
+    def primary_judge_score(task: str) -> bool:
+        if not isinstance(task_policies, Mapping):
+            return False
+        candidates = {str(task), str(task).split("|", 1)[0], _dataset(task)}
+        for configured_task, policy in task_policies.items():
+            configured = str(configured_task)
+            canonical = configured.split("|", 1)[0]
+            if canonical.startswith("g1h__"):
+                canonical = canonical[len("g1h__") :]
+            if not ({configured, canonical} & candidates) or not isinstance(policy, Mapping):
+                continue
+            judge = policy.get("judge")
+            if isinstance(judge, Mapping) and "primary_score" in judge:
+                return bool(judge["primary_score"])
+            return False
+        return False
+
+    merged: dict[str, dict[str, Any]] = {}
+    for task, values in official_metrics.items():
+        merged[str(task)] = {
+            str(key): value
+            for key, value in values.items()
+            if not str(key).startswith("deferred_judge_")
+        }
+    for task, values in judged_metrics.items():
+        task_name = str(task)
+        judge_values = dict(_jsonable(values))
+        if primary_judge_score(task_name):
+            primary_values = dict(judge_values)
+            for key, value in judge_values.items():
+                if str(key).startswith("judge_avg@"):
+                    primary_values[str(key)[len("judge_") :]] = value
+                elif str(key).startswith("judge_score_avg@"):
+                    primary_values[str(key)[len("judge_score_") :]] = value
+            merged[task_name] = primary_values
+        else:
+            merged.setdefault(task_name, {}).update(judge_values)
+    return merged
 
 
 def _dataset(task: str) -> str:
@@ -681,19 +1072,22 @@ async def _write(
         store = ScoreboardStore(settings=settings)
         for task, (completions, evals) in rows.items():
             dataset = _dataset(task)
-            if pinned_task_id and len(rows) == 1:
-                task_id = pinned_task_id
-            else:
-                task_id = await store.get_or_create_task(
-                    job_name=job,
-                    job_id=None,
-                    dataset=dataset,
-                    model=model,
-                    is_param_search=False,
-                    sampling_config=sampling,
-                    config_path=config_path,
-                    allow_resume=True,
-                )
+            sample_count = len({int(item["sample_index"]) for item in completions})
+            requested_task_id = pinned_task_id if pinned_task_id and len(rows) == 1 else None
+            task_id, _inserted = await store.insert_completion_payloads_with_task(
+                payloads=completions,
+                task_id=requested_task_id,
+                job_name=job,
+                dataset=dataset,
+                model=model,
+                is_param_search=False,
+                sampling_config=sampling,
+                config_path=config_path,
+                allow_resume=True,
+                num_samples=sample_count,
+            )
+            if task_id is None:
+                continue
             if not mark_completed:
                 await store.update_task_status(task_id=task_id, status="Running")
             restored = 0
@@ -701,15 +1095,13 @@ async def _write(
                 restored = await _restore_judge_checkpoints(task_id, completions, evals)
             if restored:
                 print(f"judge: restored {restored} database checkpoint(s) before scoring")
-            sample_count = len({int(item["sample_index"]) for item in completions})
-            await store.ensure_benchmark_num_samples(dataset=dataset, num_samples=sample_count)
-            await store.insert_completion_payloads_batch(payloads=completions, task_id=task_id)
-            await store.ingest_eval_payloads(payloads=evals, task_id=task_id)
-            await store.record_score_payload(
-                task_id=task_id,
-                payload={"cot_mode": cot_mode, "metrics": _jsonable(metrics.get(task, {}))},
-                mark_completed=mark_completed,
-            )
+            if mark_completed:
+                await store.ingest_eval_payloads(payloads=evals, task_id=task_id)
+                await store.record_score_payload(
+                    task_id=task_id,
+                    payload={"cot_mode": cot_mode, "metrics": _jsonable(metrics.get(task, {}))},
+                    mark_completed=True,
+                )
             recorded.append(f"{dataset} -> task {task_id}")
     finally:
         await close_db()
@@ -790,9 +1182,7 @@ def write_lighteval_tracker(tracker: Any) -> list[str]:
     if not judge_enabled:
         return recorded
     judged_metrics = _apply_judge(rows) or {}
-    metrics = {task: dict(values) for task, values in official_metrics.items()}
-    for task, judge_values in judged_metrics.items():
-        metrics.setdefault(str(task), {}).update(_jsonable(judge_values))
+    metrics = _merge_judge_metrics(official_metrics, judged_metrics)
     with _LOCK:
         return asyncio.run(_write(model, "lighteval", rows, metrics))
 
@@ -847,16 +1237,19 @@ async def _prepare_function_calling_task(
     await init_db(settings, generate_schemas=False)
     try:
         store = ScoreboardStore(settings=settings)
-        task_id = await store.get_or_create_task(
+        ctx = await store.get_resume_context(
             job_name="function_calling",
-            job_id=None,
             dataset=dataset,
             model=model,
             is_param_search=False,
             sampling_config=_jsonable(sampling_config),
             config_path=config_path,
-            allow_resume=True,
         )
+        if not ctx.can_resume or ctx.task_id is None:
+            return ""
+        task_id = str(ctx.task_id)
+        if await store.count_completions(task_id=task_id, status="Completed") <= 0:
+            return ""
         await store.update_task_status(task_id=task_id, status="Running")
         return task_id
     finally:
@@ -872,6 +1265,12 @@ def prepare_function_calling_task(
     root: Path,
     env: Mapping[str, str],
 ) -> str:
+    """Find an FC task that already owns real generation checkpoints.
+
+    A new task is not created here. The first real function-calling result
+    creates its task and completion together in the checkpoint transaction.
+    """
+
     _add_scoreboard(root)
     with _LOCK, _db_env(env):
         return asyncio.run(
@@ -886,11 +1285,14 @@ def prepare_function_calling_task(
 
 async def _checkpoint_function_calling_result(
     *,
-    task_id: str,
+    task_id: str | None,
     dataset: str,
+    model: str,
     num_samples: int,
     payload: dict[str, Any],
-) -> int:
+    sampling_config: Mapping[str, Any],
+    config_path: str | None,
+) -> tuple[str, int]:
     from scoreboard_server.db.connection import close_db, init_db
     from scoreboard_server.db.repository import ScoreboardStore
     from scoreboard_server.db.settings import DatabaseSettings
@@ -899,27 +1301,39 @@ async def _checkpoint_function_calling_result(
     await init_db(settings, generate_schemas=False)
     try:
         store = ScoreboardStore(settings=settings)
-        await store.ensure_benchmark_num_samples(dataset=dataset, num_samples=num_samples)
-        return await store.insert_completion_payloads_batch(
-            task_id=task_id,
+        resolved_task_id, inserted = await store.insert_completion_payloads_with_task(
             payloads=[payload],
+            task_id=task_id,
+            job_name="function_calling",
+            dataset=dataset,
+            model=model,
+            is_param_search=False,
+            sampling_config=_jsonable(sampling_config),
+            config_path=config_path,
+            allow_resume=True,
+            num_samples=num_samples,
         )
+        if resolved_task_id is None:
+            raise RuntimeError("function-calling checkpoint did not persist a task")
+        return str(resolved_task_id), inserted
     finally:
         await close_db()
 
 
 def checkpoint_function_calling_result(
     *,
-    task_id: str,
+    task_id: str | None,
     dataset: str,
+    model: str,
     num_samples: int,
     sample_index: int,
     sample: Any,
     result: Any,
     sampling_config: Mapping[str, Any],
+    config_path: str | None,
     root: Path,
     env: Mapping[str, str],
-) -> int:
+) -> str:
     prompt = json.dumps(
         {"messages": _jsonable(sample.messages), "tools": _jsonable(sample.tools)},
         ensure_ascii=False,
@@ -950,14 +1364,18 @@ def checkpoint_function_calling_result(
     }
     _add_scoreboard(root)
     with _LOCK, _db_env(env):
-        return asyncio.run(
+        resolved_task_id, _inserted = asyncio.run(
             _checkpoint_function_calling_result(
                 task_id=task_id,
                 dataset=dataset,
+                model=model,
                 num_samples=num_samples,
                 payload=payload,
+                sampling_config=sampling_config,
+                config_path=config_path,
             )
         )
+    return resolved_task_id
 
 
 def load_function_calling_generation(
@@ -984,16 +1402,19 @@ async def _prepare_lighteval_task(
     await init_db(settings, generate_schemas=False)
     try:
         store = ScoreboardStore(settings=settings)
-        task_id = await store.get_or_create_task(
+        ctx = await store.get_resume_context(
             job_name="lighteval",
-            job_id=None,
             dataset=dataset,
             model=model,
             is_param_search=False,
             sampling_config=_sampling_config(),
             config_path=os.environ.get("HELICOPTER_SCOREBOARD_CONFIG_PATH"),
-            allow_resume=True,
         )
+        if not ctx.can_resume or ctx.task_id is None:
+            return ""
+        task_id = str(ctx.task_id)
+        if await store.count_completions(task_id=task_id, status="Completed") <= 0:
+            return ""
         await store.update_task_status(task_id=task_id, status="Running")
         return task_id
     finally:
@@ -1007,7 +1428,13 @@ def prepare_lighteval_task(
     root: Path,
     env: Mapping[str, str] | None = None,
 ) -> str:
-    """Create or resume the stable database task used by both pipeline stages."""
+    """Find a task that already owns real generation checkpoints.
+
+    A new task is deliberately not created here. The first completed model
+    response creates its task and completion together in the checkpoint
+    transaction, so a request that fails before producing data leaves no
+    result-table placeholder.
+    """
 
     _add_scoreboard(root)
     with _LOCK, _db_env(env):
@@ -1060,65 +1487,6 @@ def _generation_payloads(
     return payloads
 
 
-def _pending_generation_payloads(
-    *,
-    task_name: str,
-    sample_index: int,
-    doc: Any,
-    prompt: str,
-    repeat_indices: Iterable[int],
-    generation_size: int | None = None,
-    requested_generation_size: int | None = None,
-    prompt_tokens: int | None = None,
-    truncate_prompt_tokens: int | None = None,
-    truncated_prompt_tokens: int = 0,
-    context_limit: int | None = None,
-) -> list[dict[str, Any]]:
-    """Build pre-request rows so failed samples retain an exact DB identity."""
-
-    doc_payload = _jsonable(doc)
-    if not isinstance(doc_payload, dict):
-        doc_payload = {"value": doc_payload}
-    sampling_config = _sampling_config()
-    if generation_size is not None:
-        sampling_config["effective_generation_size"] = int(generation_size)
-    if requested_generation_size is not None:
-        sampling_config["requested_generation_size"] = int(requested_generation_size)
-    if prompt_tokens is not None:
-        sampling_config["prompt_tokens"] = int(prompt_tokens)
-    if truncate_prompt_tokens is not None:
-        sampling_config["truncate_prompt_tokens"] = int(truncate_prompt_tokens)
-        sampling_config["truncation_side"] = "left"
-    sampling_config["truncated_prompt_tokens"] = int(truncated_prompt_tokens)
-    if context_limit is not None:
-        sampling_config["context_limit"] = int(context_limit)
-    doc_id = doc_payload.get("id")
-    prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-    return [
-        {
-            "_stage": "generation",
-            "status": "Running",
-            "sample_index": int(sample_index),
-            "repeat_index": int(repeat_index),
-            "pass_index": 0,
-            "prompt1": prompt,
-            "completion1": "",
-            "stop_reason1": None,
-            "sampling_config": sampling_config,
-            "stats": {
-                "lighteval_task": task_name,
-                "generation_manifest": True,
-                "stable_sample_index": int(sample_index),
-                "lighteval_doc_id": doc_id,
-                "dataset_row_id": doc_id,
-                "prompt_sha256": prompt_sha256,
-                "identity_contract": "lighteval_sample_index+dataset_row_id+prompt_sha256",
-            },
-            "agent_result": {"doc": _compact_lighteval_doc(doc_payload)},
-            "task_id": doc_id,
-        }
-        for repeat_index in repeat_indices
-    ]
 
 
 async def _checkpoint_generation(
@@ -1145,10 +1513,20 @@ async def _checkpoint_generation(
 class LightevalCheckpointSession:
     """Persist generation checkpoints on one event loop and DB connection."""
 
-    def __init__(self, *, task_id: str, dataset: str, num_samples: int) -> None:
-        self.task_id = task_id
+    def __init__(
+        self,
+        *,
+        task_id: str | None,
+        dataset: str,
+        num_samples: int,
+        model: str | None = None,
+    ) -> None:
+        self.task_id = str(task_id or "").strip() or None
         self.dataset = dataset
         self.num_samples = int(num_samples)
+        self.model = str(
+            model or os.environ.get("HELICOPTER_SCOREBOARD_MODEL_NAME") or ""
+        ).strip()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._store: Any | None = None
 
@@ -1160,18 +1538,34 @@ class LightevalCheckpointSession:
         settings = DatabaseSettings.from_env()
         await init_db(settings, generate_schemas=False)
         self._store = ScoreboardStore(settings=settings)
-        await self._store.ensure_benchmark_num_samples(
-            dataset=self.dataset,
-            num_samples=self.num_samples,
-        )
 
     async def _write(self, payloads: list[dict[str, Any]]) -> int:
         if self._store is None:
             raise RuntimeError("LightEval checkpoint session is not open")
-        return await self._store.insert_completion_payloads_batch(
+        if self.task_id is None and not self.model:
+            raise RuntimeError(
+                "first LightEval checkpoint requires HELICOPTER_SCOREBOARD_MODEL_NAME"
+            )
+
+        is_first_write = self.task_id is None
+        task_id, inserted = await self._store.insert_completion_payloads_with_task(
             payloads=payloads,
             task_id=self.task_id,
+            job_name="lighteval",
+            dataset=self.dataset,
+            model=self.model,
+            is_param_search=False,
+            sampling_config=_sampling_config(),
+            config_path=os.environ.get("HELICOPTER_SCOREBOARD_CONFIG_PATH"),
+            allow_resume=True,
+            num_samples=self.num_samples,
         )
+        if task_id is None:
+            return inserted
+        self.task_id = str(task_id)
+        if is_first_write:
+            os.environ["HELICOPTER_SCOREBOARD_TASK_ID"] = self.task_id
+        return inserted
 
     async def _close(self) -> None:
         from scoreboard_server.db.connection import close_db
@@ -1218,29 +1612,6 @@ class LightevalCheckpointSession:
         )
         return self._loop.run_until_complete(self._write(payloads))
 
-    def register_pending(self, requests: Iterable[Mapping[str, Any]]) -> int:
-        """Persist every request identity before any endpoint call is submitted."""
-
-        if self._loop is None:
-            raise RuntimeError("LightEval checkpoint session is not open")
-        payloads: list[dict[str, Any]] = []
-        for request in requests:
-            payloads.extend(
-                _pending_generation_payloads(
-                    task_name=str(request["task_name"]),
-                    sample_index=int(request["sample_index"]),
-                    doc=request["doc"],
-                    prompt=str(request["prompt"]),
-                    repeat_indices=request["repeat_indices"],
-                    generation_size=request.get("generation_size"),
-                    requested_generation_size=request.get("requested_generation_size"),
-                    prompt_tokens=request.get("prompt_tokens"),
-                    truncate_prompt_tokens=request.get("truncate_prompt_tokens"),
-                    truncated_prompt_tokens=int(request.get("truncated_prompt_tokens") or 0),
-                    context_limit=request.get("context_limit"),
-                )
-            )
-        return self._loop.run_until_complete(self._write(payloads))
 
     def __exit__(self, exc_type: Any, exc: BaseException | None, traceback: Any) -> None:
         loop = self._loop

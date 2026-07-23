@@ -24,10 +24,13 @@ from lighteval.tasks.requests import Doc
 
 
 def math_prompt(line, task_name: str = None):
+    final_answer = math_normalizer(str(line["solution"]))
+    if not final_answer:
+        raise ValueError("MATH row has no boxed final answer")
     return Doc(
         task_name=task_name,
-        query=f"Question: {line['problem']}\nAnswer:",
-        choices=[f" {line['solution']}"],
+        query=str(line["problem"]).strip().replace("\r\n", "\n"),
+        choices=[f"$\\boxed{{{final_answer}}}$"],
         gold_index=0,
     )
 
@@ -53,7 +56,7 @@ math_algebra = LightevalTaskConfig(
         ),
     ],
     stop_sequence=["\n"],
-    version=1,
+    version=2,
 )
 
 math_counting_and_probability = LightevalTaskConfig(
@@ -77,7 +80,7 @@ math_counting_and_probability = LightevalTaskConfig(
         ),
     ],
     stop_sequence=["\n"],
-    version=1,
+    version=2,
 )
 
 math_geometry = LightevalTaskConfig(
@@ -101,7 +104,7 @@ math_geometry = LightevalTaskConfig(
         ),
     ],
     stop_sequence=["\n"],
-    version=1,
+    version=2,
 )
 
 math_intermediate_algebra = LightevalTaskConfig(
@@ -125,7 +128,7 @@ math_intermediate_algebra = LightevalTaskConfig(
         ),
     ],
     stop_sequence=["\n"],
-    version=1,
+    version=2,
 )
 
 math_number_theory = LightevalTaskConfig(
@@ -149,7 +152,7 @@ math_number_theory = LightevalTaskConfig(
         ),
     ],
     stop_sequence=["\n"],
-    version=1,
+    version=2,
 )
 
 math_prealgebra = LightevalTaskConfig(
@@ -173,7 +176,7 @@ math_prealgebra = LightevalTaskConfig(
         ),
     ],
     stop_sequence=["\n"],
-    version=1,
+    version=2,
 )
 
 math_precalculus = LightevalTaskConfig(
@@ -197,7 +200,7 @@ math_precalculus = LightevalTaskConfig(
         ),
     ],
     stop_sequence=["\n"],
-    version=1,
+    version=2,
 )
 
 TASKS_TABLE = [

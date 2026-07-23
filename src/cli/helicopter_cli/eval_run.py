@@ -314,28 +314,23 @@ async def _ingest_scoreboard_results(
                 if task_name == "all" or not isinstance(metrics, dict):
                     continue
                 dataset = scoreboard_dataset_name(task_name)
-                task_id = await store.get_or_create_task(
-                    job_name=job_name,
-                    job_id=None,
-                    dataset=dataset,
-                    model=model_name,
-                    is_param_search=False,
-                    allow_resume=False,
-                )
                 completion_payloads, eval_payloads = _lighteval_detail_payloads(
                     detail_files=list(detail_files or []),
                     task_name=str(task_name),
                 )
-                if completion_payloads:
-                    await store.ensure_benchmark_num_samples(
-                        dataset=dataset,
-                        num_samples=len(completion_payloads),
-                    )
-                    await store.insert_completion_payloads_batch(
-                        payloads=completion_payloads,
-                        task_id=task_id,
-                    )
-                    await store.ingest_eval_payloads(payloads=eval_payloads, task_id=task_id)
+                task_id, _inserted = await store.insert_completion_payloads_with_task(
+                    payloads=completion_payloads,
+                    task_id=None,
+                    job_name=job_name,
+                    dataset=dataset,
+                    model=model_name,
+                    is_param_search=False,
+                    allow_resume=False,
+                    num_samples=len(completion_payloads),
+                )
+                if task_id is None:
+                    continue
+                await store.ingest_eval_payloads(payloads=eval_payloads, task_id=task_id)
                 await store.record_score_payload(
                     task_id=task_id,
                     payload={"cot_mode": "NoCoT", "metrics": metrics},
@@ -457,9 +452,16 @@ def run_eval(
                     root=root,
                     env=lighteval_plan.env,
                 )
-        lighteval_plan.env["HELICOPTER_SCOREBOARD_TASK_ID"] = scoreboard_task_id
         lighteval_plan.env["HELICOPTER_SCOREBOARD_DATASET"] = dataset
-        args.scoreboard_task_id = scoreboard_task_id
+        if scoreboard_task_id:
+            lighteval_plan.env["HELICOPTER_SCOREBOARD_TASK_ID"] = scoreboard_task_id
+        else:
+            lighteval_plan.env.pop("HELICOPTER_SCOREBOARD_TASK_ID", None)
+            if str(lighteval_plan.env.get("HELICOPTER_PIPELINE_STAGE") or "").lower() == "score":
+                raise RuntimeError(
+                    f"score stage has no persisted completions for {dataset!r}"
+                )
+        args.scoreboard_task_id = scoreboard_task_id or None
 
     output_dir = output_dir_from_command(lighteval_plan.command) or (root / "results/lighteval")
     if not output_dir.is_absolute():

@@ -60,6 +60,7 @@ class BatchUnit:
     exit_code: int | None = None
     started_at: str | None = None
     ended_at: str | None = None
+    replica: str | None = None
 
 
 @dataclass
@@ -67,6 +68,16 @@ class GpuSlot:
     index: int
     gpu: int | None
     port: int
+
+
+@dataclass(frozen=True)
+class ModelReplica:
+    name: str
+    base_url: str | None = None
+    served_model_name: str | None = None
+    api_key: str | None = None
+    api_key_env: str | None = None
+    max_num_seqs: int | None = None
 
 
 @dataclass(frozen=True)
@@ -92,6 +103,57 @@ def _as_str_list(value: Any) -> list[str]:
             result.extend(_as_str_list(item))
         return result
     return [str(value)]
+
+
+def resolve_model_replicas(config: dict[str, Any], model: str) -> list[ModelReplica]:
+    """Return independently schedulable endpoint replicas for one logical model."""
+
+    entry = resolve_model_entry(config, model)
+    raw_replicas = entry.get("replicas")
+    if raw_replicas is None:
+        return [
+            ModelReplica(
+                name="default",
+                base_url=str(entry["base_url"]) if entry.get("base_url") else None,
+                served_model_name=str(entry["served_model_name"]) if entry.get("served_model_name") else None,
+                api_key=str(entry["api_key"]) if entry.get("api_key") else None,
+                api_key_env=str(entry["api_key_env"]) if entry.get("api_key_env") else None,
+                max_num_seqs=int(entry["max_num_seqs"]) if entry.get("max_num_seqs") else None,
+            )
+        ]
+    if not isinstance(raw_replicas, list) or not raw_replicas:
+        raise SystemExit(f"model {model} replicas must be a non-empty TOML array of tables")
+
+    replicas: list[ModelReplica] = []
+    seen_names: set[str] = set()
+    for index, raw in enumerate(raw_replicas, start=1):
+        if not isinstance(raw, dict):
+            raise SystemExit(f"model {model} replica {index} must be a TOML table")
+        name = str(raw.get("name") or f"replica-{index}").strip()
+        if not name or name in seen_names:
+            raise SystemExit(f"model {model} replica names must be non-empty and unique")
+        seen_names.add(name)
+        base_url = str(raw.get("base_url") or "").strip()
+        if not base_url:
+            raise SystemExit(f"model {model} replica {name!r} requires base_url")
+        max_num_seqs = raw.get("max_num_seqs", entry.get("max_num_seqs"))
+        replicas.append(
+            ModelReplica(
+                name=name,
+                base_url=base_url,
+                served_model_name=str(
+                    raw.get("served_model_name") or entry.get("served_model_name") or model
+                ),
+                api_key=str(raw["api_key"]) if raw.get("api_key") else (
+                    str(entry["api_key"]) if entry.get("api_key") else None
+                ),
+                api_key_env=str(raw["api_key_env"]) if raw.get("api_key_env") else (
+                    str(entry["api_key_env"]) if entry.get("api_key_env") else None
+                ),
+                max_num_seqs=int(max_num_seqs) if max_num_seqs is not None else None,
+            )
+        )
+    return replicas
 
 
 def interleave_catalog_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -178,6 +240,22 @@ def resolve_parallel_cap(args: Any, config: dict[str, Any]) -> int | None:
     return parallel
 
 
+def derive_postprocess_workers(
+    *,
+    runnable_count: int,
+    judge_capacity: int,
+    configured_ceiling: int | None = None,
+) -> int:
+    """Size the non-model scoring pool from scheduler-visible capacity."""
+
+    runnable_count = max(1, int(runnable_count))
+    judge_capacity = max(1, int(judge_capacity))
+    workers = judge_capacity
+    if configured_ceiling is not None:
+        workers = min(workers, max(1, int(configured_ceiling)))
+    return max(1, min(runnable_count, workers))
+
+
 def _nested_value(value: Any, key: str) -> Any:
     if isinstance(value, dict):
         if key in value:
@@ -257,18 +335,29 @@ def derive_model_concurrency(
     waiting_requests: int = 0,
     source: str = "fallback",
     open_file_limit: int | None = None,
+    replica_count: int = 1,
 ) -> ModelConcurrency:
     rollout_n = max(1, int(rollout_n))
     pending_benchmarks = max(1, int(pending_benchmarks))
+    benchmark_workers = min(pending_benchmarks, max(1, int(replica_count)))
     if max_num_seqs is None:
-        return ModelConcurrency(model, 1, 1, rollout_n, None, running_requests, waiting_requests, source)
+        return ModelConcurrency(
+            model,
+            benchmark_workers,
+            1,
+            rollout_n,
+            None,
+            running_requests,
+            waiting_requests,
+            source,
+        )
     available_sequences = max(rollout_n, int(max_num_seqs) - max(0, int(running_requests)))
     request_slots = max(1, available_sequences // rollout_n)
     if waiting_requests > 0:
         request_slots = 1
-    # A model is the scheduling resource. Exactly one (model, benchmark)
-    # generation task owns it and receives all currently available request slots.
-    benchmark_workers = 1
+    # Each endpoint replica is a scheduling resource. One (model, benchmark)
+    # generation task exclusively owns one replica and receives that replica's
+    # full request capacity until generation completes.
     concurrent_requests = request_slots
     if configured_request_ceiling is not None:
         concurrent_requests = min(concurrent_requests, max(1, int(configured_request_ceiling)))
@@ -319,9 +408,11 @@ def resolve_model_concurrency(
     args: Any,
     config: dict[str, Any],
     env: dict[str, str],
+    replicas: list[ModelReplica] | None = None,
 ) -> ModelConcurrency:
     lighteval = table(config, "lighteval")
     policy = lighteval.get("g1h") if isinstance(lighteval.get("g1h"), dict) else {}
+    replicas = replicas or [ModelReplica(name="default")]
     rollout_n = int(policy.get("rollout_n") or policy.get("avg_k") or 1)
     # Presets describe evaluation semantics, not model capacity. Only an
     # explicit CLI/environment override may cap the model-derived request count.
@@ -340,14 +431,21 @@ def resolve_model_concurrency(
             max_num_seqs=None,
             configured_request_ceiling=ceiling,
             open_file_limit=soft_open_file_limit(),
+            replica_count=len(replicas),
         )
     infer_config = model_config.get("infer") if isinstance(model_config.get("infer"), dict) else {}
-    configured_max = infer_config.get("max_num_seqs") or model_config.get("max_num_seqs")
+    primary_replica = replicas[0]
+    configured_max = (
+        primary_replica.max_num_seqs
+        or infer_config.get("max_num_seqs")
+        or model_config.get("max_num_seqs")
+    )
     max_num_seqs = int(configured_max) if configured_max is not None else None
     running = waiting = 0
     source = "model_config" if max_num_seqs is not None else "fallback"
     configured_endpoint = pick(
         getattr(args, "base_url", None),
+        primary_replica.base_url,
         model_config.get("base_url"),
         env_value(env, "HELICOPTER_EVAL_BASE_URL", "OPENAI_BASE_URL"),
         lighteval.get("base_url"),
@@ -355,9 +453,15 @@ def resolve_model_concurrency(
     if configured_endpoint:
         unit_args = copy.copy(args)
         unit_args.model = model
+        if primary_replica.base_url:
+            unit_args.base_url = primary_replica.base_url
         base_url = local_openai_base_url(config, env, unit_args)
+        replica_api_key = primary_replica.api_key
+        if not replica_api_key and primary_replica.api_key_env:
+            replica_api_key = env.get(primary_replica.api_key_env)
         api_key = pick(
             getattr(args, "api_key", None),
+            replica_api_key,
             model_config.get("api_key"),
             env_value(env, "HELICOPTER_EVAL_API_KEY", "OPENAI_API_KEY"),
             lighteval.get("api_key"),
@@ -377,8 +481,9 @@ def resolve_model_concurrency(
         configured_request_ceiling=ceiling,
         running_requests=running,
         waiting_requests=waiting,
-        source=source,
+        source=f"{source}+replicas:{len(replicas)}",
         open_file_limit=soft_open_file_limit(),
+        replica_count=len(replicas),
     )
 
 
@@ -416,6 +521,12 @@ def resolve_slots(args: Any, config: dict[str, Any], env: dict[str, str]) -> lis
     """
     if getattr(args, "no_server", False) or getattr(args, "base_url", None):
         return [GpuSlot(index=0, gpu=None, port=0)]
+    for model in _as_str_list(getattr(args, "models", None) or batch_config(config).get("models")):
+        try:
+            if any(replica.base_url for replica in resolve_model_replicas(config, model)):
+                return [GpuSlot(index=0, gpu=None, port=0)]
+        except SystemExit:
+            continue
 
     port_base = int(pick(getattr(args, "port_base", None), batch_config(config).get("port_base"), DEFAULT_PORT_BASE))
     explicit = _as_str_list(getattr(args, "gpus", None) or batch_config(config).get("gpus"))
@@ -652,14 +763,36 @@ def _safe_unit_slug(unit: BatchUnit, slot: GpuSlot) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("_") or f"unit_{digest}"
 
 
-def _unit_args(args: Any, unit: BatchUnit, slot: GpuSlot) -> Any:
+def _unit_args(
+    args: Any,
+    unit: BatchUnit,
+    slot: GpuSlot,
+    *,
+    replica: ModelReplica | None = None,
+    env: dict[str, str] | None = None,
+) -> Any:
     unit_args = copy.copy(args)
     unit_args.model = unit.model
     unit_args.tasks = ",".join(unit.tasks)
     unit_args.no_server = getattr(args, "no_server", False)
     unit_args.keep_server = False
     unit_args.scoreboard = True
-    if slot.port:
+    if replica is not None:
+        if replica.base_url:
+            unit_args.base_url = replica.base_url
+            unit_args.no_server = True
+        if replica.served_model_name:
+            unit_args.lighteval_model_name = replica.served_model_name
+        if replica.api_key:
+            unit_args.api_key = replica.api_key
+        elif replica.api_key_env:
+            api_key = (env or {}).get(replica.api_key_env)
+            if not api_key:
+                raise SystemExit(
+                    f"endpoint replica {replica.name!r} requires environment variable {replica.api_key_env}"
+                )
+            unit_args.api_key = api_key
+    elif slot.port:
         unit_args.base_url = f"http://127.0.0.1:{slot.port}/v1"
     batch_dir = getattr(args, "_batch_run_dir", None) or getattr(args, "output_dir", None)
     if batch_dir:
@@ -688,10 +821,11 @@ def run_unit(
     concurrent_requests: int | None = None,
     pipeline_stage: str | None = None,
     extra_env: dict[str, str] | None = None,
+    replica: ModelReplica | None = None,
 ) -> None:
     stage_note = f"/{pipeline_stage}" if pipeline_stage else ""
     label = f"{unit.model}/{unit.kind}{stage_note}"
-    unit_args = _unit_args(args, unit, slot)
+    unit_args = _unit_args(args, unit, slot, replica=replica, env=env)
     if concurrent_requests is not None:
         unit_args.concurrent_requests = int(concurrent_requests)
     unit_env = _unit_env(env, slot)
@@ -704,6 +838,8 @@ def run_unit(
     runner = run_eval if unit.kind == "lighteval" else run_function_calling_eval
     started = time.monotonic()
     unit.started_at = _utc_now()
+    if replica is not None:
+        unit.replica = replica.name
     unit.slot_index = slot.index
     unit.gpu = slot.gpu
     unit.port = slot.port or None
@@ -734,12 +870,13 @@ def run_unit(
 
 
 def format_summary(units: list[BatchUnit]) -> str:
-    lines = ["model\tkind\tstatus\tattempts\telapsed_s\ttasks\tskipped\tmessage"]
+    lines = ["model\treplica\tkind\tstatus\tattempts\telapsed_s\ttasks\tskipped\tmessage"]
     for unit in units:
         lines.append(
             "\t".join(
                 [
                     unit.model,
+                    unit.replica or "-",
                     unit.kind,
                     unit.status,
                     str(unit.attempts),
@@ -756,6 +893,7 @@ def format_summary(units: list[BatchUnit]) -> str:
 def _unit_record(unit: BatchUnit) -> dict[str, Any]:
     return {
         "model": unit.model,
+        "replica": unit.replica,
         "kind": unit.kind,
         "tasks": list(unit.tasks),
         "skipped_tasks": list(unit.skipped_tasks),
@@ -894,6 +1032,18 @@ def run_batch(
         model: sum(1 for unit in runnable if unit.model == model)
         for model in {unit.model for unit in runnable}
     }
+    model_replicas: dict[str, list[ModelReplica]] = {}
+    for model in pending_by_model:
+        if getattr(args, "base_url", None):
+            model_replicas[model] = [
+                ModelReplica(name="cli", base_url=str(args.base_url))
+            ]
+        else:
+            try:
+                model_replicas[model] = resolve_model_replicas(config, model)
+            except SystemExit:
+                # Preserve per-unit failure reporting for unknown model aliases.
+                model_replicas[model] = [ModelReplica(name="default")]
     model_concurrency = {
         model: resolve_model_concurrency(
             model=model,
@@ -901,6 +1051,7 @@ def run_batch(
             args=args,
             config=config,
             env=env,
+            replicas=model_replicas[model],
         )
         for model, count in pending_by_model.items()
     }
@@ -916,7 +1067,12 @@ def run_batch(
                 f"concurrent_requests={item.concurrent_requests} rollout_n={item.rollout_n} "
                 f"max_num_seqs={item.max_num_seqs or 'unknown'} source={item.source}"
             )
+        dry_run_positions = {model: 0 for model in model_replicas}
         for unit in runnable:
+            replicas = model_replicas[unit.model]
+            position = dry_run_positions[unit.model]
+            replica = replicas[position % len(replicas)]
+            dry_run_positions[unit.model] = position + 1
             run_unit(
                 unit,
                 args=args,
@@ -926,6 +1082,7 @@ def run_batch(
                 config=config,
                 max_retries=0,
                 concurrent_requests=model_concurrency[unit.model].concurrent_requests,
+                replica=replica,
             )
             if unit.status == "completed":
                 unit.status = "dry_run"
@@ -943,7 +1100,11 @@ def run_batch(
         )
         return exit_code
 
-    external_endpoint = bool(getattr(args, "no_server", False) or getattr(args, "base_url", None))
+    external_endpoint = bool(
+        getattr(args, "no_server", False)
+        or getattr(args, "base_url", None)
+        or any(replica.base_url for replicas in model_replicas.values() for replica in replicas)
+    )
     workers = sum(item.benchmark_workers for item in model_concurrency.values())
     if not external_endpoint:
         workers = min(workers, len(slots))
@@ -968,13 +1129,20 @@ def run_batch(
     for slot in slots:
         slot_queue.put(slot)
 
-    model_semaphores = {
-        model: threading.Semaphore(1)
-        for model in model_concurrency
-    }
+    replica_queues: dict[str, queue.Queue[ModelReplica]] = {}
+    for model, replicas in model_replicas.items():
+        replica_queue: queue.Queue[ModelReplica] = queue.Queue()
+        for replica in replicas:
+            replica_queue.put(replica)
+        replica_queues[model] = replica_queue
     unit_indices = {id(unit): index for index, unit in enumerate(runnable)}
-    score_workers = max(1, min(len(runnable), int(env.get("HELICOPTER_SCORE_WORKERS", "4"))))
     judge_capacity = max(1, int(env.get("HELICOPTER_JUDGE_CONCURRENT_REQUESTS", "10")))
+    configured_score_workers = env.get("HELICOPTER_SCORE_WORKERS")
+    score_workers = derive_postprocess_workers(
+        runnable_count=len(runnable),
+        judge_capacity=judge_capacity,
+        configured_ceiling=int(configured_score_workers) if configured_score_workers else None,
+    )
     judge_per_worker = max(1, judge_capacity // score_workers)
     score_executor = ThreadPoolExecutor(max_workers=score_workers)
     score_futures: list[Any] = []
@@ -999,8 +1167,7 @@ def run_batch(
         )
 
     def worker(unit: BatchUnit) -> None:
-        semaphore = model_semaphores[unit.model]
-        semaphore.acquire()
+        replica = replica_queues[unit.model].get()
         slot = (
             GpuSlot(index=unit_indices[id(unit)], gpu=None, port=0)
             if external_endpoint
@@ -1017,11 +1184,12 @@ def run_batch(
                 max_retries=max_retries,
                 concurrent_requests=model_concurrency[unit.model].concurrent_requests,
                 pipeline_stage="generate",
+                replica=replica,
             )
         finally:
             if not external_endpoint:
                 slot_queue.put(slot)
-            semaphore.release()
+            replica_queues[unit.model].put(replica)
 
         if unit.status == "completed":
             with score_futures_lock:

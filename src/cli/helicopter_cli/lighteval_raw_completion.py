@@ -40,6 +40,26 @@ def _strip_prefill_continuation(text: str, template: str | None = None) -> str:
     return text
 
 
+def _restore_structured_prefill(
+    text: str,
+    template: str | None = None,
+    *,
+    restore_stop_fence: bool = False,
+) -> str:
+    """Restore fenced prefixes and an API-omitted configured closing fence."""
+
+    prompt_template = os.environ.get(_TEMPLATE_ENV, "") if template is None else template
+    stripped = prompt_template.rstrip()
+    for language in ("python", "diff", ""):
+        fence = f"```{language}"
+        if stripped.endswith(fence):
+            restored = f"{fence}\n{text.lstrip()}"
+            if restore_stop_fence and "```" not in text:
+                restored = restored.rstrip() + "\n```"
+            return restored
+    return text
+
+
 def _choice_mapping(choices: Any) -> dict[str, str]:
     if not isinstance(choices, (list, tuple)):
         return {}
@@ -204,6 +224,31 @@ def _configured_prompt_template(task_name: str | None, default: str) -> str:
     return value
 
 
+def _configured_multi_turn_template(task_name: str | None) -> str | None:
+    value = _task_request_policy(task_name).get("multi_turn_template")
+    if value is None:
+        return None
+    required = ("{first_prompt}", "{first_answer}", "{query}")
+    if not isinstance(value, str) or any(field not in value for field in required):
+        raise RuntimeError(
+            "task multi_turn_template must contain {first_prompt}, {first_answer}, and {query}"
+        )
+    return value
+
+
+def _multi_turn_queries(doc: Any) -> list[str]:
+    specific = getattr(doc, "specific", None)
+    value = specific.get("multi_turn_queries") if isinstance(specific, dict) else None
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise RuntimeError("LightEval multi-turn generation currently requires exactly two turns")
+    queries = [str(item).strip() for item in value]
+    if any(not item for item in queries):
+        raise RuntimeError("LightEval multi-turn queries must be non-empty strings")
+    return queries
+
+
 def _completion_url(base_url: str | None) -> str:
     if not base_url:
         raise RuntimeError("raw completion mode requires a base_url")
@@ -366,10 +411,18 @@ def _request(
             if not choices:
                 raise RuntimeError(f"completion response has no choices: {body!r}")
             raw_texts = [str(choice.get("text") or "") for choice in choices]
-            texts = [_strip_prefill_continuation(text, prompt_template) for text in raw_texts]
+            finish_reasons = [choice.get("finish_reason") for choice in choices]
+            configured_fence_stop = "\n```" in (payload.get("stop") or [])
+            texts = [
+                _restore_structured_prefill(
+                    _strip_prefill_continuation(text, prompt_template),
+                    prompt_template,
+                    restore_stop_fence=(configured_fence_stop and finish_reasons[index] == "stop"),
+                )
+                for index, text in enumerate(raw_texts)
+            ]
             result = ModelResponse(text=texts, input=prompt)
             result.raw_text = raw_texts
-            finish_reasons = [choice.get("finish_reason") for choice in choices]
             result.finish_reason = finish_reasons[0] if len(finish_reasons) == 1 else finish_reasons
             result.usage = body.get("usage")
             return result
@@ -526,8 +579,6 @@ def _checkpoint_response(
     generation_size: int,
     checkpoint_session: Any | None = None,
 ) -> None:
-    if not task_id:
-        return
     if checkpoint_session is not None:
         checkpoint_session.checkpoint(
             task_name=task_name,
@@ -537,6 +588,8 @@ def _checkpoint_response(
             repeat_indices=repeat_indices,
             generation_size=generation_size,
         )
+        return
+    if not task_id:
         return
     from helicopter_cli.scoreboard_bridge import checkpoint_lighteval_response
 
@@ -573,6 +626,97 @@ def _merge_response_rollouts(
         raise RuntimeError(f"generation checkpoint is incomplete after request: missing repeats {missing}")
     return _response_from_rollouts([merged[index] for index in range(rollout_n)])
 
+def _generate_two_turn_response(
+    self: LiteLLMClient,
+    *,
+    doc: Any,
+    task_name: str,
+    first_prompt: str,
+    queries: list[str],
+    max_tokens: int | None,
+    missing_count: int,
+    stops: list[str] | None,
+    first_template: str,
+    first_context_fit: _RequestContextFit,
+) -> ModelResponse:
+    multi_turn_template = _configured_multi_turn_template(task_name)
+    if multi_turn_template is None:
+        raise RuntimeError(
+            f"task {task_name!r} has multi_turn_queries but no TOML multi_turn_template"
+        )
+    first = _request(
+        self,
+        first_prompt,
+        first_context_fit.max_tokens,
+        missing_count,
+        stops,
+        prompt_template=first_template,
+        force_max_tokens=True,
+        truncate_prompt_tokens=first_context_fit.truncate_prompt_tokens,
+        task_name=task_name,
+    )
+    first_rollouts = _response_rollouts(first)
+    if len(first_rollouts) != missing_count:
+        raise RuntimeError(
+            f"first-turn completion count mismatch: got {len(first_rollouts)}, expected {missing_count}"
+        )
+
+    texts: list[str] = []
+    raw_texts: list[str] = []
+    finish_reasons: list[Any] = []
+    usages: list[Any] = []
+    stages_by_rollout: list[list[dict[str, Any]]] = []
+    for first_rollout in first_rollouts:
+        first_answer = str(_one(first_rollout.get("text")) or "")
+        second_prompt = multi_turn_template.format(
+            first_prompt=first_prompt,
+            first_answer=first_answer,
+            query=queries[1],
+        )
+        second_context_fit = _fit_request_to_context(
+            self,
+            prompt=second_prompt,
+            requested_max_tokens=max_tokens,
+        )
+        second = _request(
+            self,
+            second_prompt,
+            second_context_fit.max_tokens,
+            1,
+            stops,
+            prompt_template=multi_turn_template,
+            force_max_tokens=True,
+            truncate_prompt_tokens=second_context_fit.truncate_prompt_tokens,
+            task_name=task_name,
+        )
+        second_rollout = _response_rollouts(second)[0]
+        second_answer = str(_one(second_rollout.get("text")) or "")
+        texts.append(second_answer)
+        raw_texts.append(str(_one(second_rollout.get("raw_text")) or second_answer))
+        finish_reasons.append(_one(second_rollout.get("finish_reason")))
+        usages.append({"stages": [first_rollout.get("usage"), second_rollout.get("usage")]})
+        stages_by_rollout.append(
+            [
+                {
+                    "prompt": first_prompt,
+                    "completion": first_answer,
+                    "stop_reason": _one(first_rollout.get("finish_reason")),
+                },
+                {
+                    "prompt": second_prompt,
+                    "completion": second_answer,
+                    "stop_reason": _one(second_rollout.get("finish_reason")),
+                },
+            ]
+        )
+    response = ModelResponse(text=texts, input=first_prompt)
+    response.raw_text = raw_texts
+    response.finish_reason = finish_reasons
+    response.usage = usages
+    response.stages_by_rollout = stages_by_rollout
+    return _postprocess_choice_response(doc, response)
+
+
 @cached(SamplingMethod.GENERATIVE)
 def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
     """Generate with PostgreSQL checkpoints as the only response cache.
@@ -590,7 +734,7 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
     original_indices = {id(doc): index for index, doc in enumerate(docs)}
     results: list[ModelResponse] = []
 
-    if task_id:
+    if task_id or dataset_name:
         from helicopter_cli.scoreboard_bridge import LightevalCheckpointSession
 
         checkpoint_context = LightevalCheckpointSession(
@@ -661,36 +805,25 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                     )
                 )
 
-            if checkpoint_session is not None:
-                checkpoint_session.register_pending(
-                    {
-                        "task_name": task_names[position],
-                        "sample_index": sample_index,
-                        "doc": split_docs[position],
-                        "prompt": prompts[position],
-                        "repeat_indices": missing,
-                        "generation_size": context_fit.max_tokens,
-                        "requested_generation_size": requested_max_tokens,
-                        "prompt_tokens": context_fit.prompt_tokens,
-                        "truncate_prompt_tokens": context_fit.truncate_prompt_tokens,
-                        "truncated_prompt_tokens": context_fit.truncated_prompt_tokens,
-                        "context_limit": context_fit.context_limit,
-                    }
-                    for (
-                        position,
-                        sample_index,
-                        missing,
-                        _existing,
-                        requested_max_tokens,
-                        context_fit,
-                    ) in work_items
-                )
-
             def generate_one(
                 position: int,
                 missing: list[int],
                 context_fit: _RequestContextFit,
             ) -> ModelResponse:
+                queries = _multi_turn_queries(split_docs[position])
+                if queries:
+                    return _generate_two_turn_response(
+                        self,
+                        doc=split_docs[position],
+                        task_name=task_names[position],
+                        first_prompt=prompts[position],
+                        queries=queries,
+                        max_tokens=context_fit.max_tokens,
+                        missing_count=len(missing),
+                        stops=stops,
+                        first_template=templates[position],
+                        first_context_fit=context_fit,
+                    )
                 response = _request(
                     self,
                     prompts[position],
