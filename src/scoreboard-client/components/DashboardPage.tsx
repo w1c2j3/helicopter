@@ -39,9 +39,9 @@ export function DashboardPage({ meta, leaderboard, isMockData }: Props) {
       {refreshError ? <div className="error-bar">刷新失败：{refreshError}</div> : null}
       <div className="matrix-page-heading">
         <div>
-          <span>GENERATION BENCHMARK MATRIX</span>
-          <h2>同参数量 · 当前一代 vs 上一代</h2>
-          <p>Benchmark 纵向排列，模型横向排列；不同参数量完全隔离，不进行无意义的跨尺寸排名。</p>
+          <span>RWKV INTERNAL REGRESSION MATRIX</span>
+          <h2>RWKV 内部代际缺陷与回归</h2>
+          <p>只比较内部 RWKV 权重检查点；同参数量当前代对上一代，不进行跨架构或跨尺寸排名。</p>
         </div>
         <button className="btn" type="button" onClick={refresh}>
           {isMockData ? "刷新模拟数据" : "刷新数据"}

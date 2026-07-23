@@ -1484,6 +1484,121 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   font-size: 6px;
 }
 
+.model-diagnostics {
+  display: grid;
+  grid-template-columns: 112px repeat(4, minmax(0, 1fr));
+  min-height: 58px;
+  border-bottom: 1px solid var(--border-strong);
+  background: #11151c;
+  font: 7px var(--mono);
+}
+
+.diagnostic-title,
+.parameter-diagnostic {
+  min-width: 0;
+  padding: 4px 6px;
+  border-right: 1px solid var(--border);
+}
+
+.diagnostic-title {
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  color: var(--text-muted);
+}
+
+.diagnostic-title strong {
+  color: #dbe7f5;
+  font-size: 8px;
+}
+
+.parameter-diagnostic header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 14px;
+  color: var(--text-muted);
+}
+
+.parameter-diagnostic header strong {
+  color: #dbe7f5;
+  font-size: 8px;
+}
+
+.diagnostic-line {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.diagnostic-line b {
+  flex: 0 0 auto;
+  width: 12px;
+  font-size: 7px;
+}
+
+.diagnostic-line.weak b {
+  color: #e7a33f;
+}
+
+.diagnostic-line.regression b {
+  color: #ff6578;
+}
+
+.diagnostic-line button {
+  min-width: 0;
+  max-width: 31%;
+  padding: 1px 3px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 2px;
+  background: #1b2028;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 6px var(--mono);
+}
+
+.diagnostic-line.weak button {
+  color: #e7b76f;
+}
+
+.diagnostic-line.regression button {
+  color: #ff8392;
+}
+
+.diagnostic-line button:hover {
+  outline: 1px solid currentColor;
+  outline-offset: -1px;
+}
+
+.generation-table-all-params .generation-score.previous i b {
+  background: #687484;
+}
+
+.generation-table-all-params .generation-score.weak i b {
+  background: #d18b2f;
+}
+
+.generation-table-all-params .generation-score.weak strong {
+  color: #efbd72;
+}
+
+.generation-table-all-params .generation-score.regression i b {
+  background: #d95063;
+}
+
+.generation-table-all-params .generation-score.regression strong {
+  color: #ff8594;
+}
+
+.dashboard-shell .generation-table-wrap {
+  max-height: calc(100vh - 190px);
+}
+
 @media (max-width: 1200px) {
   .dashboard-shell .generation-toolbar-meta {
     display: none;
@@ -1491,6 +1606,11 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 
   .dashboard-shell .benchmark-search {
     flex-basis: 220px;
+  }
+
+  .model-diagnostics {
+    grid-template-columns: 90px repeat(4, minmax(230px, 1fr));
+    overflow-x: auto;
   }
 }
 

@@ -30,6 +30,18 @@ type BenchmarkRow = {
   comparisons: Comparison[];
 };
 
+type DiagnosticItem = {
+  benchmark: string;
+  value: number;
+};
+
+type ParameterDiagnostic = {
+  param: string;
+  weakest: DiagnosticItem[];
+  regressions: DiagnosticItem[];
+  missing: number;
+};
+
 function generationTimestamp(model: string): number {
   const matches = [...model.matchAll(/20\d{6}/g)];
   return Number(matches.at(-1)?.[0] ?? 0);
@@ -57,14 +69,20 @@ function groupsForDomain(domain: MatrixDomain | undefined): ParameterGroup[] {
     .sort((left, right) => parameterValue(right.param) - parameterValue(left.param));
 }
 
-function ScoreValue({ cell }: { cell: MatrixCell | null }) {
+function ScoreValue({
+  cell,
+  tone = "current",
+}: {
+  cell: MatrixCell | null;
+  tone?: "current" | "previous" | "weak" | "regression";
+}) {
   if (cell?.percent == null) {
     return <span className="generation-score missing">—</span>;
   }
   const width = Math.max(0, Math.min(100, cell.percent));
   const style = { "--score-width": `${width}%` } as CSSProperties;
   return (
-    <span className="generation-score" style={style}>
+    <span className={`generation-score ${tone}`} style={style}>
       <strong>{pct(cell.percent)}</strong>
       <i aria-hidden="true"><b /></i>
     </span>
@@ -99,6 +117,34 @@ export function GenerationalBenchmarkMatrix({ matrix }: { matrix: LeaderboardMat
   const [reverseBenchmarks, setReverseBenchmarks] = useState(false);
   const domain = matrix.domains.find((item) => item.key === domainKey) ?? initialDomain;
   const groups = useMemo(() => groupsForDomain(domain), [domain]);
+  const diagnostics = useMemo<ParameterDiagnostic[]>(() => {
+    if (!domain) return [];
+    return groups.map((group) => {
+      const values = domain.columns.map((column, index) => {
+        const current = group.current.cells[index]?.percent ?? null;
+        const previous = group.previous?.cells[index]?.percent ?? null;
+        return {
+          benchmark: column.label,
+          current,
+          delta: current == null || previous == null ? null : current - previous,
+        };
+      });
+      return {
+        param: group.param,
+        weakest: values
+          .filter((item): item is typeof item & { current: number } => item.current != null)
+          .sort((left, right) => left.current - right.current)
+          .slice(0, 3)
+          .map((item) => ({ benchmark: item.benchmark, value: item.current })),
+        regressions: values
+          .filter((item): item is typeof item & { delta: number } => item.delta != null && item.delta < 0)
+          .sort((left, right) => left.delta - right.delta)
+          .slice(0, 3)
+          .map((item) => ({ benchmark: item.benchmark, value: item.delta })),
+        missing: values.filter((item) => item.current == null).length,
+      };
+    });
+  }, [domain, groups]);
 
   const rows = useMemo(() => {
     if (!domain) return [];
@@ -177,6 +223,38 @@ export function GenerationalBenchmarkMatrix({ matrix }: { matrix: LeaderboardMat
         </span>
       </div>
 
+      <div className="model-diagnostics">
+        <div className="diagnostic-title">
+          <strong>模型缺陷</strong>
+          <span>橙色=绝对弱项</span>
+          <span>红色=代际回退</span>
+        </div>
+        {diagnostics.map((diagnostic) => (
+          <div className="parameter-diagnostic" key={diagnostic.param}>
+            <header>
+              <strong>{diagnostic.param}</strong>
+              <span>{diagnostic.weakest.length + diagnostic.regressions.length + diagnostic.missing} issues</span>
+            </header>
+            <div className="diagnostic-line weak">
+              <b>弱</b>
+              {diagnostic.weakest.map((item) => (
+                <button type="button" key={item.benchmark} onClick={() => setQuery(item.benchmark)} title={item.benchmark}>
+                  {item.benchmark} {item.value.toFixed(1)}
+                </button>
+              ))}
+            </div>
+            <div className="diagnostic-line regression">
+              <b>退</b>
+              {diagnostic.regressions.length ? diagnostic.regressions.map((item) => (
+                <button type="button" key={item.benchmark} onClick={() => setQuery(item.benchmark)} title={item.benchmark}>
+                  {item.benchmark} {item.value.toFixed(1)}
+                </button>
+              )) : <span>无回退</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+
       <div className="generation-table-wrap">
         <table className="generation-table generation-table-all-params">
           <thead>
@@ -222,10 +300,19 @@ export function GenerationalBenchmarkMatrix({ matrix }: { matrix: LeaderboardMat
                 <td className="sample-column">{row.column.num_samples?.toLocaleString() ?? "—"}</td>
                 {row.comparisons.flatMap((comparison) => [
                   <td className="model-score-column current-model group-start" key={`${comparison.group.param}:current`}>
-                    <ScoreValue cell={comparison.current} />
+                    <ScoreValue
+                      cell={comparison.current}
+                      tone={comparison.delta != null && comparison.delta < 0
+                        ? "regression"
+                        : diagnostics
+                          .find((item) => item.param === comparison.group.param)
+                          ?.weakest.some((item) => item.benchmark === row.column.label)
+                          ? "weak"
+                          : "current"}
+                    />
                   </td>,
                   <td className="model-score-column previous-model" key={`${comparison.group.param}:previous`}>
-                    <ScoreValue cell={comparison.previous} />
+                    <ScoreValue cell={comparison.previous} tone="previous" />
                   </td>,
                   <td className="delta-column" key={`${comparison.group.param}:delta`}>
                     <DeltaValue value={comparison.delta} />

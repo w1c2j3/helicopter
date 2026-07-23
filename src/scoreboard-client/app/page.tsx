@@ -62,7 +62,7 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
         <div>
           <h1><span className="brand-dot">⦿</span> RWKV Skills</h1>
           <div className="subtitle">
-            {isTuning ? "Normal 刷榜 · 提示词与采样配置" : isHistory ? "历史运行与成绩来源" : page === "admin" ? "评测调度与运行管理" : "Naive 模型能力与 Benchmark 表现"}
+            {isTuning ? "RWKV Normal 调参" : isHistory ? "RWKV 历史运行与成绩来源" : page === "admin" ? "RWKV 评测调度与运行管理" : "RWKV 内部代际回归评测"}
           </div>
         </div>
         <nav className="page-nav">
