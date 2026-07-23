@@ -10,11 +10,12 @@ import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from collections import deque
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -90,6 +91,74 @@ class ModelConcurrency:
     running_requests: int
     waiting_requests: int
     source: str
+
+
+def run_model_aware_scheduler(
+    units: list[BatchUnit],
+    *,
+    model_worker_limits: dict[str, int],
+    max_workers: int,
+    worker: Callable[[BatchUnit], None],
+) -> None:
+    """Run generation without letting waits for one model starve another.
+
+    A global executor that submits every unit eagerly can spend all of its
+    threads waiting on replicas of one busy model. Keep model ownership in the
+    dispatcher instead, and submit a unit only while that model has capacity.
+    """
+
+    if not units:
+        return
+    max_workers = max(1, min(int(max_workers), len(units)))
+    model_order = list(dict.fromkeys(unit.model for unit in units))
+    pending: dict[str, deque[BatchUnit]] = {
+        model: deque(unit for unit in units if unit.model == model)
+        for model in model_order
+    }
+    limits = {
+        model: max(1, int(model_worker_limits.get(model, 1)))
+        for model in model_order
+    }
+    active_by_model = {model: 0 for model in model_order}
+    active: dict[Future[None], str] = {}
+    cursor = 0
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        while active or any(pending.values()):
+            while len(active) < max_workers and any(pending.values()):
+                selected_model: str | None = None
+                for offset in range(len(model_order)):
+                    position = (cursor + offset) % len(model_order)
+                    model = model_order[position]
+                    if pending[model] and active_by_model[model] < limits[model]:
+                        selected_model = model
+                        cursor = (position + 1) % len(model_order)
+                        break
+                if selected_model is None:
+                    break
+                unit = pending[selected_model].popleft()
+                future = executor.submit(worker, unit)
+                active[future] = selected_model
+                active_by_model[selected_model] += 1
+
+            if not active:
+                remaining = {
+                    model: len(queue_)
+                    for model, queue_ in pending.items()
+                    if queue_
+                }
+                raise RuntimeError(
+                    f"model-aware scheduler cannot dispatch pending units: {remaining}"
+                )
+
+            completed, _ = wait(tuple(active), return_when=FIRST_COMPLETED)
+            completed_futures: list[Future[None]] = []
+            for future in completed:
+                model = active.pop(future)
+                active_by_model[model] -= 1
+                completed_futures.append(future)
+            for future in completed_futures:
+                future.result()
 
 
 def _as_str_list(value: Any) -> list[str]:
@@ -184,6 +253,34 @@ def batch_config(config: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def benchmark_rollout_n(config: dict[str, Any], tasks: list[str]) -> int:
+    """Return the largest rollout count declared by the selected TOMLs."""
+
+    specs = config.get("_benchmark_specs", {})
+    if not isinstance(specs, dict):
+        return 1
+    largest = 1
+    for task in tasks:
+        canonical = str(task).split("|", 1)[0]
+        if canonical.startswith("g1h__"):
+            canonical = canonical[len("g1h__") :]
+        spec = specs.get(canonical)
+        if spec is None:
+            parents = [
+                (name, value)
+                for name, value in specs.items()
+                if canonical.startswith(f"{name}:")
+            ]
+            if parents:
+                spec = max(parents, key=lambda item: len(item[0]))[1]
+        evaluation = spec.get("evaluation", {}) if isinstance(spec, dict) else {}
+        try:
+            largest = max(largest, int(evaluation.get("rollout_n", 1)))
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return largest
+
+
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -243,14 +340,14 @@ def resolve_parallel_cap(args: Any, config: dict[str, Any]) -> int | None:
 def derive_postprocess_workers(
     *,
     runnable_count: int,
-    judge_capacity: int,
+    score_capacity: int,
     configured_ceiling: int | None = None,
 ) -> int:
     """Size the non-model scoring pool from scheduler-visible capacity."""
 
     runnable_count = max(1, int(runnable_count))
-    judge_capacity = max(1, int(judge_capacity))
-    workers = judge_capacity
+    score_capacity = max(1, int(score_capacity))
+    workers = score_capacity
     if configured_ceiling is not None:
         workers = min(workers, max(1, int(configured_ceiling)))
     return max(1, min(runnable_count, workers))
@@ -409,11 +506,17 @@ def resolve_model_concurrency(
     config: dict[str, Any],
     env: dict[str, str],
     replicas: list[ModelReplica] | None = None,
+    rollout_n_override: int | None = None,
 ) -> ModelConcurrency:
     lighteval = table(config, "lighteval")
     policy = lighteval.get("g1h") if isinstance(lighteval.get("g1h"), dict) else {}
     replicas = replicas or [ModelReplica(name="default")]
-    rollout_n = int(policy.get("rollout_n") or policy.get("avg_k") or 1)
+    rollout_n = int(
+        rollout_n_override
+        or policy.get("rollout_n")
+        or policy.get("avg_k")
+        or 1
+    )
     # Presets describe evaluation semantics, not model capacity. Only an
     # explicit CLI/environment override may cap the model-derived request count.
     ceiling_value = pick(
@@ -1052,6 +1155,15 @@ def run_batch(
             config=config,
             env=env,
             replicas=model_replicas[model],
+            rollout_n_override=benchmark_rollout_n(
+                config,
+                [
+                    task
+                    for unit in runnable
+                    if unit.model == model
+                    for task in unit.tasks
+                ],
+            ),
         )
         for model, count in pending_by_model.items()
     }
@@ -1136,21 +1248,17 @@ def run_batch(
             replica_queue.put(replica)
         replica_queues[model] = replica_queue
     unit_indices = {id(unit): index for index, unit in enumerate(runnable)}
-    judge_capacity = max(1, int(env.get("HELICOPTER_JUDGE_CONCURRENT_REQUESTS", "10")))
+    score_capacity = max(1, int(env.get("HELICOPTER_SCORE_CONCURRENT_REQUESTS", "10")))
     configured_score_workers = env.get("HELICOPTER_SCORE_WORKERS")
     score_workers = derive_postprocess_workers(
         runnable_count=len(runnable),
-        judge_capacity=judge_capacity,
+        score_capacity=score_capacity,
         configured_ceiling=int(configured_score_workers) if configured_score_workers else None,
     )
-    judge_per_worker = max(1, judge_capacity // score_workers)
     score_executor = ThreadPoolExecutor(max_workers=score_workers)
     score_futures: list[Any] = []
     score_futures_lock = threading.Lock()
-    print(
-        f"eval batch: postprocess workers={score_workers} "
-        f"judge_total_capacity={judge_capacity} judge_per_worker={judge_per_worker}"
-    )
+    print(f"eval batch: LightEval postprocess workers={score_workers}")
 
     def score_worker(unit: BatchUnit) -> None:
         run_unit(
@@ -1163,7 +1271,6 @@ def run_batch(
             max_retries=max_retries,
             concurrent_requests=1,
             pipeline_stage="score",
-            extra_env={"HELICOPTER_JUDGE_CONCURRENT_REQUESTS": str(judge_per_worker)},
         )
 
     def worker(unit: BatchUnit) -> None:
@@ -1196,14 +1303,15 @@ def run_batch(
                 score_futures.append(score_executor.submit(score_worker, unit))
 
     try:
-        if workers == 1:
-            for unit in runnable:
-                worker(unit)
-        else:
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = [executor.submit(worker, unit) for unit in runnable]
-                for future in futures:
-                    future.result()
+        run_model_aware_scheduler(
+            runnable,
+            model_worker_limits={
+                model: item.benchmark_workers
+                for model, item in model_concurrency.items()
+            },
+            max_workers=workers,
+            worker=worker,
+        )
         for future in score_futures:
             future.result()
     finally:

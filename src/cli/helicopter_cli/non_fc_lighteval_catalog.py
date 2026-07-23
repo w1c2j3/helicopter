@@ -48,8 +48,8 @@ EXCLUDED_DIRECT_PATTERNS = (
     r"tau[23]?[_-]?bench",
     r"agentbench",
     r"browsecomp",
+    r"swe[_-]?bench",
     r"^mathqa$",
-    r"^gpqa-fr$",
     r"^ifeval-fr$",
     r"^qasper$",
     r"^cmmlu_zho_mcf:",
@@ -58,9 +58,6 @@ EXCLUDED_DIRECT_PATTERNS = (
     r"^global_mmlu_all_tam_mcf:",
     r"^global_mmlu_all_tha_mcf:",
     r"^global_mmlu_all_urd_mcf:",
-    r"^aime\d+_(?:avg|gpassk)$",
-    r"^lcb:codegeneration_release_",
-    r"^lcb:codegeneration_v\d+_v\d+$",
 )
 
 DOMAIN_SPECS = {
@@ -249,13 +246,7 @@ SELECTION_RULES = (
         "Global MMLU Math/Science",
         exact=global_mmlu_exact(GLOBAL_MMLU_MATH_SCIENCE_SUBJECTS),
     ),
-    SelectionRule("coding", "HumanEval / MBPP / LiveCodeBench", ("human_eval", "lcb:"), ("mbpp", "mbpp_plus", "longcodeqa")),
-    SelectionRule(
-        "coding",
-        "SWE-bench patch generation",
-        ("swe_bench", "multi_swe_bench"),
-        ("aider_polyglot", "debugbench"),
-    ),
+    SelectionRule("coding", "HumanEval / MBPP / LiveCodeBench", ("human_eval", "lcb:"), ("mbpp_plus", "longcodeqa")),
     SelectionRule(
         "coding",
         "MMLU CS",
@@ -402,46 +393,14 @@ def _select_tasks_for_field(
     used: set[str],
 ) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
-    rules = [item for item in SELECTION_RULES if item.field == field]
-
-    # Pin the small cross-domain set of canonical tasks before filling the
-    # remaining slots. These are used as catalog smoke anchors and should not
-    # disappear merely because a large family has many short aliases.
-    for task in REQUIRED_TASKS:
-        if task not in candidates or task in used:
-            continue
-        rule = next((item for item in rules if rule_matches(item, task)), None)
-        if rule is None:
-            continue
-        rows.append({"name": task, "source_family": rule.source_family})
-        used.add(task)
-
-    pools = [
-        (rule, sorted((task for task in candidates if rule_matches(rule, task)), key=task_sort_key))
-        for rule in rules
-    ]
-    positions = [0] * len(pools)
-
-    # Interleave benchmark families so a large suite (for example MMLU,
-    # BIG-Bench, MGSM, or LiveCodeBench release aliases) cannot consume the
-    # whole per-domain catalog before another widely used family is visited.
-    while len(rows) < TARGET_PER_DOMAIN:
-        progressed = False
-        for pool_index, (rule, tasks) in enumerate(pools):
-            position = positions[pool_index]
-            while position < len(tasks) and tasks[position] in used:
-                position += 1
-            positions[pool_index] = position
-            if position >= len(tasks):
-                continue
-            task = tasks[position]
-            positions[pool_index] += 1
+    for rule in [item for item in SELECTION_RULES if item.field == field]:
+        matches = [task for task in candidates if task not in used and rule_matches(rule, task)]
+        for task in sorted(matches, key=task_sort_key):
             rows.append({"name": task, "source_family": rule.source_family})
             used.add(task)
-            progressed = True
             if len(rows) >= TARGET_PER_DOMAIN:
                 break
-        if not progressed:
+        if len(rows) >= TARGET_PER_DOMAIN:
             break
     if len(rows) < TARGET_PER_DOMAIN:
         raise SystemExit(

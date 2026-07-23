@@ -48,6 +48,7 @@ LIGHTEVAL_SAMPLING_FIELDS = frozenset(
         "presence_penalty",
     }
 )
+TASK_SAMPLING_FIELDS = frozenset({*VLLM_SAMPLING_FIELDS, "context_budget"})
 
 
 @dataclass
@@ -69,6 +70,18 @@ def format_hydra_value(value: Any) -> str:
     if isinstance(value, bool):
         return "True" if value else "False"
     return str(value)
+
+
+def prompt_template_for_mode(prompt: dict[str, Any]) -> str:
+    """Return the benchmark-owned template selected by [prompt].mode."""
+
+    mode = str(prompt.get("mode", "")).strip()
+    templates = prompt.get("templates", {})
+    if isinstance(templates, dict) and mode in templates:
+        value = templates[mode]
+    else:
+        value = prompt.get("template")
+    return str(value or "")
 
 
 def prepend_venv_path(env: dict[str, str], root: Path, config: dict[str, Any]) -> None:
@@ -397,7 +410,45 @@ def resolve_lighteval_g1h_policy(
     lighteval = table(config, "lighteval")
     policy = lighteval.get("g1h")
     if not isinstance(policy, dict) or not policy:
-        return None
+        # A standalone benchmark TOML is model-agnostic and therefore does
+        # not contain a [lighteval.g1h] section.  Build the launcher policy
+        # from the benchmark's generic evaluation contract in memory.  This
+        # keeps avg/native and all k/n controls in the benchmark file without
+        # coupling that file to one model family.
+        benchmark_specs = config.get("_benchmark_specs", {})
+        if not isinstance(benchmark_specs, dict) or len(benchmark_specs) != 1:
+            return None
+        spec = next(iter(benchmark_specs.values()))
+        if not isinstance(spec, dict):
+            return None
+        evaluation = spec.get("evaluation", {})
+        benchmark = spec.get("benchmark", {})
+        prompt = table(config, "prompt")
+        if not isinstance(evaluation, dict) or not isinstance(benchmark, dict):
+            return None
+        prompt_mode = str(prompt.get("mode", "normal_nocot")).strip().lower()
+        policy = {
+            "metric": "avg",
+            "prompt_style": "normal" if prompt_mode.startswith("normal") else "naive",
+            "zero_shot": True,
+            "avg_k": int(evaluation.get("avg_k", 1)),
+            "rollout_n": int(evaluation.get("rollout_n", evaluation.get("avg_k", 1))),
+            "generation_size": int(evaluation.get("generation_size", 2048)),
+            "gpass_generation_size": int(evaluation.get("gpass_generation_size", 4096)),
+            "target_generations_per_benchmark": int(
+                evaluation.get("target_generations_per_benchmark", 5000)
+            ),
+            "large_benchmark_generation_threshold": int(
+                evaluation.get("large_benchmark_generation_threshold", 20000)
+            ),
+            "large_benchmark_sample_rate": float(
+                evaluation.get("large_benchmark_sample_rate", 0.2)
+            ),
+            "variant_selection": "avg_then_gpass",
+        }
+        task_name = str(benchmark.get("task", "")).strip()
+        if task_name:
+            policy["task_evaluations"] = {task_name: dict(evaluation)}
 
     try:
         resolved = normalize_policy(policy)
@@ -409,13 +460,17 @@ def resolve_lighteval_g1h_policy(
                 raw_specs = [item.strip() for item in str(tasks).split(",") if item.strip()]
             selected = select_task_specs(raw_specs, resolved)
             benchmark_specs = config.get("_benchmark_specs", {})
-            if len(selected) == 1 and isinstance(benchmark_specs, dict):
-                benchmark_spec = benchmark_specs.get(selected[0][0])
-                if isinstance(benchmark_spec, dict):
+            task_evaluations: dict[str, dict[str, Any]] = {}
+            if isinstance(benchmark_specs, dict):
+                for task_name, _fewshot in selected:
+                    benchmark_spec = benchmark_specs.get(task_name)
+                    if not isinstance(benchmark_spec, dict):
+                        continue
                     evaluation = benchmark_spec.get("evaluation", {})
-                    if not isinstance(evaluation, dict):
-                        raise ValueError("benchmark evaluation settings must be a TOML table")
-                    resolved = normalize_policy({**resolved, **evaluation})
+                    if isinstance(evaluation, dict):
+                        task_evaluations[task_name] = dict(evaluation)
+            if task_evaluations:
+                resolved["task_evaluations"] = task_evaluations
             resolved["selected_tasks"] = [name for name, _fewshot in selected]
             resolved["tasks"] = alias_task_specs(selected, resolved)
         return resolved
@@ -510,15 +565,66 @@ def resolve_lighteval_task_request_policy(
     if not isinstance(benchmark_specs, dict):
         raise SystemExit("internal benchmark specification map must be a table")
     prompt_mode = str(prompt.get("mode", "")).strip()
+    mode_templates = prompt.get("templates", {})
+    if not isinstance(mode_templates, dict):
+        raise SystemExit("[prompt.templates] must be a TOML table")
+
+    def benchmark_spec_for_task(
+        canonical: str,
+    ) -> dict[str, Any] | None:
+        exact = benchmark_specs.get(canonical)
+        if exact is not None:
+            if not isinstance(exact, dict):
+                raise SystemExit(
+                    f"benchmark specification for {canonical!r} must be a table"
+                )
+            return exact
+        parent_matches = [
+            (configured_task, candidate)
+            for configured_task, candidate in benchmark_specs.items()
+            if canonical.startswith(f"{configured_task}:")
+        ]
+        if not parent_matches:
+            return None
+        configured_task, candidate = max(
+            parent_matches,
+            key=lambda item: len(item[0]),
+        )
+        if not isinstance(candidate, dict):
+            raise SystemExit(
+                f"benchmark specification for {configured_task!r} must be a table"
+            )
+        return candidate
+
+    def sampling_for_mode(
+        raw_sampling: dict[str, Any],
+        *,
+        source: str,
+    ) -> dict[str, Any]:
+        resolved = dict(raw_sampling)
+        max_tokens = resolved.get("max_tokens")
+        if isinstance(max_tokens, dict):
+            if prompt_mode not in max_tokens:
+                raise SystemExit(
+                    f"{source} sampling.max_tokens has no budget for prompt mode "
+                    f"{prompt_mode!r}"
+                )
+            max_tokens = max_tokens[prompt_mode]
+            resolved["max_tokens"] = max_tokens
+        if max_tokens is not None and (
+            isinstance(max_tokens, bool)
+            or not isinstance(max_tokens, int)
+            or max_tokens <= 0
+        ):
+            raise SystemExit(f"{source} sampling.max_tokens must resolve to a positive integer")
+        return resolved
 
     tasks: dict[str, Any] = {}
     for task_name in selected_tasks:
         canonical = str(task_name).split("|", 1)[0]
         if canonical.startswith("g1h__"):
             canonical = canonical[len("g1h__") :]
-        benchmark_spec = benchmark_specs.get(canonical)
-        if benchmark_spec is not None and not isinstance(benchmark_spec, dict):
-            raise SystemExit(f"benchmark specification for {canonical!r} must be a table")
+        benchmark_spec = benchmark_spec_for_task(canonical)
         benchmark = benchmark_spec.get("benchmark", {}) if benchmark_spec else {}
         spec_prompt = benchmark_spec.get("prompt", {}) if benchmark_spec else {}
         benchmark_sampling = benchmark_spec.get("sampling", {}) if benchmark_spec else {}
@@ -526,6 +632,10 @@ def resolve_lighteval_task_request_policy(
             raise SystemExit(f"benchmark specification for {canonical!r} is malformed")
         if not isinstance(benchmark_sampling, dict):
             raise SystemExit(f"benchmark sampling for {canonical!r} must be a TOML table")
+        benchmark_sampling = sampling_for_mode(
+            benchmark_sampling,
+            source=f"benchmark {canonical!r}",
+        )
         domain = str(benchmark.get("field")) if benchmark else domain_for_task(task_name)
         if not domain:
             raise SystemExit(f"no benchmark domain is registered for LightEval task {task_name!r}")
@@ -561,15 +671,15 @@ def resolve_lighteval_task_request_policy(
         format_sampling = sampling_formats.get(request_format, {}) if request_format else {}
         if not isinstance(format_sampling, dict):
             raise SystemExit(f"[sampling.formats.{request_format}] must be a TOML table")
-        unknown_domain = set(domain_sampling) - set(VLLM_SAMPLING_FIELDS)
+        unknown_domain = set(domain_sampling) - set(TASK_SAMPLING_FIELDS)
         if unknown_domain:
             fields = ", ".join(sorted(unknown_domain))
             raise SystemExit(f"[sampling.domains.{domain}] has unsupported fields: {fields}")
-        unknown_format = set(format_sampling) - set(VLLM_SAMPLING_FIELDS)
+        unknown_format = set(format_sampling) - set(TASK_SAMPLING_FIELDS)
         if unknown_format:
             fields = ", ".join(sorted(unknown_format))
             raise SystemExit(f"[sampling.formats.{request_format}] has unsupported fields: {fields}")
-        unknown_benchmark = set(benchmark_sampling) - set(VLLM_SAMPLING_FIELDS)
+        unknown_benchmark = set(benchmark_sampling) - set(TASK_SAMPLING_FIELDS)
         if unknown_benchmark:
             fields = ", ".join(sorted(unknown_benchmark))
             raise SystemExit(f"benchmark {canonical!r} has unsupported sampling fields: {fields}")
@@ -581,7 +691,7 @@ def resolve_lighteval_task_request_policy(
             raise SystemExit(f"[prompt.formats.{request_format}] must be a TOML table")
         prompt_template = format_prompt.get(
             "template",
-            domain_prompt.get("template", prompt.get("template")),
+            domain_prompt.get("template", mode_templates.get(prompt_mode, prompt.get("template"))),
         )
         if prompt_template is not None and (
             not isinstance(prompt_template, str) or "{query}" not in prompt_template
@@ -599,21 +709,22 @@ def resolve_lighteval_task_request_policy(
             or any(field not in multi_turn_template for field in required_multi_turn_fields)
         ):
             raise SystemExit("prompt multi_turn_template must contain {first_prompt}, {first_answer}, and {query}")
+        resolved_sampling = {
+            **base_sampling,
+            **domain_sampling,
+            **format_sampling,
+            **benchmark_sampling,
+        }
         task_policy = {
             "domain": domain,
             "format": request_format,
             "inherit_task_stops": bool(stops.get("inherit_task_stops", True)),
             "stop": resolved_stops,
-            "sampling": {
-                **base_sampling,
-                **domain_sampling,
-                **format_sampling,
-                **benchmark_sampling,
-            },
+            "sampling": resolved_sampling,
         }
         if benchmark_spec:
             task_policy["benchmark_config_path"] = str(benchmark_spec.get("_path", ""))
-            task_policy["judge"] = dict(benchmark_spec.get("judge", {}))
+            task_policy["scoring"] = dict(benchmark_spec.get("scoring", {}))
         if prompt_template is not None:
             task_policy["prompt_template"] = prompt_template
         if multi_turn_template is not None:
@@ -781,7 +892,7 @@ def build_lighteval_plan(
         )
     )
     prompt = table(config, "prompt")
-    prompt_template = str(prompt.get("template") or "")
+    prompt_template = prompt_template_for_mode(prompt)
     if prompt_template:
         plan_env["HELICOPTER_PROMPT_TEMPLATE"] = prompt_template
     prompt_mode = str(prompt.get("mode") or "").strip()

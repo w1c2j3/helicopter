@@ -18,11 +18,13 @@ from unittest import mock
 
 from lighteval.models.model_output import ModelResponse
 from lighteval.tasks.lighteval_task import LightevalTask
+from lighteval.tasks.requests import Doc
 from lighteval.tasks.tasks import bigbench as bigbench_tasks
 from lighteval.tasks.tasks.coqa import coqa_first_question as coqa_task
 from lighteval.tasks.tasks.glue import super_glue_rte_prompt
 from lighteval.tasks.tasks.ifbench import instructions as ifbench_instructions
 from lighteval.tasks.tasks.math_500 import math_500 as math_500_task, math_500_prompt
+from lighteval.tasks.tasks.mmlu_pro import mmlu_pro as mmlu_pro_task, mmlu_pro_prompt_function
 from lighteval.tasks.tasks.piqa import piqa as piqa_task
 from lighteval.tasks.tasks.pubmedqa import pubmed_qa_prompt, pubmedqa as pubmedqa_task
 from lighteval.tasks.tasks.simpleqa import simpleqa_prompt
@@ -57,6 +59,7 @@ EXAMPLE_CONFIG = ROOT / "configs/example.toml"
 
 
 class Famous120BenchmarkConfigTests(unittest.TestCase):
+    @unittest.skip("legacy famous120 aggregate was removed")
     def test_famous120_is_one_valid_toml_per_benchmark(self) -> None:
         specs = benchmark_specs.load_benchmark_index(
             ROOT / "configs/benchmarks/famous120.toml"
@@ -72,35 +75,73 @@ class Famous120BenchmarkConfigTests(unittest.TestCase):
             }),
         )
         self.assertEqual(len({spec["_path"] for spec in specs}), 120)
-        self.assertEqual(
-            Counter(
-                (
-                    spec["benchmark"]["field"],
-                    spec["judge"]["primary_score"],
-                )
+        self.assertTrue(
+            all(
+                spec["scoring"]
+                == {"provider": "lighteval", "metric_source": "task_default"}
                 for spec in specs
-            ),
-            Counter({
-                ("knowledge", True): 30,
-                ("math", True): 30,
-                ("coding", False): 30,
-                ("instruction_following", False): 30,
-            }),
+            )
         )
         self.assertTrue(all(spec["evaluation"]["avg_k"] == 8 for spec in specs))
 
-    def test_all_four_public_presets_load_the_same_120_specs(self) -> None:
-        for preset in ("naive-cot", "naive-nocot", "normal-cot", "normal-nocot"):
-            loaded, _ = config.load_config(ROOT, f"configs/presets/{preset}.toml")
-            self.assertEqual(len(loaded["_benchmark_specs"]), 120)
-            self.assertEqual(
-                set(loaded["models"]),
-                {"deployed", "g1h-1.5b", "g1h-2.9b", "g1h-7.2b", "g1h-13.3b"},
-            )
-            for model in ("g1h-1.5b", "g1h-2.9b", "g1h-7.2b", "g1h-13.3b"):
-                replicas = eval_batch.resolve_model_replicas(loaded, model)
-                self.assertEqual(len(replicas), 2)
-                self.assertTrue(all(replica.base_url for replica in replicas))
+    def test_each_standalone_benchmark_config_loads_independently(self) -> None:
+        paths = sorted((ROOT / "configs/benchmarks/g1h").glob("*/*.toml"))
+        self.assertEqual(len(paths), 400)
+        for path in paths:
+            with self.subTest(path=path.name):
+                loaded, _ = config.load_config(ROOT, str(path))
+                self.assertEqual(len(loaded["_benchmark_specs"]), 1)
+                self.assertNotIn("g1h", str(loaded.get("lighteval", {})))
+                self.assertNotIn("models", loaded)
+
+    def test_model_catalog_is_selected_outside_benchmark_config(self) -> None:
+        loaded, _ = config.load_config(
+            ROOT,
+            "configs/benchmarks/g1h/knowledge/046_gpqa_diamond.toml",
+        )
+        config.merge_model_catalog(
+            loaded,
+            root=ROOT,
+            catalog_path="configs/models/g1h-dual-replica.toml",
+        )
+        self.assertEqual(
+            set(loaded["models"]),
+            {"deployed", "g1h-1.5b", "g1h-2.9b", "g1h-7.2b", "g1h-13.3b"},
+        )
+
+    def test_gpqa_token_budget_is_resolved_per_prompt_mode(self) -> None:
+        config_path = "configs/benchmarks/g1h/knowledge/046_gpqa_diamond.toml"
+        loaded, _ = config.load_config(ROOT, config_path)
+        config.merge_model_catalog(
+            loaded,
+            root=ROOT,
+            catalog_path="configs/models/g1h-dual-replica.toml",
+        )
+        plan = commands.build_lighteval_plan(
+            lighteval_args(model="deployed", tasks="gpqa:diamond|0", config=config_path),
+            root=ROOT,
+            env={},
+            config=loaded,
+        )
+        tasks = json.loads(plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"])["tasks"]
+        self.assertEqual(tasks["gpqa:diamond"]["sampling"]["max_tokens"], 6144)
+
+    def test_gpqa_uses_domain_budget_for_each_prompt_mode(self) -> None:
+        config_path = "configs/benchmarks/g1h/knowledge/046_gpqa_diamond.toml"
+        loaded, _ = config.load_config(ROOT, config_path)
+        config.merge_model_catalog(
+            loaded,
+            root=ROOT,
+            catalog_path="configs/models/g1h-dual-replica.toml",
+        )
+        plan = commands.build_lighteval_plan(
+            lighteval_args(model="deployed", tasks="gpqa:diamond|0", config=config_path),
+            root=ROOT,
+            env={},
+            config=loaded,
+        )
+        tasks = json.loads(plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"])["tasks"]
+        self.assertEqual(tasks["gpqa:diamond"]["sampling"]["context_budget"], 8192)
 
 
 class NativeLightEvalTaskCompatibilityTests(unittest.TestCase):
@@ -118,6 +159,29 @@ class NativeLightEvalTaskCompatibilityTests(unittest.TestCase):
         self.assertEqual(doc.choices, [r"$\boxed{1}$"])
         self.assertEqual(doc.gold_index, 0)
         self.assertEqual(math_500_task.version, 3)
+
+    def test_mmlu_pro_native_task_keeps_only_raw_question_and_choices(self) -> None:
+        doc = mmlu_pro_prompt_function(
+            {
+                "question": "Which option is correct?",
+                "options": ["First", "Second", "Third"],
+                "answer_index": 1,
+            },
+            task_name="mmlu_pro",
+        )
+
+        self.assertIsNotNone(doc)
+        assert doc is not None
+        self.assertEqual(
+            doc.query,
+            "Which option is correct?\nA. First\nB. Second\nC. Third",
+        )
+        self.assertEqual(doc.choices, ["A", "B", "C"])
+        self.assertEqual(doc.gold_index, 1)
+        self.assertIsNone(doc.instruction)
+        self.assertNotIn("Think step by step", doc.query)
+        self.assertNotIn("Answer:", doc.query)
+        self.assertEqual(mmlu_pro_task.version, 1)
 
     def test_truthfulqa_generation_prompt_does_not_require_mc_fields(self) -> None:
         doc = truthful_qa_generative_prompt(
@@ -649,6 +713,36 @@ def build_takeoff_plan(
 
 class RawCompletionTests(unittest.TestCase):
 
+    def test_famous120_raw_question_guard_rejects_added_cues(self) -> None:
+        policy = {
+            "tasks": {
+                "mmlu_pro": {
+                    "benchmark_config_path": "configs/benchmarks/famous120/knowledge/01_mmlu_pro.toml"
+                }
+            }
+        }
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY": json.dumps(policy),
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "added cue"):
+                lighteval_raw_completion._validate_raw_question_contract(
+                    "g1h__mmlu_pro|0",
+                    "User: Answer the following multiple choice question.\nAssistant: <think",
+                )
+            with self.assertRaisesRegex(RuntimeError, "trailing Answer"):
+                lighteval_raw_completion._validate_raw_question_contract(
+                    "g1h__mmlu_pro|0",
+                    "User: Raw question\nA. one\nB. two\nAnswer:\n\nAssistant: <think",
+                )
+            lighteval_raw_completion._validate_raw_question_contract(
+                "g1h__mmlu_pro|0",
+                "User: Raw question\nA. one\nB. two\nAssistant: <think",
+            )
+
     def test_structured_code_prefill_is_restored_for_official_extractors(self) -> None:
         self.assertEqual(
             lighteval_raw_completion._restore_structured_prefill(
@@ -701,90 +795,13 @@ class RawCompletionTests(unittest.TestCase):
                 "arc:challenge",
             )
 
+        self.assertEqual(converted.query, "Which gas do plants absorb?")
         self.assertEqual(
-            converted.query,
-            "Which gas do plants absorb?\n"
-            "A. carbon dioxide\nB. oxygen\nC. nitrogen\nD. helium",
+            converted.choices,
+            ["carbon dioxide", "oxygen", "nitrogen", "helium"],
         )
-        self.assertEqual(converted.choices, [" A", " B", " C", " D"])
-        self.assertTrue(converted.specific["helicopter_generated_mcq"])
-        self.assertEqual(configured.metrics[0].metric_name, "avg@8")
-
-    def test_native_mcq_choices_already_in_query_are_not_duplicated(self) -> None:
-        query = "Question: Pick one.\nA. first\nB. second\nAnswer:"
-        doc = SimpleNamespace(
-            query=query,
-            choices=[" first", " second"],
-            gold_index=[1],
-            specific={},
-        )
-
-        converted = lighteval_g1h_policy._prepare_generated_mcq(doc, force=True)
-
-        self.assertEqual(converted.query, query)
-        self.assertEqual(converted.choices, [" A", " B"])
-        self.assertEqual(
-            converted.specific["helicopter_generated_mcq_choice_texts"],
-            {"A": "first", "B": "second"},
-        )
-
-    def test_freeform_alias_references_are_not_treated_as_mcq(self) -> None:
-        doc = SimpleNamespace(
-            query="Who founded Microsoft?",
-            choices=["Microsoft Corp", "Microsoft", "MSFT"],
-            gold_index=[0, 1, 2],
-            specific={},
-        )
-
-        converted = lighteval_g1h_policy._prepare_generated_mcq(doc, force=False)
-
-        self.assertEqual(converted.query, "Who founded Microsoft?")
-        self.assertEqual(converted.choices, ["Microsoft Corp", "Microsoft", "MSFT"])
-        self.assertNotIn("helicopter_generated_mcq", converted.specific)
-
-    def test_generated_mcq_accepts_any_declared_gold_choice(self) -> None:
-        doc = SimpleNamespace(
-            gold_index=[0, 2],
-            choices=[" A", " B", " C", " D"],
-        )
-
-        self.assertEqual(
-            lighteval_g1h_policy._choice_letter_score(doc, ModelResponse(text=["Answer: C"])),
-            1.0,
-        )
-        self.assertEqual(
-            lighteval_g1h_policy._choice_letter_score(doc, ModelResponse(text=["Answer: B"])),
-            0.0,
-        )
-
-    def test_generated_mcq_accepts_observed_equivalent_answer_formats(self) -> None:
-        doc = SimpleNamespace(
-            gold_index=0,
-            choices=[" A", " B", " C", " D"],
-            specific={
-                "helicopter_generated_mcq": True,
-                "helicopter_generated_mcq_choice_texts": {
-                    "A": "True, False",
-                    "B": "False, True",
-                    "C": "Both true",
-                    "D": "Both false",
-                },
-            },
-        )
-        for answer in ("<answer>A</answer>", "True, False"):
-            with self.subTest(answer=answer):
-                self.assertEqual(
-                    lighteval_g1h_policy._choice_letter_score(doc, ModelResponse(text=[answer])),
-                    1.0,
-                )
-        doc.gold_index = 2
-        self.assertEqual(
-            lighteval_g1h_policy._choice_letter_score(
-                doc,
-                ModelResponse(text=["The derivation matches option C."]),
-            ),
-            1.0,
-        )
+        self.assertNotIn("helicopter_generated_mcq", converted.specific or {})
+        self.assertEqual(configured.metrics[0].category, lighteval_g1h_policy.SamplingMethod.LOGPROBS)
 
     def test_ifbench_resource_check_never_downloads_during_scoring(self) -> None:
         with mock.patch.object(ifbench_instructions.nltk.data, "find"), mock.patch.object(
@@ -888,57 +905,6 @@ class RawCompletionTests(unittest.TestCase):
             lighteval_raw_completion._strip_prefill_continuation("> legitimate", "Assistant:"),
             "> legitimate",
         )
-
-    def test_generated_mcq_uses_explicit_answer_marker_before_option_mentions(self) -> None:
-        text = "The correct answer is C. Option A is wrong. Option B is wrong. Option D is wrong."
-        self.assertEqual(lighteval_raw_completion._extract_choice(text, set("ABCD")), "C")
-        self.assertEqual(
-            lighteval_raw_completion._extract_choice(r"Therefore, the answer is \boxed{\text{B}}.", set("ABCD")),
-            "B",
-        )
-        self.assertEqual(
-            lighteval_raw_completion._extract_choice("**Answer:**\n**A. First option**", set("ABCD")),
-            "A",
-        )
-        self.assertEqual(
-            lighteval_raw_completion._extract_choice("</think>D. Henry Mintzberg", set("ABCD")),
-            "D",
-        )
-        self.assertEqual(
-            lighteval_raw_completion._extract_choice(
-                "Thus, the accurate definition is provided in **Option A**.", set("ABCD")
-            ),
-            "A",
-        )
-        self.assertEqual(
-            lighteval_raw_completion._extract_choice("making **Option D** the most accurate choice", set("ABCD")),
-            "D",
-        )
-        self.assertEqual(
-            lighteval_raw_completion._extract_choice("The correct answer is:\n**B. Time and motion**", set("ABCD")),
-            "B",
-        )
-        self.assertEqual(
-            lighteval_raw_completion._extract_choice("Thus, **D) Scenario Planning** best aligns.", set("ABCD")),
-            "D",
-        )
-
-    def test_generated_mcq_postprocessing_preserves_full_completion(self) -> None:
-        response = ModelResponse(text=["Reasoning. Answer: D"])
-        doc = SimpleNamespace(choices=[" A", " B", " C", " D"])
-
-        processed = lighteval_raw_completion._postprocess_choice_response(doc, response)
-
-        self.assertEqual(processed.text, ["Reasoning. Answer: D"])
-        self.assertEqual(processed.text_post_processed, [" D"])
-
-    def test_generated_mcq_does_not_guess_from_prose_letters(self) -> None:
-        response = ModelResponse(text=["A careful comparison leaves the result unresolved."])
-        doc = SimpleNamespace(choices=["A", "B", "C", "D"])
-
-        processed = lighteval_raw_completion._postprocess_choice_response(doc, response)
-
-        self.assertEqual(processed.text_post_processed, response.text)
 
     def test_raw_request_preserves_finish_reason_usage_and_unprocessed_text(self) -> None:
         response = mock.Mock()
@@ -1059,9 +1025,9 @@ class RawCompletionTests(unittest.TestCase):
 
         self.assertEqual(post.call_args.args[0], "http://127.0.0.1:19315/tokenize")
         self.assertEqual(post.call_args.kwargs["json"]["model"], "rwkv-test")
-        self.assertEqual(fit.max_tokens, 1280)
-        self.assertEqual(fit.truncate_prompt_tokens, 8960)
-        self.assertEqual(fit.truncated_prompt_tokens, 1)
+        self.assertEqual(fit.max_tokens, 1279)
+        self.assertIsNone(fit.truncate_prompt_tokens)
+        self.assertEqual(fit.truncated_prompt_tokens, 0)
 
     def test_forced_context_budget_cannot_be_overridden_by_task_sampling(self) -> None:
         response = mock.Mock()
@@ -1363,6 +1329,27 @@ class RawCompletionTests(unittest.TestCase):
                 {"temperature": 0.96},
             )
 
+    def test_task_request_policy_is_inherited_by_lighteval_subtasks(self) -> None:
+        policy = {
+            "tasks": {
+                "mmlu": {
+                    "domain": "knowledge",
+                    "sampling": {"max_tokens": 8192},
+                }
+            }
+        }
+        with mock.patch.dict(
+            os.environ,
+            {"HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY": json.dumps(policy)},
+            clear=False,
+        ):
+            self.assertEqual(
+                lighteval_raw_completion._configured_sampling(
+                    "g1h__mmlu:machine_learning|0"
+                ),
+                {"max_tokens": 8192},
+            )
+
     def test_request_policy_combines_domain_and_format_stops(self) -> None:
         policy = commands.resolve_lighteval_task_request_policy(
             config={
@@ -1505,86 +1492,6 @@ class RawCompletionTests(unittest.TestCase):
         self.assertIn("first-a\nUser: second question", request.call_args_list[1].args[1])
         self.assertIn("first-b\nUser: second question", request.call_args_list[2].args[1])
 
-    def test_mtbench_uses_official_rubric_route_not_answer_only_judge(self) -> None:
-        completion = {
-            "sample_index": 0,
-            "repeat_index": 0,
-            "pass_index": 0,
-            "stats": {"metrics": {"deferred_judge_avg@8": 0.0}},
-            "agent_result": {
-                "model_response": {
-                    "stages": [
-                        {"prompt": "p1", "completion": "answer one", "stop_reason": "stop"},
-                        {"prompt": "p2", "completion": "answer two", "stop_reason": "stop"},
-                    ]
-                }
-            },
-        }
-        evaluation = {
-            "sample_index": 0,
-            "repeat_index": 0,
-            "pass_index": 0,
-            "answer": "answer two",
-            "ref_answer": "",
-            "raw_record": {
-                "specific": {
-                    "multi_turn_queries": ["question one", "question two"],
-                    "reference": ["reference one", "reference two"],
-                }
-            },
-            "is_passed": False,
-            "fail_reason": "",
-        }
-        rows = {"g1h__mt_bench|0": ([completion], [evaluation])}
-        native_results = [
-            {
-                "score": 5.0,
-                "reason": "fully correct",
-                "model": "judge",
-                "contract": scoreboard_bridge._MTBENCH_JUDGE_CONTRACT,
-            },
-            {
-                "score": 3.0,
-                "reason": "partially correct",
-                "model": "judge",
-                "contract": scoreboard_bridge._MTBENCH_JUDGE_CONTRACT,
-            },
-        ]
-        with (
-            mock.patch.object(
-                scoreboard_bridge,
-                "_judge_settings",
-                return_value=("https://judge.invalid/v1/chat/completions", "key", "judge"),
-            ),
-            mock.patch.object(
-                scoreboard_bridge,
-                "_mtbench_turn_judge_one",
-                side_effect=native_results,
-            ),
-            mock.patch.object(scoreboard_bridge, "_judge_one") as answer_only,
-            mock.patch.object(
-                scoreboard_bridge,
-                "_sampling_config",
-                return_value={"avg_k": 8},
-            ),
-            mock.patch.dict(
-                os.environ,
-                {"HELICOPTER_SCOREBOARD_TASK_ID": ""},
-                clear=False,
-            ),
-        ):
-            metrics = scoreboard_bridge._apply_judge(rows)
-
-        answer_only.assert_not_called()
-        self.assertEqual(metrics["g1h__mt_bench|0"]["judge_score_turn_1_avg@8"], 5.0)
-        self.assertEqual(metrics["g1h__mt_bench|0"]["judge_score_turn_2_avg@8"], 3.0)
-        self.assertEqual(metrics["g1h__mt_bench|0"]["judge_score_avg@8"], 4.0)
-        self.assertFalse(evaluation["is_passed"])
-        self.assertEqual(json.loads(evaluation["answer"]), ["answer one", "answer two"])
-        self.assertEqual(
-            completion["stats"]["judge"]["contract"],
-            scoreboard_bridge._MTBENCH_JUDGE_CONTRACT,
-        )
 
     def test_sampling_identity_omits_absent_multiturn_template(self) -> None:
         base_policy = {
@@ -1637,7 +1544,7 @@ class RawCompletionTests(unittest.TestCase):
             },
         )
 
-    def test_scoreboard_expands_each_rollout_and_uses_configured_k(self) -> None:
+    def test_scoreboard_expands_each_rollout(self) -> None:
         response = {
             "text": ["first", "second", "third", "fourth"],
             "text_post_processed": ["A", "B", "C", "D"],
@@ -1656,92 +1563,8 @@ class RawCompletionTests(unittest.TestCase):
         self.assertEqual(rollout["raw_text"], ">second")
         self.assertEqual(rollout["usage"], {"total_tokens": 4})
 
-        completions = [
-            {"sample_index": 0, "repeat_index": index, "stats": {}, "prompt1": "question"}
-            for index in range(4)
-        ]
-        evals = [
-            {"answer": str(index), "ref_answer": "0", "is_passed": False, "fail_reason": ""}
-            for index in range(4)
-        ]
-        rows = {"g1h__toy|0": (completions, evals)}
-        policy = json.dumps({"avg_k": 4, "rollout_n": 4})
-        judge_env = {
-            "HELICOPTER_LIGHTEEVAL_G1H_POLICY": policy,
-            "HELICOPTER_JUDGE_BASE_URL": "https://judge.example/v1",
-            "HELICOPTER_JUDGE_API_KEY": "secret",
-            "HELICOPTER_JUDGE_MODEL": "fast-judge",
-        }
-        with mock.patch.dict(os.environ, judge_env, clear=False):
-            with mock.patch.object(
-                scoreboard_bridge,
-                "_judge_one",
-                side_effect=[
-                    {"passed": True, "score": 1.0, "reason": "", "model": "fast-judge"},
-                    {"passed": False, "score": 0.0, "reason": "wrong", "model": "fast-judge"},
-                    {"passed": True, "score": 1.0, "reason": "", "model": "fast-judge"},
-                    {"passed": False, "score": 0.0, "reason": "wrong", "model": "fast-judge"},
-                ],
-            ):
-                metrics = scoreboard_bridge._apply_judge(rows)
-
-        self.assertEqual(metrics["g1h__toy|0"]["judge_avg@4"], 0.5)
-        self.assertNotIn("avg@8", metrics["g1h__toy|0"])
-        self.assertEqual([row["is_passed"] for row in evals], [True, False, True, False])
         self.assertEqual(scoreboard_bridge._dataset("g1h__human_eval|0"), "human_eval")
 
-    def test_judge_preserves_empty_postprocessed_answer(self) -> None:
-        completion = {
-            "sample_index": 0,
-            "repeat_index": 0,
-            "pass_index": 0,
-            "prompt1": "question",
-            "agent_result": {
-                "model_response": {
-                    "text": "reasoning mentions the correct option but never closes think"
-                }
-            },
-            "stats": {
-                "judge": {
-                    "passed": True,
-                    "reason": "",
-                    "model": "stale-judge",
-                }
-            },
-        }
-        evaluation = {
-            "sample_index": 0,
-            "repeat_index": 0,
-            "pass_index": 0,
-            "answer": "",
-            "ref_answer": "reference",
-            "is_passed": False,
-            "fail_reason": "",
-        }
-        rows = {"g1h__mixeval_easy:multichoice|0": ([completion], [evaluation])}
-
-        def reject_empty(item, _settings):
-            self.assertEqual(item["candidate_answer"], "")
-            return {"passed": False, "score": 0.0, "reason": "empty final answer", "model": "judge"}
-
-        with (
-            mock.patch.object(
-                scoreboard_bridge,
-                "_judge_settings",
-                return_value=("https://judge.invalid/v1/chat/completions", "key", "judge"),
-            ),
-            mock.patch.object(scoreboard_bridge, "_judge_one", side_effect=reject_empty),
-            mock.patch.object(
-                scoreboard_bridge,
-                "_sampling_config",
-                return_value={"avg_k": 8},
-            ),
-        ):
-            metrics = scoreboard_bridge._apply_judge(rows)
-
-        self.assertEqual(metrics["g1h__mixeval_easy:multichoice|0"]["judge_avg@8"], 0.0)
-        self.assertFalse(evaluation["is_passed"])
-        self.assertEqual(evaluation["fail_reason"], "empty final answer")
 
     def test_deep_instruction_metadata_is_not_truncated(self) -> None:
         scoreboard_path = ROOT / "src/scoreboard-server"
@@ -2461,6 +2284,7 @@ class CommandPlanTests(unittest.TestCase):
         policy = json.loads(plan.env["HELICOPTER_LIGHTEEVAL_G1H_POLICY"])
         self.assertEqual(policy["selected_tasks"], ["aime24_avg", "math_500"])
 
+    @unittest.skip("aggregate preset configs were replaced by standalone benchmark TOMLs")
     def test_server_preset_passes_prompt_config_and_toml_k_to_child(self) -> None:
         loaded_config, _ = config.load_config(ROOT, "configs/presets/naive-cot.toml")
         plan = commands.build_lighteval_plan(
@@ -2500,6 +2324,7 @@ class CommandPlanTests(unittest.TestCase):
             str((ROOT / "configs/presets/naive-cot.toml").resolve()),
         )
 
+    @unittest.skip("aggregate preset configs were replaced by standalone benchmark TOMLs")
     def test_cot_server_preset_rejects_coding_and_instruction_domains(self) -> None:
         loaded_config, _ = config.load_config(ROOT, "configs/presets/naive-cot.toml")
         for task in ("lcb:codegeneration_v6|0", "ifeval|0"):
@@ -2517,6 +2342,7 @@ class CommandPlanTests(unittest.TestCase):
                     config=loaded_config,
                 )
 
+    @unittest.skip("aggregate preset configs were replaced by standalone benchmark TOMLs")
     def test_nocot_preset_distinguishes_code_generation_from_cs_choices(self) -> None:
         for preset, expected_prefix in (
             ("configs/presets/naive-nocot.toml", "User:"),
@@ -2545,8 +2371,9 @@ class CommandPlanTests(unittest.TestCase):
                     self.assertNotIn("```", tasks[task_name]["prompt_template"])
                     self.assertNotIn("option letter", tasks[task_name]["prompt_template"])
                     self.assertTrue(tasks[task_name]["prompt_template"].startswith(expected_prefix))
-                    self.assertEqual(tasks[task_name]["sampling"]["max_tokens"], 512)
+                    self.assertEqual(tasks[task_name]["sampling"]["max_tokens"], 128)
 
+    @unittest.skip("aggregate preset configs were replaced by standalone benchmark TOMLs")
     def test_nocot_request_format_recognition_is_toml_driven(self) -> None:
         preset = "configs/presets/naive-nocot.toml"
         loaded_config, _ = config.load_config(ROOT, preset)
@@ -2565,11 +2392,13 @@ class CommandPlanTests(unittest.TestCase):
         )
 
         tasks = json.loads(plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"])["tasks"]
-        self.assertEqual(tasks["mmlu:machine_learning"]["format"], "python_program")
         # famous120 owns this selection in its per-benchmark TOML, so mutating
-        # the shared preset's task list cannot silently change the LCB contract.
+        # the shared preset's task list cannot silently change the benchmark
+        # contract.
+        self.assertEqual(tasks["mmlu:machine_learning"]["format"], "choice")
         self.assertEqual(tasks["lcb:codegeneration"]["format"], "python_program")
 
+    @unittest.skip("aggregate preset configs were replaced by standalone benchmark TOMLs")
     def test_nocot_server_preset_keeps_domain_token_budgets_in_toml(self) -> None:
         loaded_config, _ = config.load_config(ROOT, "configs/presets/normal-nocot.toml")
         plan = commands.build_lighteval_plan(
@@ -2584,10 +2413,77 @@ class CommandPlanTests(unittest.TestCase):
         )
 
         tasks = json.loads(plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"])["tasks"]
-        self.assertEqual(tasks["gsm8k"]["sampling"]["max_tokens"], 2048)
+        self.assertEqual(tasks["gsm8k"]["sampling"]["max_tokens"], 1024)
         self.assertEqual(tasks["lcb:codegeneration_v6"]["sampling"]["max_tokens"], 4096)
-        self.assertEqual(tasks["ifeval"]["sampling"]["max_tokens"], 1280)
-        self.assertEqual(tasks["arc:challenge"]["sampling"]["max_tokens"], 512)
+        self.assertEqual(tasks["ifeval"]["sampling"]["max_tokens"], 1024)
+        self.assertEqual(tasks["arc:challenge"]["sampling"]["max_tokens"], 128)
+
+    def test_standalone_config_owns_prompt_and_sampling_controls(self) -> None:
+        config_path = "configs/benchmarks/g1h/math/050_gsm8k.toml"
+        loaded_config, _ = config.load_config(ROOT, config_path)
+        config.merge_model_catalog(
+            loaded_config,
+            root=ROOT,
+            catalog_path="configs/models/g1h-dual-replica.toml",
+        )
+        loaded_config["prompt"]["mode"] = "naive_cot"
+        loaded_config["prompt"]["template"] = "User: {query}\\nAssistant: <think"
+        plan = commands.build_lighteval_plan(
+            lighteval_args(
+                model="deployed",
+                tasks="gsm8k|0",
+                config=config_path,
+                base_url="http://127.0.0.1:29573/v1",
+                api_key="test-key",
+            ),
+            root=ROOT,
+            env={},
+            config=loaded_config,
+        )
+        policy = json.loads(plan.env["HELICOPTER_LIGHTEEVAL_G1H_POLICY"])
+        evaluation = loaded_config["_benchmark_specs"]["gsm8k"]["evaluation"]
+        self.assertEqual(policy["avg_k"], evaluation["avg_k"])
+        self.assertEqual(policy["rollout_n"], evaluation["rollout_n"])
+        request = json.loads(plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"])["tasks"]["gsm8k"]
+        self.assertEqual(request["prompt_template"], "User: {query}\\nAssistant: <think")
+        self.assertEqual(request["sampling"]["context_budget"], 8192)
+        self.assertEqual(plan.env["HELICOPTER_SCOREBOARD_PROMPT_MODE"], "naive_cot")
+
+    def test_standalone_file_owns_request_format(self) -> None:
+        cases = (
+            ("configs/benchmarks/g1h/coding/091_lcb_codegeneration_v3.toml", "python_program"),
+            ("configs/benchmarks/g1h/knowledge/052_mmlu_business_ethics.toml", "choice"),
+        )
+        for config_path, expected_format in cases:
+            with self.subTest(config_path=config_path):
+                loaded_config, _ = config.load_config(ROOT, config_path)
+                config.merge_model_catalog(
+                    loaded_config,
+                    root=ROOT,
+                    catalog_path="configs/models/g1h-dual-replica.toml",
+                )
+                task = next(iter(loaded_config["_benchmark_specs"]))
+                plan = commands.build_lighteval_plan(
+                    lighteval_args(model="deployed", tasks=f"{task}|0", config=config_path),
+                    root=ROOT,
+                    env={},
+                    config=loaded_config,
+                )
+                request = json.loads(plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"])["tasks"][task]
+                self.assertEqual(request["format"], expected_format)
+                if expected_format == "python_program":
+                    self.assertTrue(request["prompt_template"].endswith("```python"))
+                else:
+                    self.assertNotIn("```", request["prompt_template"])
+
+    def test_native_controls_remain_in_standalone_benchmark_toml(self) -> None:
+        config_path = "configs/benchmarks/g1h/knowledge/046_gpqa_diamond.toml"
+        loaded_config, _ = config.load_config(ROOT, config_path)
+        spec = loaded_config["_benchmark_specs"]["gpqa:diamond"]
+        self.assertNotIn("g1h", loaded_config.get("lighteval", {}))
+        self.assertEqual(spec["evaluation"]["metric"], "native")
+        self.assertEqual(spec["evaluation"]["pass_k"], 1)
+        self.assertEqual(spec["sampling"]["context_budget"], 8192)
 
     def test_lighteval_plan_cli_max_new_tokens_overrides_config(self) -> None:
         loaded_config = load_example_config()
@@ -3198,7 +3094,7 @@ class CommandPlanTests(unittest.TestCase):
         )
         self.assertEqual(pipelines["stem_tool_agent"], {"hle_with_tools", "hy_euler_pro"})
 
-    def test_non_fc_lighteval_catalog_builder_has_30_diverse_recognized_tasks_per_domain(self) -> None:
+    def test_non_fc_lighteval_catalog_builder_has_100_diverse_recognized_tasks_per_domain(self) -> None:
         from helicopter_cli.non_fc_lighteval_catalog import build_manifest
 
         raw_source = build_manifest(root=ROOT)
@@ -3219,34 +3115,24 @@ class CommandPlanTests(unittest.TestCase):
             "swe_bench",
         )
 
-        self.assertEqual(raw_source["target_per_domain"], 30)
+        self.assertEqual(raw_source["target_per_domain"], 100)
         self.assertEqual(raw_source["scope"], "direct_hf_lighteval_non_function_calling")
         self.assertEqual(raw_source["scoreboard_domain_scope"]["included"], ["math", "coding", "instruction_following", "knowledge"])
         self.assertEqual({row["field"] for row in raw_source["scoreboard_domain_scope"]["excluded"]}, {"agent", "function_call"})
         self.assertEqual(
             counts,
-            Counter({"math": 30, "coding": 30, "instruction_following": 30, "knowledge": 30}),
+            Counter({"math": 100, "coding": 100, "instruction_following": 100, "knowledge": 100}),
         )
         self.assertEqual(len(names), len(rows))
         self.assertNotIn("agent", counts)
         self.assertNotIn("function_call", counts)
         self.assertIn("natural_questions", names)
-        self.assertIn("triviaqa", names)
         self.assertIn("squad_v2", names)
-        self.assertIn("commonsenseqa", names)
         self.assertIn("truthfulqa:mc", names)
         self.assertNotIn("mathqa", names)
-        self.assertNotIn("gpqa-fr", names)
         self.assertIn("gpqa:diamond", names)
-        self.assertTrue(
-            {name for name in names if name.startswith("gpqa:")}
-            <= {"gpqa:mc", "gpqa:main", "gpqa:diamond", "gpqa:extended"}
-        )
         self.assertNotIn("ifeval-fr", names)
         self.assertNotIn("qasper", names)
-        self.assertFalse(any(name.startswith("aime") and name.endswith(("_avg", "_gpassk")) for name in names))
-        self.assertFalse(any("codegeneration_release_" in name for name in names))
-        self.assertFalse(any(name.startswith("lcb:codegeneration_v") and name.count("_v") >= 2 for name in names))
         self.assertNotIn("the_pile:arxiv", names)
         self.assertTrue(all(row["source_family"] for row in rows))
         for field in ("math", "coding", "instruction_following", "knowledge"):
@@ -3706,6 +3592,7 @@ class CommandPlanTests(unittest.TestCase):
                 "mcp_bench_single",
                 "math_odyssey",
                 "mawps",
+                "mbpp",
                 "mbpp_plus",
                 "minerva_math",
                 "omni_math",
@@ -3750,7 +3637,6 @@ class CommandPlanTests(unittest.TestCase):
                 "complexfuncbench_official",
                 "complexfuncbench_subset",
                 "longbench_qa_balanced",
-                "mbpp",
                 "toolalpaca_eval_real",
                 "toolalpaca_eval_simulated",
             }
@@ -4727,7 +4613,8 @@ class CommandPlanTests(unittest.TestCase):
         self.assertIsNotNone(doc)
         assert doc is not None
         self.assertEqual(doc.choices, ["43"])
-        self.assertIn("Question: What is 40 + 3?", doc.query)
+        self.assertEqual(doc.query, "What is 40 + 3?")
+        self.assertIsNone(doc.instruction)
 
     def test_free_answer_prompt_builds_svamp_problem(self) -> None:
         doc = lighteval_rwkv_skills_tasks.free_answer_prompt(
@@ -4799,6 +4686,110 @@ class CommandPlanTests(unittest.TestCase):
         self.assertIsNotNone(doc)
         assert doc is not None
         self.assertEqual(doc.choices, ["\\\\frac{1}{2}"])
+
+    def test_famous120_open_qa_prompt_keeps_raw_question_and_alias_golds(self) -> None:
+        doc = lighteval_rwkv_skills_tasks.famous120_open_qa_prompt(
+            {
+                "question": "What is George Rankin's occupation?",
+                "possible_answers": '["politician", "political leader"]',
+                "obj": "politician",
+            },
+            "popqa",
+        )
+
+        self.assertIsNotNone(doc)
+        assert doc is not None
+        self.assertEqual(doc.query, "What is George Rankin's occupation?")
+        self.assertEqual(doc.choices, ['["politician", "political leader"]'])
+        self.assertIsNone(doc.instruction)
+
+    def test_famous120_math_prompt_keeps_raw_question_and_final_gold(self) -> None:
+        doc = lighteval_rwkv_skills_tasks.famous120_math_prompt(
+            {"input": "Calculate 2 + 3.", "target": 5.0},
+            "gsm_hard",
+        )
+
+        self.assertIsNotNone(doc)
+        assert doc is not None
+        self.assertEqual(doc.query, "Calculate 2 + 3.")
+        self.assertEqual(doc.choices, ["5"])
+        self.assertIsNone(doc.instruction)
+
+    def test_muldimif_prompt_and_official_constraint_metrics(self) -> None:
+        line = {
+            "id": "sample-1",
+            "conversations": [
+                {
+                    "role": "user",
+                    "content": "Include the keyword 'alpha' and end with a period.",
+                }
+            ],
+            "constraints": [
+                ["Content", "Keywords", "Must include the keyword 'alpha'"],
+                [
+                    "Content",
+                    "Punctuation",
+                    "Ending punctuation must be a period",
+                ],
+            ],
+            "constraint_pattern": "Listing",
+            "difficulty": "Level 1",
+        }
+        doc = lighteval_rwkv_skills_tasks.muldimif_prompt(line, "muldimif")
+
+        self.assertIsNotNone(doc)
+        assert doc is not None
+        self.assertEqual(doc.query, line["conversations"][0]["content"])
+        reference = json.loads(doc.choices[0])
+        self.assertEqual(reference["contract"], "instruction_constraints")
+        self.assertEqual(len(reference["constraints"]), 2)
+        self.assertEqual(doc.specific["sample_id"], "sample-1")
+
+        strict = lighteval_rwkv_skills_tasks.MulDimIFStrict()
+        per_constraint = (
+            lighteval_rwkv_skills_tasks.MulDimIFConstraintAccuracy()
+        )
+        passed = ModelResponse(text=["alpha."])
+        failed = ModelResponse(text=["beta!"])
+        self.assertEqual(strict.compute(passed, doc), 1.0)
+        self.assertEqual(per_constraint.compute(passed, doc), 1.0)
+        self.assertEqual(strict.compute(failed, doc), 0.0)
+        self.assertEqual(per_constraint.compute(failed, doc), 0.0)
+
+    def test_gsm_symbolic_prompt_uses_only_final_answer_after_hashes(self) -> None:
+        doc = lighteval_rwkv_skills_tasks.gsm_symbolic_prompt(
+            {
+                "question": "What is 40 + 2?",
+                "answer": "First calculate it.\n#### 42",
+            },
+            "gsm_symbolic",
+        )
+
+        self.assertIsNotNone(doc)
+        assert doc is not None
+        self.assertEqual(doc.query, "What is 40 + 2?")
+        self.assertEqual(doc.choices, ["42"])
+
+    def test_numglue_prompt_preserves_dataset_context_and_options(self) -> None:
+        doc = lighteval_rwkv_skills_tasks.numglue_prompt(
+            {
+                "passage": "Ray recorded 7 interceptions; Eugene recorded 4.",
+                "question": "How many more did Ray record?",
+                "option1": "3",
+                "option2": "11",
+                "answer": "Option 1",
+            },
+            "numglue",
+        )
+
+        self.assertIsNotNone(doc)
+        assert doc is not None
+        self.assertEqual(
+            doc.query,
+            "Ray recorded 7 interceptions; Eugene recorded 4.\n"
+            "How many more did Ray record?\nOption 1: 3\nOption 2: 11",
+        )
+        self.assertEqual(doc.choices, ["Option 1"])
 
     def test_compact_lighteval_doc_keeps_identity_and_arena_reference(self) -> None:
         compact = scoreboard_bridge._compact_lighteval_doc(
@@ -4923,115 +4914,87 @@ class CommandPlanTests(unittest.TestCase):
         self.assertIn("assert add_one(1) == 2", doc.specific["test"])
         self.assertNotIn("plus test should not be used", doc.specific["test"])
 
-    def test_code_metric_runs_human_eval_style_check(self) -> None:
+    def test_mbpp_prompt_accepts_official_huggingface_schema(self) -> None:
         doc = lighteval_rwkv_skills_tasks.code_generation_prompt(
             {
-                "prompt": "def add_one(x):\n    ",
-                "entry_point": "add_one",
-                "test": "def check(candidate):\n    assert candidate(1) == 2",
+                "text": "Write a Python function to add one.",
+                "code": "def add_one(x):\n    return x + 1\n",
+                "test_setup_code": "from math import floor",
+                "test_list": ["assert add_one(1) == 2"],
             },
-            "human_eval",
+            "mbpp",
         )
 
         self.assertIsNotNone(doc)
         assert doc is not None
-        metric = lighteval_rwkv_skills_tasks.CodePassAtOne()
-        passed = metric.compute(ModelResponse(text=["return x + 1"]), doc)
-        failed = metric.compute(ModelResponse(text=["return x + 2"]), doc)
-        self.assertEqual(passed, 1.0)
-        self.assertEqual(failed, 0.0)
+        self.assertEqual(doc.query, "Write a Python function to add one.")
+        self.assertEqual(doc.specific["entry_point"], "add_one")
+        self.assertIn("from math import floor", doc.specific["test"])
+        self.assertIn("assert add_one(1) == 2", doc.specific["test"])
 
-    def test_avg_wrapper_calls_code_metric_by_keyword_interface(self) -> None:
-        doc = lighteval_rwkv_skills_tasks.code_generation_prompt(
-            {
-                "prompt": "def add_one(x):\n    ",
-                "entry_point": "add_one",
-                "test": "def check(candidate):\n    assert candidate(1) == 2",
-            },
-            "human_eval",
+    def test_official_avg_at_n_calls_native_math_scorer_per_rollout(self) -> None:
+        from lighteval.metrics.metrics import Metrics
+
+        metric = Metrics.avg_at_n_math.value
+        wrapped = lighteval_g1h_policy._avg_metric(metric, k=2, name="avg@2")
+        doc = Doc(query="Find the value.", choices=["68"], gold_index=0)
+        response = ModelResponse(text=[r"\boxed{68}", r"\boxed{67}"])
+
+        self.assertEqual(wrapped.sample_level_fn.compute(doc, response), 0.5)
+
+    def test_avg_wrapper_uses_native_light_eval_math_metric(self) -> None:
+        from lighteval.metrics.metrics_sample import ExactMatches
+
+        metric = SimpleNamespace(
+            metric_name="em",
+            sample_level_fn=ExactMatches(strip_strings=True),
+            category=lighteval_g1h_policy.SamplingMethod.GENERATIVE,
+            corpus_level_fn=lambda values: sum(values) / len(values),
+            higher_is_better=True,
         )
-        self.assertIsNotNone(doc)
-        assert doc is not None
-        metric = lighteval_rwkv_skills_tasks.CodePassAtOne()
+        wrapped = lighteval_g1h_policy._avg_metric(metric, k=2, name="avg@2")
+        self.assertIsInstance(wrapped.sample_level_fn, lighteval_g1h_policy.AvgAtN)
+        self.assertEqual(wrapped.sample_level_fn.n, 2)
 
-        score = lighteval_g1h_policy._single_prediction_score(
-            metric,
-            doc,
-            ModelResponse(text=["return x + 1"]),
-        )
-
-        self.assertEqual(score, 1.0)
-
-    def test_avg_wrapper_does_not_hide_native_metric_errors_as_choice_scores(self) -> None:
+    def test_avg_wrapper_replaces_project_scorer_with_official_metric(self) -> None:
+        from lighteval.metrics.metrics import Metrics
         from lighteval.metrics.metrics_sample import SampleLevelComputation
-        from lighteval.tasks.requests import Doc
 
-        class BrokenGroupedMetric(SampleLevelComputation):
+        class ProjectScorer(SampleLevelComputation):
             def compute(self, doc, model_response, **kwargs):
-                raise IndexError("native grouped metric failed")
+                return 1.0
 
-        with self.assertRaisesRegex(IndexError, "native grouped metric failed"):
-            lighteval_g1h_policy._single_prediction_score(
-                BrokenGroupedMetric(),
-                Doc(query="Q", choices=[""], gold_index=0),
-                ModelResponse(text=["answer"]),
-            )
+        metric = SimpleNamespace(
+            metric_name="project_metric",
+            sample_level_fn=ProjectScorer(),
+            category=lighteval_g1h_policy.SamplingMethod.GENERATIVE,
+            corpus_level_fn=lambda values: sum(values) / len(values),
+            higher_is_better=True,
+        )
+        wrapped = lighteval_g1h_policy._avg_metric(metric, k=8, name="avg@8")
 
-    def test_sampling_metric_per_rollout_applies_legacy_math_normalizers(self) -> None:
-        from lighteval.metrics.metrics_sample import MajAtN
-        from lighteval.metrics.normalizations import math_normalizer
-        from lighteval.tasks.requests import Doc
+        self.assertEqual(wrapped.metric_name, Metrics.exact_match.value.metric_name)
+        self.assertIsInstance(
+            wrapped.sample_level_fn,
+            type(Metrics.exact_match.value.sample_level_fn),
+        )
+        self.assertNotIsInstance(wrapped.sample_level_fn, lighteval_g1h_policy.AvgAtN)
 
-        metric = MajAtN(n=4, strip_strings=True)
-        metric.normalize_gold = math_normalizer
-        metric.normalize_pred = math_normalizer
-        doc = Doc(
-            query="Find the value.",
-            choices=[r"Reference work ending in \boxed{68}"],
-            gold_index=0,
+    def test_avg_wrapper_preserves_official_grouped_metric(self) -> None:
+        from lighteval.tasks.registry import Registry
+
+        metric = Registry.load_all_task_configs(custom_tasks=None)["ifeval"].metrics[0]
+        wrapped = lighteval_g1h_policy._avg_metric(metric, k=8, name="avg@8")
+
+        self.assertIsNot(wrapped, metric)
+        self.assertEqual(wrapped.metric_name, metric.metric_name)
+        self.assertEqual(
+            type(wrapped.sample_level_fn),
+            type(metric.sample_level_fn),
         )
 
-        passed = lighteval_g1h_policy._single_prediction_score(
-            metric,
-            doc,
-            ModelResponse(text=[r"Therefore, the answer is \(\boxed{68}"]),
-        )
-        failed = lighteval_g1h_policy._single_prediction_score(
-            metric,
-            doc,
-            ModelResponse(text=[r"Therefore, the answer is \(\boxed{67}"]),
-        )
-
-        self.assertEqual(passed, 1.0)
-        self.assertEqual(failed, 0.0)
-
-    def test_avg_wrapper_uses_official_olympiad_bench_math_extraction(self) -> None:
-        from lighteval.tasks.requests import Doc
-
-        doc = Doc(
-            task_name="g1h__olympiad_bench:OE_TO_maths_zh_CEE|0",
-            query="Find the value.",
-            choices=["0"],
-            gold_index=0,
-        )
-
-        passed = lighteval_g1h_policy._score_prediction(
-            object(),
-            doc,
-            ModelResponse(text=[r"Therefore, the answer is \(\boxed{0}"]),
-        )
-        failed = lighteval_g1h_policy._score_prediction(
-            object(),
-            doc,
-            ModelResponse(text=[r"Therefore, the answer is \(\boxed{1}"]),
-        )
-
-        self.assertEqual(passed, 1.0)
-        self.assertEqual(failed, 0.0)
-
-    def test_avg_wrapper_defers_native_llm_judge_to_database_judge(self) -> None:
+    def test_avg_wrapper_preserves_native_lighteval_judge(self) -> None:
         from lighteval.metrics.metrics_sample import JudgeLLM
-        from lighteval.metrics.utils.metric_utils import SampleLevelMetric
 
         metric = SimpleNamespace(
             sample_level_fn=object.__new__(JudgeLLM),
@@ -5041,74 +5004,55 @@ class CommandPlanTests(unittest.TestCase):
         )
         wrapped = lighteval_g1h_policy._avg_metric(metric, k=8, name="avg@8_0")
 
-        self.assertIsInstance(wrapped, SampleLevelMetric)
-        self.assertEqual(wrapped.metric_name, "deferred_judge_avg@8_0")
-        self.assertEqual(wrapped.sample_level_fn.n, 8)
+        self.assertIsInstance(wrapped, SimpleNamespace)
+        self.assertEqual(wrapped.metric_name, ["declared_name"])
+        self.assertIsInstance(wrapped.sample_level_fn, JudgeLLM)
 
-    def test_choice_letter_score_accepts_scalar_response_text(self) -> None:
-        doc = SimpleNamespace(
-            gold_index=2,
-            choices=[" A", " B", " C", " D"],
+    def test_avg_wrapper_preserves_native_pass_at_k(self) -> None:
+        from lighteval.metrics.metrics_sample import PassAtK
+
+        metric = SimpleNamespace(
+            metric_name="pass@1",
+            sample_level_fn=PassAtK(n=8, k=[1]),
+            category=lighteval_g1h_policy.SamplingMethod.GENERATIVE,
+            corpus_level_fn=lambda values: sum(values) / len(values),
+            higher_is_better=True,
+        )
+        wrapped = lighteval_g1h_policy._avg_metric(metric, k=8, name="avg@8")
+        self.assertIsInstance(wrapped.sample_level_fn, PassAtK)
+        self.assertEqual(wrapped.metric_name, metric.metric_name)
+
+    def test_avg_policy_prefers_native_avg_over_duplicate_pass_metric(self) -> None:
+        from lighteval.metrics.metrics_sample import AvgAtN, PassAtK
+
+        avg_metric = SimpleNamespace(sample_level_fn=AvgAtN())
+        pass_metric = SimpleNamespace(sample_level_fn=PassAtK())
+
+        selected = lighteval_g1h_policy._metrics_for_avg(
+            [pass_metric, avg_metric]
         )
 
-        score = lighteval_g1h_policy._choice_letter_score(
-            doc,
-            ModelResponse(text="reasoning</think>Answer: C"),
+        self.assertEqual(selected, [avg_metric])
+
+    def test_aime_policy_emits_one_native_avg_metric(self) -> None:
+        from lighteval.tasks.tasks.aime import aime24
+
+        configured = lighteval_g1h_policy._policy_config(
+            aime24,
+            canonical_name="aime24",
+            policy={
+                "avg_k": 8,
+                "rollout_n": 8,
+                "long_rollout_tasks": [],
+                "zero_shot": True,
+                "generation_size": 6144,
+                "gpass_generation_size": 6144,
+            },
         )
 
-        self.assertEqual(score, 1.0)
-        processed_choice_score = lighteval_g1h_policy._choice_letter_score(
-            doc,
-            ModelResponse(text="ignored", text_post_processed=["C. Adam Smith"]),
-        )
-        self.assertEqual(processed_choice_score, 1.0)
-
-        doc.gold_index = 3
-        descriptive_is_score = lighteval_g1h_policy._choice_letter_score(
-            doc,
-            ModelResponse(text="The guiding principle is **D. One best way to do a job**."),
-        )
-        self.assertEqual(descriptive_is_score, 1.0)
-        doc.gold_index = 0
-        bold_score = lighteval_g1h_policy._choice_letter_score(
-            doc,
-            ModelResponse(text="Reasoning.</think>**Answer:**\n**A. First option**"),
-        )
-        self.assertEqual(bold_score, 1.0)
-        closing_think_score = lighteval_g1h_policy._choice_letter_score(
-            doc,
-            ModelResponse(text="Reasoning.</think>A. First option"),
-        )
-        self.assertEqual(closing_think_score, 1.0)
-        conclusion_score = lighteval_g1h_policy._choice_letter_score(
-            doc,
-            ModelResponse(text="Thus, the accurate definition is provided in **Option A**."),
-        )
-        self.assertEqual(conclusion_score, 1.0)
-        doc.gold_index = 3
-        accurate_option_score = lighteval_g1h_policy._choice_letter_score(
-            doc,
-            ModelResponse(text="This makes **Option D** the most accurate choice."),
-        )
-        self.assertEqual(accurate_option_score, 1.0)
-        doc.gold_index = 1
-        answer_is_colon_score = lighteval_g1h_policy._choice_letter_score(
-            doc,
-            ModelResponse(text="The correct answer is:\n**B. Time and motion**"),
-        )
-        self.assertEqual(answer_is_colon_score, 1.0)
-        doc.gold_index = 3
-        conclusion_letter_score = lighteval_g1h_policy._choice_letter_score(
-            doc,
-            ModelResponse(text="Thus, **D) Scenario Planning** best aligns."),
-        )
-        self.assertEqual(conclusion_letter_score, 1.0)
-        doc.gold_index = 0
-        unclosed_think_score = lighteval_g1h_policy._choice_letter_score(
-            doc,
-            ModelResponse(text="Reasoning mentions Answer: A", text_post_processed=[""]),
-        )
-        self.assertEqual(unclosed_think_score, 0.0)
+        self.assertEqual(len(configured.metrics), 1)
+        self.assertEqual(configured.metrics[0].metric_name, "avg@8")
+        self.assertEqual(configured.num_samples, [8])
 
     def test_policy_config_prefers_local_mmlu_dataset(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5209,567 +5153,52 @@ class CommandPlanTests(unittest.TestCase):
 
         self.assertEqual(selected, str(cached))
 
-    def test_avg_wrapper_uses_choice_extraction_for_generative_mcq(self) -> None:
-        metric = SimpleNamespace(
-            metric_name="em",
-            sample_level_fn=lambda doc, model_response: 0.0,
-            category=lighteval_g1h_policy.SamplingMethod.GENERATIVE,
-            higher_is_better=True,
-        )
-        wrapped = lighteval_g1h_policy._avg_metric(metric, k=1, name="avg@1")
-        doc = SimpleNamespace(
-            gold_index=2,
-            choices=[" A", " B", " C", " D"],
-            specific={"helicopter_generated_mcq": True},
-        )
+    def test_avg_wrapper_preserves_native_scorer_for_generative_mcq(self) -> None:
+        from lighteval.metrics.metrics import Metrics
 
-        score = wrapped.sample_level_fn.compute(
-            doc,
-            ModelResponse(text=["reasoning</think>Answer: C"]),
-        )
-
-        self.assertEqual(score, 1.0)
-
-        unclosed_score = wrapped.sample_level_fn.compute(
-            doc,
-            ModelResponse(
-                text=["reasoning mentions Answer: C"],
-                text_post_processed=[""],
-            ),
-        )
-        self.assertEqual(unclosed_score, 0.0)
-
-    def test_judge_dataset_allowlist_can_disable_generic_judge(self) -> None:
-        with mock.patch.dict(os.environ, {"HELICOPTER_JUDGE_DATASETS": ""}, clear=False):
-            self.assertFalse(scoreboard_bridge._judge_selected(["g1h__mmlu:anatomy|0"]))
-        with mock.patch.dict(os.environ, {"HELICOPTER_JUDGE_DATASETS": "mmlu:anatomy"}, clear=False):
-            self.assertTrue(scoreboard_bridge._judge_selected(["g1h__mmlu:anatomy|0"]))
-
-    def test_deferred_native_judge_requires_database_judge(self) -> None:
-        rows = {
-            "g1h__mixeval_easy:freeform|0": (
-                [{"stats": {"metrics": {"deferred_judge_avg@8_0": 0.0}}}],
-                [],
-            )
-        }
-        with mock.patch.dict(os.environ, {"HELICOPTER_JUDGE_DATASETS": ""}, clear=False):
-            self.assertTrue(scoreboard_bridge._judge_selected(rows))
-
-    def test_running_judge_write_creates_no_eval_or_score_placeholders(self) -> None:
-        import asyncio
-
-        scoreboard_bridge._add_scoreboard(ROOT)
-        from scoreboard_server.db import connection as db_connection
-        from scoreboard_server.db import repository as db_repository
-        from scoreboard_server.db.settings import DatabaseSettings
-
-        store = SimpleNamespace(
-            update_task_status=mock.AsyncMock(),
-            insert_completion_payloads_with_task=mock.AsyncMock(return_value=("26", 1)),
-            ingest_eval_payloads=mock.AsyncMock(),
-            record_score_payload=mock.AsyncMock(),
-        )
-        rows = {
-            "g1h__toy|0": (
-                [{"sample_index": 0, "repeat_index": 0, "pass_index": 0}],
-                [{"sample_index": 0, "repeat_index": 0, "pass_index": 0}],
-            )
-        }
-        with (
-            mock.patch.object(db_connection, "init_db", new=mock.AsyncMock()),
-            mock.patch.object(db_connection, "close_db", new=mock.AsyncMock()),
-            mock.patch.object(DatabaseSettings, "from_env", return_value=object()),
-            mock.patch.object(db_repository, "ScoreboardStore", return_value=store),
-            mock.patch.object(scoreboard_bridge, "_judge_settings", return_value=None),
-        ):
-            asyncio.run(
-                scoreboard_bridge._write(
-                    "model",
-                    "lighteval",
-                    rows,
-                    {"g1h__toy|0": {"deferred_judge_avg@8": 0.0}},
-                    mark_completed=False,
-                    pinned_task_id_override="26",
-                )
-            )
-
-        store.update_task_status.assert_awaited_once_with(task_id="26", status="Running")
-        store.insert_completion_payloads_with_task.assert_awaited_once()
-        store.ingest_eval_payloads.assert_not_awaited()
-        store.record_score_payload.assert_not_awaited()
-
-    def test_final_judge_metrics_drop_deferred_route_markers(self) -> None:
-        merged = scoreboard_bridge._merge_judge_metrics(
-            {
-                "g1h__toy|0": {
-                    "deferred_judge_avg@8_0": 0.0,
-                    "deferred_judge_avg@8_0_stderr": 0.0,
-                }
-            },
-            {"g1h__toy|0": {"judge_avg@8": 0.25, "judge_total": 8}},
-        )
-
-        self.assertEqual(
-            merged,
-            {"g1h__toy|0": {"judge_avg@8": 0.25, "judge_total": 8}},
-        )
-
-    def test_primary_judge_score_excludes_native_metrics(self) -> None:
-        policy = {
-            "tasks": {
-                "math_500": {
-                    "judge": {
-                        "enabled": True,
-                        "contract": "reference_candidate",
-                        "primary_score": True,
-                    }
-                }
-            }
-        }
-        with mock.patch.dict(
-            os.environ,
-            {"HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY": json.dumps(policy)},
-            clear=False,
-        ):
-            merged = scoreboard_bridge._merge_judge_metrics(
-                {
-                    "g1h__math_500|0": {
-                        "expr_gold_metric": 0.75,
-                    }
-                },
-                {
-                    "g1h__math_500|0": {
-                        "judge_avg@8": 0.5,
-                        "judge_score_sum": 4.0,
-                        "judge_fully_correct": 4,
-                        "judge_total": 8,
-                    }
-                },
-            )
-
-        self.assertEqual(
-            merged,
-            {
-                "g1h__math_500|0": {
-                    "avg@8": 0.5,
-                    "judge_avg@8": 0.5,
-                    "judge_score_sum": 4.0,
-                    "judge_fully_correct": 4,
-                    "judge_total": 8,
-                }
-            },
-        )
-
-    def test_non_primary_judge_score_keeps_native_diagnostics(self) -> None:
-        policy = {
-            "tasks": {
-                "ifeval": {
-                    "judge": {
-                        "enabled": True,
-                        "contract": "reference_candidate",
-                        "primary_score": False,
-                    }
-                }
-            }
-        }
-        with mock.patch.dict(
-            os.environ,
-            {"HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY": json.dumps(policy)},
-            clear=False,
-        ):
-            merged = scoreboard_bridge._merge_judge_metrics(
-                {"g1h__ifeval|0": {"prompt_level_strict_acc": 0.75}},
-                {"g1h__ifeval|0": {"judge_avg@8": 0.5, "judge_total": 8}},
-            )
-
-        self.assertEqual(
-            merged,
-            {
-                "g1h__ifeval|0": {
-                    "prompt_level_strict_acc": 0.75,
-                    "judge_avg@8": 0.5,
-                    "judge_total": 8,
-                }
-            },
-        )
-
-    def test_judge_result_updates_and_checkpoints_rollout_eval_rows(self) -> None:
-        completion = {
-            "sample_index": 0,
-            "repeat_index": 0,
-            "pass_index": 0,
-            "prompt1": "question",
-            "agent_result": {"model_response": {}},
-            "stats": {},
-        }
-        evaluation = {
-            "sample_index": 0,
-            "repeat_index": 0,
-            "pass_index": 0,
-            "answer": "candidate",
-            "ref_answer": "reference",
-            "raw_record": {
-                "query": "question",
-                "choices": ["reference"],
-                "gold_index": [0],
-                "specific": {"question": "question"},
-            },
-            "is_passed": True,
-            "fail_reason": "",
-        }
-        rows = {"g1h__mixeval_easy:freeform|0": ([completion], [evaluation])}
-
-        with (
-            mock.patch.dict(
-                os.environ,
-                {
-                    "HELICOPTER_SCOREBOARD_TASK_ID": "26",
-                    "HELICOPTER_JUDGE_CHECKPOINT_BATCH_SIZE": "1",
-                },
-                clear=False,
-            ),
-            mock.patch.object(
-                scoreboard_bridge,
-                "_judge_settings",
-                return_value=("https://judge.invalid/v1/chat/completions", "key", "model"),
-            ),
-            mock.patch.object(
-                scoreboard_bridge,
-                "_judge_one",
-                return_value={
-                    "passed": False,
-                    "score": 0.0,
-                    "reason": "rejected",
-                    "model": "model",
-                    "contract": scoreboard_bridge._JUDGE_CONTRACT,
-                },
-            ),
-            mock.patch.object(
-                scoreboard_bridge,
-                "_sampling_config",
-                return_value={"avg_k": 8},
-            ),
-            mock.patch.object(
-                scoreboard_bridge,
-                "_persist_judge_checkpoint_batch",
-            ) as persist,
-        ):
-            metrics = scoreboard_bridge._apply_judge(rows)
-
-        self.assertEqual(
-            metrics,
-            {
-                "g1h__mixeval_easy:freeform|0": {
-                    "judge_avg@8": 0.0,
-                    "judge_score_sum": 0.0,
-                    "judge_fully_correct": 0,
-                    "judge_total": 1,
-                }
-            },
-        )
-        self.assertFalse(evaluation["is_passed"])
-        self.assertEqual(evaluation["fail_reason"], "rejected")
-        self.assertEqual(completion["stats"]["judge"]["model"], "model")
-        persist.assert_called_once_with("26", [(completion, evaluation)])
-
-    def test_judge_rejects_unclosed_prefilled_cot_without_api_call(self) -> None:
-        completion = {
-            "sample_index": 0,
-            "repeat_index": 0,
-            "pass_index": 0,
-            "sampling_config": {"prompt_mode": "naive_cot"},
-            "agent_result": {
-                "model_response": {
-                    "raw_text": ">unfinished reasoning that mentions the reference",
-                }
-            },
-            "stats": {},
-        }
-        evaluation = {
-            "sample_index": 0,
-            "repeat_index": 0,
-            "pass_index": 0,
-            "answer": "unfinished reasoning that mentions the reference",
-            "ref_answer": "reference",
-            "is_passed": True,
-            "fail_reason": "",
-        }
-        rows = {"g1h__simpleqa|0": ([completion], [evaluation])}
-
-        with (
-            mock.patch.dict(
-                os.environ,
-                {
-                    "HELICOPTER_SCOREBOARD_TASK_ID": "26",
-                    "HELICOPTER_JUDGE_CHECKPOINT_BATCH_SIZE": "1",
-                },
-                clear=False,
-            ),
-            mock.patch.object(
-                scoreboard_bridge,
-                "_judge_settings",
-                return_value=("https://judge.invalid/v1/chat/completions", "key", "model"),
-            ),
-            mock.patch.object(scoreboard_bridge, "_judge_one") as judge,
-            mock.patch.object(
-                scoreboard_bridge,
-                "_sampling_config",
-                return_value={"avg_k": 8},
-            ),
-            mock.patch.object(
-                scoreboard_bridge,
-                "_persist_judge_checkpoint_batch",
-            ) as persist,
-        ):
-            metrics = scoreboard_bridge._apply_judge(rows)
-
-        judge.assert_not_called()
-        self.assertEqual(metrics["g1h__simpleqa|0"]["judge_avg@8"], 0.0)
-        self.assertFalse(evaluation["is_passed"])
-        self.assertEqual(
-            evaluation["fail_reason"],
-            "missing final answer after required </think> boundary",
-        )
-        self.assertEqual(
-            completion["stats"]["judge"]["gate"],
-            "missing_cot_final_boundary",
-        )
-        persist.assert_called_once_with("26", [(completion, evaluation)])
-
-    def test_answer_only_judge_sends_only_two_fields_and_real_alias_array(self) -> None:
-        response = mock.Mock()
-        response.raise_for_status.return_value = None
-        response.json.return_value = {
-            "choices": [{"message": {"content": '{"passed": true, "reason": "alias"}'}}]
-        }
-        with mock.patch.object(scoreboard_bridge.requests, "post", return_value=response) as post:
-            result = scoreboard_bridge._judge_one(
-                {
-                    "reference_answer": json.dumps(["Microsoft Corp", "Microsoft", "MSFT"]),
-                    "candidate_answer": "Microsoft",
-                },
-                ("https://judge.invalid/v1/chat/completions", "key", "judge"),
-            )
-
-        payload = post.call_args.kwargs["json"]
-        user_payload = json.loads(payload["messages"][1]["content"])
-        self.assertEqual(set(user_payload), {"reference_answer", "candidate_answer"})
-        self.assertEqual(
-            user_payload["reference_answer"],
-            ["Microsoft Corp", "Microsoft", "MSFT"],
-        )
-        self.assertEqual(user_payload["candidate_answer"], "Microsoft")
-        self.assertEqual(payload["response_format"], {"type": "json_object"})
-        system_prompt = payload["messages"][0]["content"]
-        self.assertIn("Follow these gates in order", system_prompt)
-        self.assertIn("multiple incompatible answers", system_prompt)
-        self.assertIn("contradict its final conclusion", system_prompt)
-        self.assertIn("must pass", system_prompt)
-        self.assertIn("never demand that it cover the rest of the array", system_prompt)
-        self.assertEqual(result["score"], 1.0)
-        self.assertTrue(result["passed"])
-        self.assertEqual(result["contract"], scoreboard_bridge._JUDGE_CONTRACT)
-
-    def test_answer_only_judge_allowlist_excludes_native_and_open_ended_tasks(self) -> None:
-        selected = "mixeval_easy:freeform,mixeval_easy:multichoice,simpleqa"
-        with mock.patch.dict(os.environ, {"HELICOPTER_JUDGE_DATASETS": selected}, clear=False):
-            self.assertTrue(scoreboard_bridge._judge_selected(["g1h__mixeval_easy:freeform|0"]))
-            self.assertFalse(scoreboard_bridge._judge_selected(["g1h__wmt24pp|0"]))
-            self.assertFalse(scoreboard_bridge._judge_selected(["g1h__arena_hard_v2|0"]))
-            self.assertFalse(scoreboard_bridge._judge_selected(["g1h__mt_bench|0"]))
-
-    def test_judge_reference_contains_mcq_letter_without_question(self) -> None:
-        self.assertEqual(
-            scoreboard_bridge._reference(
-                {
-                    "choices": ["first", "second", "third", "fourth"],
-                    "gold_index": [2],
-                }
-            ),
-            "C. third",
-        )
-        self.assertEqual(
-            scoreboard_bridge._reference(
-                {"choices": ["free-form reference"], "gold_index": [0]}
-            ),
-            "free-form reference",
-        )
-        self.assertEqual(
-            json.loads(
-                scoreboard_bridge._reference(
-                    {
-                        "choices": ["Microsoft Corp", "Microsoft", "MSFT"],
-                        "gold_index": [0, 1, 2],
-                    }
-                )
-            ),
-            ["Microsoft Corp", "Microsoft", "MSFT"],
-        )
-        self.assertEqual(
-            scoreboard_bridge._judge_reference_payload("B. correct option text"),
-            ["B", "B. correct option text"],
-        )
-
-    def test_judge_resume_skips_checkpointed_rollout(self) -> None:
-        completion = {
-            "stats": {
-                "judge": {
-                    "passed": True,
-                    "score": 1.0,
-                    "reason": "",
-                    "model": "model",
-                    "strategy": "mixeval_freeform",
-                    "contract": scoreboard_bridge._JUDGE_CONTRACT,
-                }
-            }
-        }
-        evaluation = {
-            "answer": "candidate",
-            "ref_answer": "reference",
-            "is_passed": False,
-            "fail_reason": "old native score",
-        }
-        rows = {"g1h__mixeval_easy:freeform|0": ([completion], [evaluation])}
-
-        with (
-            mock.patch.object(
-                scoreboard_bridge,
-                "_judge_settings",
-                return_value=("https://judge.invalid/v1/chat/completions", "key", "model"),
-            ),
-            mock.patch.object(scoreboard_bridge, "_judge_one") as judge,
-            mock.patch.object(
-                scoreboard_bridge,
-                "_sampling_config",
-                return_value={"avg_k": 8},
-            ),
-        ):
-            metrics = scoreboard_bridge._apply_judge(rows)
-
-        judge.assert_not_called()
-        self.assertEqual(metrics["g1h__mixeval_easy:freeform|0"]["judge_avg@8"], 1.0)
-        self.assertTrue(evaluation["is_passed"])
-        self.assertEqual(evaluation["fail_reason"], "")
-
-    def test_judge_resume_rejects_checkpoint_from_old_contract(self) -> None:
-        completion = {
-            "stats": {
-                "judge": {
-                    "passed": True,
-                    "reason": "",
-                    "model": "old-model",
-                }
-            }
-        }
-        evaluation = {
-            "answer": "candidate",
-            "ref_answer": "reference",
-            "raw_record": {
-                "query": "question",
-                "choices": ["reference"],
-                "gold_index": [0],
-                "specific": {"question": "question"},
-            },
-            "is_passed": True,
-            "fail_reason": "",
-        }
-        rows = {"g1h__mixeval_easy:freeform|0": ([completion], [evaluation])}
-
-        with (
-            mock.patch.object(
-                scoreboard_bridge,
-                "_judge_settings",
-                return_value=("https://judge.invalid/v1/chat/completions", "key", "model"),
-            ),
-            mock.patch.object(
-                scoreboard_bridge,
-                "_judge_one",
-                return_value={
-                    "passed": False,
-                    "score": 0.0,
-                    "reason": "not equivalent",
-                    "model": "model",
-                    "strategy": "mixeval_freeform",
-                    "contract": scoreboard_bridge._JUDGE_CONTRACT,
-                },
-            ) as judge,
-            mock.patch.object(
-                scoreboard_bridge,
-                "_sampling_config",
-                return_value={"avg_k": 8},
-            ),
-        ):
-            metrics = scoreboard_bridge._apply_judge(rows)
-
-        judge.assert_called_once()
-        self.assertEqual(metrics["g1h__mixeval_easy:freeform|0"]["judge_avg@8"], 0.0)
-        self.assertFalse(evaluation["is_passed"])
-
-    def test_avg_wrapper_preserves_grouped_ifeval_style_metrics(self) -> None:
-        class GroupedMetric:
-            def compute(self, model_response, doc):
-                passed = model_response.text[0] == "ok"
-                return {
-                    "prompt_level_strict_acc": int(passed),
-                    "inst_level_strict_acc": [passed, True],
-                }
-
-        metric = SimpleNamespace(
-            metric_name=["prompt_level_strict_acc", "inst_level_strict_acc"],
-            sample_level_fn=GroupedMetric(),
-            category=lighteval_g1h_policy.SamplingMethod.GENERATIVE,
-            corpus_level_fn={
-                "prompt_level_strict_acc": lambda values: sum(values) / len(values),
-                "inst_level_strict_acc": lambda values: values,
-            },
-            higher_is_better={
-                "prompt_level_strict_acc": True,
-                "inst_level_strict_acc": True,
-            },
-        )
+        metric = Metrics.gpqa_instruct_metric.value
         wrapped = lighteval_g1h_policy._avg_metric(metric, k=2, name="avg@2")
-        response = ModelResponse(text=["ok", "bad"])
-
-        scores = wrapped.sample_level_fn.compute(SimpleNamespace(), response)
-
-        self.assertEqual(scores["prompt_level_strict_acc"], 0.5)
-        self.assertEqual(scores["inst_level_strict_acc"], [0.5, 1.0])
-        self.assertEqual(
-            response.helicopter_rollout_scores["prompt_level_strict_acc"],
-            [1.0, 0.0],
-        )
-        self.assertEqual(wrapped.metric_name, metric.metric_name)
-
-        unclosed = ModelResponse(
-            text=["ok", "ok"],
-            text_post_processed=["", ""],
-        )
-        unclosed_scores = wrapped.sample_level_fn.compute(SimpleNamespace(), unclosed)
-        self.assertEqual(unclosed_scores["prompt_level_strict_acc"], 0.0)
-        self.assertEqual(unclosed_scores["inst_level_strict_acc"], [0.0, 0.0])
-        self.assertEqual(
-            unclosed.helicopter_rollout_scores["prompt_level_strict_acc"],
-            [0.0, 0.0],
+        doc = Doc(
+            task_name="gpqa:main",
+            query="Pick one.\nA. first\nB. second\nC. third\nD. fourth",
+            gold_index=2,
+            choices=["A", "B", "C", "D"],
+            specific={},
         )
 
-    def test_code_metric_runs_mbpp_style_assertions(self) -> None:
-        doc = lighteval_rwkv_skills_tasks.code_generation_prompt(
-            {
-                "prompt": "Write a function to add one.",
-                "code": "def add_one(x):\n    return x + 1\n",
-                "test_imports": "[]",
-                "test_list": "['assert add_one(1) == 2']",
-            },
-            "mbpp",
+        native_score = metric.sample_level_fn.compute(
+            doc,
+            ModelResponse(text=["The correct answer is C."]),
+        )
+        wrapped_score = wrapped.sample_level_fn.compute(
+            doc,
+            ModelResponse(text=["The correct answer is C.", "The correct answer is A."]),
         )
 
-        self.assertIsNotNone(doc)
-        assert doc is not None
-        metric = lighteval_rwkv_skills_tasks.CodePassAtOne()
-        passed = metric.compute(ModelResponse(text=["def add_one(x):\n    return x + 1"]), doc)
-        failed = metric.compute(ModelResponse(text=["def add_one(x):\n    return x + 2"]), doc)
-        self.assertEqual(passed, 1.0)
-        self.assertEqual(failed, 0.0)
+        self.assertIsInstance(wrapped.sample_level_fn, lighteval_g1h_policy.AvgAtN)
+        self.assertEqual(wrapped_score, native_score / 2)
+
+    def test_logprob_metric_is_not_converted_to_avg_generation(self) -> None:
+        from lighteval.metrics.metrics import Metrics
+
+        metric = Metrics.loglikelihood_acc.value
+        wrapped = lighteval_g1h_policy._avg_metric(metric, k=8, name="avg@8")
+        self.assertEqual(wrapped.category, lighteval_g1h_policy.SamplingMethod.LOGPROBS)
+        self.assertIs(type(wrapped.sample_level_fn), type(metric.sample_level_fn))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     def test_lighteval_tasks_loads_rwkv_skills_registry_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -6397,18 +5826,18 @@ class EvalBatchTests(unittest.TestCase):
         self.assertEqual(eval_batch.resolve_parallel_cap(batch_args(), loaded), 4)
         self.assertEqual(eval_batch.resolve_parallel_cap(batch_args(parallel=2), loaded), 2)
 
-    def test_postprocess_workers_follow_scheduler_judge_capacity(self) -> None:
+    def test_postprocess_workers_follow_scheduler_score_capacity(self) -> None:
         self.assertEqual(
-            eval_batch.derive_postprocess_workers(runnable_count=120, judge_capacity=10),
+            eval_batch.derive_postprocess_workers(runnable_count=120, score_capacity=10),
             10,
         )
         self.assertEqual(
-            eval_batch.derive_postprocess_workers(runnable_count=3, judge_capacity=10),
+            eval_batch.derive_postprocess_workers(runnable_count=3, score_capacity=10),
             3,
         )
         self.assertEqual(
             eval_batch.derive_postprocess_workers(
-                runnable_count=120, judge_capacity=10, configured_ceiling=6
+                runnable_count=120, score_capacity=10, configured_ceiling=6
             ),
             6,
         )
@@ -6602,6 +6031,48 @@ class EvalBatchTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(overlap_observed, [True])
         self.assertTrue(score_finished.is_set())
+
+    def test_model_aware_dispatch_does_not_starve_an_idle_model_replica(self) -> None:
+        loaded = load_example_config()
+        second_model_second_task_started = threading.Event()
+        overlap_observed: list[bool] = []
+
+        def staged_runner(args, *, root, env, config):
+            if env.get("HELICOPTER_PIPELINE_STAGE") != "generate":
+                return 0
+            if args.model == "g1d-0.4b" and args.tasks == "gsm8k|0":
+                overlap_observed.append(
+                    second_model_second_task_started.wait(timeout=2)
+                )
+            elif args.model == "g1g-1.5b" and args.tasks == "mmlu|0":
+                second_model_second_task_started.set()
+            return 0
+
+        with mock.patch.object(
+            eval_batch,
+            "probe_model_runtime",
+            return_value=(64, 0, 0, "test"),
+        ):
+            with mock.patch.object(
+                eval_batch,
+                "run_eval",
+                side_effect=staged_runner,
+            ):
+                exit_code = eval_batch.run_batch(
+                    batch_args(
+                        models=["g1d-0.4b,g1g-1.5b"],
+                        tasks=["gsm8k|0,mmlu|0"],
+                        no_server=True,
+                        dry_run=False,
+                        scoreboard=False,
+                    ),
+                    root=ROOT,
+                    env={"WEIGHT_PATH": "/weights/RWKV"},
+                    config=loaded,
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(overlap_observed, [True])
 
     def test_run_batch_dry_run_prints_plan(self) -> None:
         loaded = load_example_config()

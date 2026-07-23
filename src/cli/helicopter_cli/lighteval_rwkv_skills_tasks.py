@@ -30,6 +30,8 @@ from lighteval.models.model_output import ModelResponse
 from lighteval.tasks.lighteval_task import LightevalTaskConfig
 from lighteval.tasks.requests import Doc, SamplingMethod
 
+from helicopter_cli.muldimif_metric import evaluate_constraints
+
 
 def _cached_dataset_file(relative_path: str, fallback: str) -> str:
     root = os.environ.get("DATASETS_PATH", "").strip()
@@ -76,6 +78,15 @@ POLYMATH_URLS = [
     for level in POLYMATH_LEVELS
 ]
 SVAMP_URL = "https://raw.githubusercontent.com/arkilpatel/SVAMP/main/SVAMP.json"
+GSM_SYMBOLIC_URLS = [
+    f"https://huggingface.co/datasets/apple/GSM-Symbolic/resolve/main/{partition}/test.jsonl"
+    for partition in ("p1", "p2")
+]
+OLYMMATH_URLS = [
+    f"https://huggingface.co/datasets/RUC-AIBOX/OlymMATH/resolve/main/data/OlymMATH-{language}-{difficulty}.jsonl"
+    for language in ("EN", "ZH")
+    for difficulty in ("EASY", "HARD")
+]
 JUDGES_VERDICT_REPO = "nvidia/judges-verdict"
 SWE_BENCH_CONTEXT_MAX_CHARS = 16000
 SWE_BENCH_DATASETS = {
@@ -218,10 +229,6 @@ LANGUAGE_NAMES = {
     "ja": "Japanese",
     "en": "English",
 }
-
-MATH_PROMPT = (
-    "Solve the following math problem. Think step by step, then give the final answer after 'Answer:'."
-)
 
 ANSWER_ENDINGS = [
     "\\\n\\noindent",
@@ -408,7 +415,17 @@ def _free_answer_problem_and_answer(line: dict[str, Any]) -> tuple[str, str] | N
         return (problem, answer) if "Answer" in line else None
 
     problem = _norm(_first_nonempty(line, ("problem", "question", "input", "prompt")))
-    answer_value = _first_present(line, ("expected_answer", "answer", "final_answer", "target", "reference_answer"))
+    answer_value = _first_present(
+        line,
+        (
+            "expected_answer",
+            "answer",
+            "final_answer",
+            "final_ans",
+            "target",
+            "reference_answer",
+        ),
+    )
     if answer_value is MISSING and "solution" in line:
         answer_value = _extract_answer_from_solution(line.get("solution"))
     if answer_value is MISSING:
@@ -423,10 +440,140 @@ def free_answer_prompt(line: dict[str, Any], task_name: str | None = None) -> Do
     problem, answer = pair
     return Doc(
         task_name=task_name,
-        query=f"{MATH_PROMPT}\n\nQuestion: {problem}\nAnswer:",
+        query=problem,
         choices=[answer],
         gold_index=0,
-        instruction=f"{MATH_PROMPT}\n\n",
+        instruction=None,
+    )
+
+
+FAMOUS120_OPEN_QA_FIELDS = {
+    "simpleqa_verified": ("problem", "answer"),
+    "hotpotqa": ("question", "answer"),
+    "musique": ("question", "answer"),
+    "two_wiki_multihop_qa": ("question", "answer"),
+}
+
+FAMOUS120_MATH_FIELDS = {
+    "matharena": ("problem", "answer"),
+    "gsm_hard": ("input", "target"),
+    "olymmath": ("problem", "answer"),
+    "theoremqa": ("Question", "Answer"),
+    "multiarith": ("question", "final_ans"),
+    "deepmind_mathematics": ("question", "answer"),
+    "proofnet": ("nl_statement", "nl_proof"),
+    "putnambench": ("informal_statement", "informal_solution"),
+    "lean_workbook": ("natural_language_statement", "answer"),
+    "fimo": ("math_problem", "solution"),
+}
+
+
+def _doc_from_raw_question_and_gold(
+    *,
+    task_name: str | None,
+    question: Any,
+    gold: Any,
+) -> Doc | None:
+    query = str(question or "").strip()
+    if not query or gold is None:
+        return None
+    return Doc(
+        task_name=task_name,
+        query=query,
+        choices=[_answer_text(gold)],
+        gold_index=0,
+        instruction=None,
+    )
+
+
+def famous120_open_qa_prompt(
+    line: dict[str, Any],
+    task_name: str | None = None,
+) -> Doc | None:
+    if task_name == "popqa":
+        possible_answers = line.get("possible_answers")
+        if isinstance(possible_answers, str):
+            try:
+                parsed = json.loads(possible_answers)
+            except json.JSONDecodeError:
+                parsed = [possible_answers]
+        else:
+            parsed = possible_answers
+        accepted = _coerce_string_list(parsed)
+        reference = json.dumps(accepted, ensure_ascii=False) if accepted else line.get("obj")
+        return _doc_from_raw_question_and_gold(
+            task_name=task_name,
+            question=line.get("question"),
+            gold=reference,
+        )
+
+    fields = FAMOUS120_OPEN_QA_FIELDS.get(str(task_name))
+    if fields is None:
+        raise ValueError(f"unsupported famous120 open-QA task: {task_name!r}")
+    question_key, answer_key = fields
+    return _doc_from_raw_question_and_gold(
+        task_name=task_name,
+        question=line.get(question_key),
+        gold=line.get(answer_key),
+    )
+
+
+def famous120_math_prompt(
+    line: dict[str, Any],
+    task_name: str | None = None,
+) -> Doc | None:
+    fields = FAMOUS120_MATH_FIELDS.get(str(task_name))
+    if fields is None:
+        raise ValueError(f"unsupported famous120 math task: {task_name!r}")
+    question_key, answer_key = fields
+    return _doc_from_raw_question_and_gold(
+        task_name=task_name,
+        question=line.get(question_key),
+        gold=line.get(answer_key),
+    )
+
+
+def gsm_symbolic_prompt(
+    line: dict[str, Any],
+    task_name: str | None = None,
+) -> Doc | None:
+    answer = str(line.get("answer") or "")
+    final_answer = answer.rsplit("####", 1)[-1].strip()
+    return _doc_from_raw_question_and_gold(
+        task_name=task_name,
+        question=line.get("question"),
+        gold=final_answer,
+    )
+
+
+def numglue_prompt(
+    line: dict[str, Any],
+    task_name: str | None = None,
+) -> Doc | None:
+    sections: list[str] = []
+    passage = str(line.get("passage") or "").strip()
+    question = str(line.get("question") or "").strip()
+    statement1 = str(line.get("statement1") or "").strip()
+    statement2 = str(line.get("statement2") or "").strip()
+    options = str(line.get("options") or "").strip()
+    option1 = str(line.get("option1") or "").strip()
+    option2 = str(line.get("option2") or "").strip()
+    sections.extend(value for value in (passage, question, statement1, statement2) if value)
+    if option1 or option2:
+        sections.extend(
+            value
+            for value in (
+                f"Option 1: {option1}" if option1 else "",
+                f"Option 2: {option2}" if option2 else "",
+            )
+            if value
+        )
+    if options:
+        sections.append(options)
+    return _doc_from_raw_question_and_gold(
+        task_name=task_name,
+        question="\n".join(sections),
+        gold=line.get("answer"),
     )
 
 
@@ -3025,14 +3172,16 @@ def _human_eval_code_prompt(line: dict[str, Any], task_name: str | None) -> Doc 
 
 
 def _mbpp_code_prompt(line: dict[str, Any], task_name: str | None) -> Doc | None:
-    prompt = str(line.get("prompt") or "")
+    prompt = str(line.get("prompt") or line.get("text") or "")
     if not prompt:
         return None
 
     if task_name == "mbpp_plus":
         test_code = str(line.get("test") or "")
     else:
-        test_imports = "\n".join(_as_string_list(line.get("test_imports")))
+        test_imports = "\n".join(
+            _as_string_list(line.get("test_imports") or line.get("test_setup_code"))
+        )
         test_list = "\n".join(_as_string_list(line.get("test_list")))
         test_code = "\n".join(part for part in (test_imports, test_list) if part.strip())
     if not test_code:
@@ -3057,6 +3206,51 @@ def code_generation_prompt(line: dict[str, Any], task_name: str | None = None) -
     if task_name in {"mbpp", "mbpp_plus"}:
         return _mbpp_code_prompt(line, task_name)
     return _human_eval_code_prompt(line, task_name)
+
+
+def muldimif_prompt(line: dict[str, Any], task_name: str | None = None) -> Doc | None:
+    conversations = line.get("conversations")
+    constraints = line.get("constraints")
+    if not isinstance(conversations, list) or not conversations:
+        return None
+    if not isinstance(constraints, list) or not constraints:
+        return None
+    user_messages = [
+        str(message.get("content") or "").strip()
+        for message in conversations
+        if isinstance(message, Mapping) and str(message.get("role") or "").lower() == "user"
+    ]
+    query = "\n".join(message for message in user_messages if message)
+    if not query:
+        return None
+    normalized_constraints = [
+        list(constraint)
+        for constraint in constraints
+        if isinstance(constraint, (list, tuple)) and len(constraint) >= 3
+    ]
+    if len(normalized_constraints) != len(constraints):
+        raise ValueError("MulDimIF row contains a malformed official constraint")
+    judge_reference = json.dumps(
+        {
+            "contract": "instruction_constraints",
+            "constraints": [str(constraint[-1]) for constraint in normalized_constraints],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return Doc(
+        task_name=task_name,
+        query=query,
+        choices=[judge_reference],
+        gold_index=0,
+        specific={
+            "sample_id": str(line.get("id") or ""),
+            "constraints": normalized_constraints,
+            "constraint_pattern": str(line.get("constraint_pattern") or ""),
+            "difficulty": str(line.get("difficulty") or ""),
+            "judge_contract": "instruction_constraints",
+        },
+    )
 
 
 def _contains_entry_point_definition(code: str, entry_point: str) -> bool:
@@ -3137,9 +3331,51 @@ class CodePassAtOne(SampleLevelComputation):
         return 1.0 if passed else 0.0
 
 
+def _muldimif_verdicts(model_response: ModelResponse, doc: Doc) -> list[bool]:
+    if not doc.specific:
+        return []
+    predictions = model_response.final_text
+    if not predictions:
+        return []
+    constraints = doc.specific.get("constraints")
+    if not isinstance(constraints, list) or not constraints:
+        return []
+    return evaluate_constraints(constraints, str(predictions[0]))
+
+
+class MulDimIFStrict(SampleLevelComputation):
+    def compute(self, model_response: ModelResponse, doc: Doc, **kwargs: Any) -> float:
+        verdicts = _muldimif_verdicts(model_response, doc)
+        return 1.0 if verdicts and all(verdicts) else 0.0
+
+
+class MulDimIFConstraintAccuracy(SampleLevelComputation):
+    def compute(self, model_response: ModelResponse, doc: Doc, **kwargs: Any) -> float:
+        verdicts = _muldimif_verdicts(model_response, doc)
+        return float(np.mean(verdicts)) if verdicts else 0.0
+
+
 rwkv_code_pass_at_1 = SampleLevelMetric(
     metric_name="code_pass@1",
     sample_level_fn=CodePassAtOne(),
+    category=SamplingMethod.GENERATIVE,
+    corpus_level_fn=np.mean,
+    higher_is_better=True,
+    batched_compute=False,
+)
+
+rwkv_muldimif_strict = SampleLevelMetric(
+    metric_name="muldimif_strict",
+    sample_level_fn=MulDimIFStrict(),
+    category=SamplingMethod.GENERATIVE,
+    corpus_level_fn=np.mean,
+    higher_is_better=True,
+    batched_compute=False,
+)
+
+rwkv_muldimif_constraint_accuracy = SampleLevelMetric(
+    metric_name="muldimif_constraint_accuracy",
+    sample_level_fn=MulDimIFConstraintAccuracy(),
     category=SamplingMethod.GENERATIVE,
     corpus_level_fn=np.mean,
     higher_is_better=True,
@@ -3283,6 +3519,14 @@ rwkv_tau_bench_response_nonempty = SampleLevelMetric(
 
 if "rwkv_code_pass_at_1" not in Metrics.__members__:
     extend_enum(Metrics, "rwkv_code_pass_at_1", rwkv_code_pass_at_1)
+if "rwkv_muldimif_strict" not in Metrics.__members__:
+    extend_enum(Metrics, "rwkv_muldimif_strict", rwkv_muldimif_strict)
+if "rwkv_muldimif_constraint_accuracy" not in Metrics.__members__:
+    extend_enum(
+        Metrics,
+        "rwkv_muldimif_constraint_accuracy",
+        rwkv_muldimif_constraint_accuracy,
+    )
 if "rwkv_longbench_exact_match" not in Metrics.__members__:
     extend_enum(Metrics, "rwkv_longbench_exact_match", rwkv_longbench_exact_match)
 if "rwkv_longbench_f1" not in Metrics.__members__:
@@ -3324,10 +3568,12 @@ def free_answer_task(
     evaluation_splits: list[str],
     hf_data_files: str | list[str] | dict[str, str | list[str]] | None = None,
     generation_size: int = 2048,
+    prompt_function: Any = free_answer_prompt,
+    metrics: list[Any] | None = None,
 ) -> LightevalTaskConfig:
     return LightevalTaskConfig(
         name=name,
-        prompt_function=free_answer_prompt,
+        prompt_function=prompt_function,
         hf_repo=hf_repo,
         hf_subset=hf_subset,
         hf_data_files=hf_data_files,
@@ -3336,8 +3582,35 @@ def free_answer_task(
         few_shots_split=None,
         few_shots_select=None,
         generation_size=generation_size,
-        metrics=[Metrics.expr_gold_metric],
+        metrics=metrics or [Metrics.expr_gold_metric],
         stop_sequence=["\n\nQuestion:"],
+        version=0,
+    )
+
+
+def open_qa_task(
+    name: str,
+    *,
+    hf_repo: str,
+    hf_subset: str = "default",
+    hf_avail_splits: list[str],
+    evaluation_splits: list[str],
+    hf_data_files: str | list[str] | dict[str, str | list[str]] | None = None,
+    generation_size: int = 512,
+) -> LightevalTaskConfig:
+    return LightevalTaskConfig(
+        name=name,
+        prompt_function=famous120_open_qa_prompt,
+        hf_repo=hf_repo,
+        hf_subset=hf_subset,
+        hf_data_files=hf_data_files,
+        hf_avail_splits=hf_avail_splits,
+        evaluation_splits=evaluation_splits,
+        few_shots_split=None,
+        few_shots_select=None,
+        generation_size=generation_size,
+        metrics=[Metrics.exact_match],
+        stop_sequence=[],
         version=0,
     )
 
@@ -3375,6 +3648,26 @@ def swebench_task(name: str) -> LightevalTaskConfig:
         metrics=[Metrics.rwkv_swebench_patch_f1, Metrics.rwkv_swebench_patch_nonempty],
         stop_sequence=[],
         version=1,
+    )
+
+
+def muldimif_task() -> LightevalTaskConfig:
+    return LightevalTaskConfig(
+        name="muldimif",
+        prompt_function=muldimif_prompt,
+        hf_repo="Junjie-Ye/MulDimIF",
+        hf_subset="Data",
+        hf_avail_splits=["train", "test"],
+        evaluation_splits=["test"],
+        few_shots_split=None,
+        few_shots_select=None,
+        generation_size=6144,
+        metrics=[
+            Metrics.rwkv_muldimif_strict,
+            Metrics.rwkv_muldimif_constraint_accuracy,
+        ],
+        stop_sequence=[],
+        version=0,
     )
 
 
@@ -3575,6 +3868,29 @@ answer_judge = LightevalTaskConfig(
     version=0,
 )
 
+simpleqa_verified = open_qa_task(
+    "simpleqa_verified",
+    hf_repo="google/simpleqa-verified",
+    hf_subset="simpleqa_verified",
+    hf_avail_splits=["eval"],
+    evaluation_splits=["eval"],
+)
+
+popqa = open_qa_task(
+    "popqa",
+    hf_repo="akariasai/PopQA",
+    hf_avail_splits=["test"],
+    evaluation_splits=["test"],
+)
+
+hotpotqa = open_qa_task(
+    "hotpotqa",
+    hf_repo="hotpotqa/hotpot_qa",
+    hf_subset="distractor",
+    hf_avail_splits=["train", "validation"],
+    evaluation_splits=["validation"],
+)
+
 arena_hard_v2 = arena_hard_task()
 
 agentbench_db = agentbench_task("agentbench_db")
@@ -3613,6 +3929,108 @@ hmmt_feb25 = free_answer_task(
     hf_repo="MathArena/hmmt_feb_2025",
     hf_avail_splits=["train"],
     evaluation_splits=["train"],
+)
+
+matharena = free_answer_task(
+    "matharena",
+    hf_repo="MathArena/paper_benchmark",
+    hf_avail_splits=["train"],
+    evaluation_splits=["train"],
+    prompt_function=famous120_math_prompt,
+)
+
+gsm_hard = free_answer_task(
+    "gsm_hard",
+    hf_repo="reasoning-machines/gsm-hard",
+    hf_avail_splits=["train"],
+    evaluation_splits=["train"],
+    prompt_function=famous120_math_prompt,
+)
+
+gsm_symbolic = free_answer_task(
+    "gsm_symbolic",
+    hf_repo="json",
+    hf_data_files={"test": GSM_SYMBOLIC_URLS},
+    hf_avail_splits=["test"],
+    evaluation_splits=["test"],
+    prompt_function=gsm_symbolic_prompt,
+)
+
+olymp_task = free_answer_task(
+    "olymmath",
+    hf_repo="json",
+    hf_data_files={"test": OLYMMATH_URLS},
+    hf_avail_splits=["test"],
+    evaluation_splits=["test"],
+    prompt_function=famous120_math_prompt,
+)
+
+theoremqa = free_answer_task(
+    "theoremqa",
+    hf_repo="TIGER-Lab/TheoremQA",
+    hf_avail_splits=["test"],
+    evaluation_splits=["test"],
+    prompt_function=famous120_math_prompt,
+)
+
+multiarith = free_answer_task(
+    "multiarith",
+    hf_repo="ChilleD/MultiArith",
+    hf_avail_splits=["train", "test"],
+    evaluation_splits=["test"],
+    prompt_function=famous120_math_prompt,
+)
+
+numglue = free_answer_task(
+    "numglue",
+    hf_repo="tasksource/num-glue",
+    hf_subset="all",
+    hf_avail_splits=["train", "validation", "test"],
+    evaluation_splits=["test"],
+    prompt_function=numglue_prompt,
+)
+
+proofnet = free_answer_task(
+    "proofnet",
+    hf_repo="parquet",
+    hf_data_files={
+        "test": (
+            "https://huggingface.co/datasets/hoskinson-center/proofnet/"
+            "resolve/refs%2Fconvert%2Fparquet/plain_text/test/0000.parquet"
+        )
+    },
+    hf_avail_splits=["test"],
+    evaluation_splits=["test"],
+    prompt_function=famous120_math_prompt,
+    metrics=[Metrics.exact_match],
+)
+
+putnambench = free_answer_task(
+    "putnambench",
+    hf_repo="amitayusht/PutnamBench",
+    hf_avail_splits=["train"],
+    evaluation_splits=["train"],
+    prompt_function=famous120_math_prompt,
+    metrics=[Metrics.exact_match],
+)
+
+lean_workbook = free_answer_task(
+    "lean_workbook",
+    hf_repo="internlm/Lean-Workbook",
+    hf_avail_splits=["train"],
+    evaluation_splits=["train"],
+    prompt_function=famous120_math_prompt,
+    metrics=[Metrics.exact_match],
+)
+
+fimo = free_answer_task(
+    "fimo",
+    hf_repo="liuchengwu/discover-and-prove",
+    hf_subset="fimo_hard",
+    hf_avail_splits=["train"],
+    evaluation_splits=["train"],
+    prompt_function=famous120_math_prompt,
+    metrics=[Metrics.exact_match],
 )
 
 college_math = free_answer_task(
@@ -3688,6 +4106,14 @@ mbpp_plus = code_generation_task(
     "mbpp_plus",
     hf_repo=MBPP_PLUS_REPO,
 )
+
+mbpp = code_generation_task(
+    "mbpp",
+    hf_repo="google-research-datasets/mbpp",
+    hf_subset="full",
+)
+
+muldimif = muldimif_task()
 
 math_odyssey = free_answer_task(
     "math_odyssey",
@@ -3806,6 +4232,9 @@ TASKS_TABLE = [
     algebra222,
     amc23,
     answer_judge,
+    simpleqa_verified,
+    popqa,
+    hotpotqa,
     arena_hard_v2,
     agentbench_db,
     agentbench_kg,
@@ -3816,6 +4245,17 @@ TASKS_TABLE = [
     browsecomp_zh,
     college_math,
     comp_math_24_25,
+    matharena,
+    gsm_hard,
+    gsm_symbolic,
+    olymp_task,
+    theoremqa,
+    multiarith,
+    numglue,
+    proofnet,
+    putnambench,
+    lean_workbook,
+    fimo,
     gaokao2023en,
     hendrycks_math,
     hmmt_feb25,
@@ -3832,7 +4272,9 @@ TASKS_TABLE = [
     mcp_bench_single,
     math_odyssey,
     mawps,
+    mbpp,
     mbpp_plus,
+    muldimif,
     minerva_math,
     omni_math,
     polymath,

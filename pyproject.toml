@@ -18,6 +18,8 @@ eval = [
   "lighteval[extended_tasks,litellm,multilingual]",
   "language-data",
   "more-itertools",
+  "nltk",
+  "zhconv",
 ]
 
 rwkv = [
@@ -146,4 +148,7 @@ where = ["src/cli"]
 include = ["helicopter_cli*"]
 
 [tool.setuptools.package-data]
-helicopter_cli = ["lighteval_data/*.jsonl"]
+helicopter_cli = [
+  "lighteval_data/*.jsonl",
+  "vendor/muldimif/LICENSE",
+]

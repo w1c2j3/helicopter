@@ -1367,6 +1367,8 @@ eval = [
     { name = "language-data" },
     { name = "lighteval", extra = ["extended-tasks", "litellm", "multilingual"] },
     { name = "more-itertools" },
+    { name = "nltk" },
+    { name = "zhconv" },
 ]
 full = [
     { name = "latex2sympy2-extended" },
@@ -1486,6 +1488,8 @@ eval = [
     { name = "language-data" },
     { name = "lighteval", extras = ["extended-tasks", "litellm", "multilingual"], editable = "src/eval/lighteval" },
     { name = "more-itertools" },
+    { name = "nltk" },
+    { name = "zhconv" },
 ]
 full = [
     { name = "latex2sympy2-extended" },
@@ -5850,6 +5854,12 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/26/91/33de49538444d4aafbe47415c450c2f9abab1733e1226f276b496672f46c/z3_solver-4.15.4.0-py3-none-win32.whl", hash = "sha256:be3bc916545c96ffbf89e00d07104ff14f78336e55db069177a1bfbcc01b269d", size = 13191672, upload-time = "2025-10-29T18:11:58.424Z" },
     { url = "https://files.pythonhosted.org/packages/03/d6/a0b135e4419df475177ae78fc93c422430b0fd8875649486f9a5989772e6/z3_solver-4.15.4.0-py3-none-win_amd64.whl", hash = "sha256:00e35b02632ed085ea8199fb230f6015e6fc40554a6680c097bd5f060e827431", size = 16259597, upload-time = "2025-10-29T18:12:01.14Z" },
 ]
+
+[[package]]
+name = "zhconv"
+version = "1.4.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/25/47/c8ae2d5d4025e253211ff3d8c163f457db1da94976cb582337a5ab76cb87/zhconv-1.4.3.tar.gz", hash = "sha256:ad42d9057ca0605f8e41d62b67ca797f879f58193ee6840562c51459b2698c45", size = 211571, upload-time = "2021-10-31T05:59:44.096Z" }
 
 [[package]]
 name = "zipp"

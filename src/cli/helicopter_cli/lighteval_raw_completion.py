@@ -7,7 +7,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
 from dataclasses import dataclass
-from string import ascii_uppercase
 from typing import Any
 
 import requests
@@ -60,112 +59,6 @@ def _restore_structured_prefill(
     return text
 
 
-def _choice_mapping(choices: Any) -> dict[str, str]:
-    if not isinstance(choices, (list, tuple)):
-        return {}
-    normalized = [str(choice).strip().upper() for choice in choices]
-    expected = list(ascii_uppercase[: len(normalized)])
-    if len(normalized) < 2 or normalized != expected:
-        return {}
-    return {label: str(choice) for label, choice in zip(normalized, choices)}
-
-
-_CHOICE_PATTERNS = (
-    re.compile(r"<answer>\s*([A-Z])\s*</answer>", re.IGNORECASE),
-    re.compile(r"\\boxed\{\s*(?:\\(?:text|mathrm)\{\s*)?([A-Z])", re.IGNORECASE),
-    re.compile(
-        r"(?:final\s+)?(?:the\s+)?(?:correct\s+)?answer\s*"
-        r"[*_]{0,3}\s*(?:is\s*)?:?\s*(?:option\s*)?[*_]{0,3}\s*"
-        r"[\[(]?\s*[*_]{0,3}\s*([A-Z])\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"</think>\s*[*_]{0,3}\s*[\[(]?\s*([A-Z])\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?:therefore|thus|hence|so)\b[^\n]{0,200}?"
-        r"\b(?:is\s+provided\s+in|select(?:s|ed)?|choose|chosen|is)\s*"
-        r"[*_]{0,3}\s*(?:option|choice)\s*[*_]{0,3}\s*([A-Z])\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:option|choice)\s*[*_]{0,3}\s*([A-Z])\b[^\n]{0,100}?"
-        r"\b(?:is\s+)?(?:the\s+)?(?:correct|best|most\s+accurate)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?:therefore|thus|hence|so),?\s*[*_]{0,3}\s*([A-Z])\s*[\).]",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:matches|corresponds\s+to)\s+(?:option|choice)\s*([A-Z])\b",
-        re.IGNORECASE,
-    ),
-)
-
-
-def _extract_choice(text: str, allowed: set[str]) -> str:
-    candidates: list[tuple[int, str]] = []
-    for pattern in _CHOICE_PATTERNS:
-        for match in pattern.finditer(text):
-            label = match.group(1).upper()
-            if label in allowed:
-                candidates.append((match.start(), label))
-    if candidates:
-        return max(candidates, key=lambda item: item[0])[1]
-
-    for line in reversed(text.splitlines()):
-        match = re.fullmatch(r"\s*[\[(]?\s*([A-Z])\s*[\])]?[.\s]*", line, re.IGNORECASE)
-        if match and match.group(1).upper() in allowed:
-            return match.group(1).upper()
-    return ""
-
-
-def _postprocess_choice_response(doc: Any, response: ModelResponse) -> ModelResponse:
-    mapping = _choice_mapping(getattr(doc, "choices", None))
-    if not mapping:
-        return response
-    processed: list[str] = []
-    for text in response.text:
-        raw_text = str(text or "")
-        label = _extract_choice(raw_text, set(mapping))
-        if not label:
-            specific = getattr(doc, "specific", None)
-            choice_texts = (
-                specific.get("helicopter_generated_mcq_choice_texts")
-                if isinstance(specific, dict)
-                else None
-            )
-            if isinstance(choice_texts, dict):
-                possible = [raw_text.strip()]
-                possible.extend(
-                    match.group(1).strip()
-                    for match in re.finditer(
-                        r"<answer>(.*?)</answer>",
-                        raw_text,
-                        re.IGNORECASE | re.DOTALL,
-                    )
-                )
-                normalized_choices = {
-                    str(key).upper(): re.sub(r"\s+", " ", str(value)).strip().casefold()
-                    for key, value in choice_texts.items()
-                }
-                for value in possible:
-                    normalized = re.sub(r"\s+", " ", value).strip().casefold()
-                    matches = [
-                        key
-                        for key, choice in normalized_choices.items()
-                        if choice and choice == normalized
-                    ]
-                    if len(matches) == 1:
-                        label = matches[0]
-                        break
-        processed.append(mapping[label] if label else str(text or ""))
-    response.text_post_processed = processed
-    return response
-
-
 def _canonical_task_name(task_name: str | None) -> str:
     name = str(task_name or "").split("|", 1)[0]
     return name[len("g1h__") :] if name.startswith("g1h__") else name
@@ -184,7 +77,19 @@ def _task_request_policy(task_name: str | None) -> dict[str, Any]:
     tasks = policy.get("tasks")
     if not isinstance(tasks, dict):
         return {}
-    entry = tasks.get(_canonical_task_name(task_name), {})
+    canonical = _canonical_task_name(task_name)
+    entry = tasks.get(canonical)
+    if entry is None:
+        parent_matches = [
+            (configured_task, candidate)
+            for configured_task, candidate in tasks.items()
+            if canonical.startswith(f"{configured_task}:")
+        ]
+        entry = (
+            max(parent_matches, key=lambda item: len(item[0]))[1]
+            if parent_matches
+            else {}
+        )
     return entry if isinstance(entry, dict) else {}
 
 
@@ -217,11 +122,49 @@ def _configured_sampling(task_name: str | None) -> dict[str, Any]:
     return dict(value)
 
 
+def _effective_context_budget(task_name: str | None, default: int | None) -> int | None:
+    value = _configured_sampling(task_name).get("context_budget", default)
+    if value is None:
+        return None
+    try:
+        result = int(value)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError(f"context_budget must be a positive integer, got {value!r}") from error
+    if result <= 0:
+        raise RuntimeError(f"context_budget must be a positive integer, got {result}")
+    return result
+
+
 def _configured_prompt_template(task_name: str | None, default: str) -> str:
     value = _task_request_policy(task_name).get("prompt_template", default)
     if not isinstance(value, str) or "{query}" not in value:
         raise RuntimeError("task prompt_template must be a string containing {query}")
     return value
+
+
+def _validate_raw_question_contract(task_name: str | None, prompt: str) -> None:
+    policy = _task_request_policy(task_name)
+    if not policy.get("benchmark_config_path"):
+        return
+    lowered = prompt.casefold()
+    forbidden_cues = (
+        "answer the following multiple choice question",
+        "the following are multiple choice questions",
+        "think step by step before answering",
+        "let's think step by step",
+        "solve the problem using one clean solution path",
+    )
+    found = next((cue for cue in forbidden_cues if cue in lowered), None)
+    if found is not None:
+        raise RuntimeError(
+            f"benchmark {_canonical_task_name(task_name)!r} violates the raw-question "
+            f"contract with an added cue: {found!r}"
+        )
+    if re.search(r"\nanswer:\s*\n+assistant:", prompt, flags=re.IGNORECASE):
+        raise RuntimeError(
+            f"benchmark {_canonical_task_name(task_name)!r} violates the raw-question "
+            "contract with an added trailing Answer: cue"
+        )
 
 
 def _configured_multi_turn_template(task_name: str | None) -> str | None:
@@ -303,15 +246,21 @@ def _fit_request_to_context(
     *,
     prompt: str,
     requested_max_tokens: int | None,
+    context_budget: int | None = None,
 ) -> _RequestContextFit:
-    """Apply LightEval's native vLLM left-truncation contract."""
+    """Preserve the full official prompt and fit generation into remaining context."""
 
+    max_model_length = int(self.max_length)
+    if context_budget is not None:
+        context_budget = int(context_budget)
+        if context_budget <= 0:
+            raise RuntimeError(f"context_budget must be positive, got {context_budget}")
+        max_model_length = min(max_model_length, context_budget)
     if requested_max_tokens is None:
-        return _RequestContextFit(None, None, None, int(self.max_length))
+        return _RequestContextFit(None, None, None, max_model_length)
     requested = int(requested_max_tokens)
     if requested <= 0:
         raise RuntimeError(f"max_tokens must be positive, got {requested}")
-    max_model_length = int(self.max_length)
     if requested >= max_model_length:
         raise RuntimeError(
             f"max_tokens is {requested} but model context is {max_model_length}; "
@@ -338,15 +287,15 @@ def _fit_request_to_context(
     prompt_tokens = int(body["count"])
     endpoint_max = int(body.get("max_model_len") or max_model_length)
     context_limit = min(max_model_length, endpoint_max)
-    prompt_budget = context_limit - requested
-    if prompt_budget < 1:
+    remaining_generation_tokens = context_limit - prompt_tokens
+    if remaining_generation_tokens < 1:
         raise RuntimeError(
-            f"max_tokens is {requested} but endpoint context is {context_limit}; "
-            "at least one prompt token must remain"
+            f"prompt uses {prompt_tokens} tokens but endpoint context is {context_limit}; "
+            "the official prompt cannot be preserved"
         )
     return _RequestContextFit(
-        max_tokens=requested,
-        truncate_prompt_tokens=prompt_budget if prompt_tokens > prompt_budget else None,
+        max_tokens=min(requested, remaining_generation_tokens),
+        truncate_prompt_tokens=None,
         prompt_tokens=prompt_tokens,
         context_limit=context_limit,
     )
@@ -370,6 +319,7 @@ def _request(
     overrides.pop("max_tokens", None)
     overrides.update(_configured_sampling(task_name))
     overrides.pop("max_tokens", None)
+    overrides.pop("context_budget", None)
     task_policy = _task_request_policy(task_name)
     task_policy_stop = _configured_stops(task_name, stops)
     effective_stop = task_policy_stop if task_policy else (
@@ -638,6 +588,7 @@ def _generate_two_turn_response(
     stops: list[str] | None,
     first_template: str,
     first_context_fit: _RequestContextFit,
+    context_budget: int | None = None,
 ) -> ModelResponse:
     multi_turn_template = _configured_multi_turn_template(task_name)
     if multi_turn_template is None:
@@ -677,6 +628,7 @@ def _generate_two_turn_response(
             self,
             prompt=second_prompt,
             requested_max_tokens=max_tokens,
+            context_budget=context_budget,
         )
         second = _request(
             self,
@@ -714,7 +666,7 @@ def _generate_two_turn_response(
     response.finish_reason = finish_reasons
     response.usage = usages
     response.stages_by_rollout = stages_by_rollout
-    return _postprocess_choice_response(doc, response)
+    return response
 
 
 @cached(SamplingMethod.GENERATIVE)
@@ -761,6 +713,8 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                 for task_name in task_names
             ]
             prompts = [template.format(query=context) for template, context in zip(templates, contexts)]
+            for task_name, prompt_text in zip(task_names, prompts):
+                _validate_raw_question_contract(task_name, prompt_text)
             max_tokens = split[0].generation_size
             rollout_n = int(split[0].num_samples)
             stops = split[0].stop_sequences
@@ -789,10 +743,12 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                     )
                     continue
                 requested_max_tokens = _effective_max_tokens(task_names[position], max_tokens)
+                context_budget = _effective_context_budget(task_names[position], int(self.max_length))
                 context_fit = _fit_request_to_context(
                     self,
                     prompt=prompts[position],
                     requested_max_tokens=requested_max_tokens,
+                    context_budget=context_budget,
                 )
                 work_items.append(
                     (
@@ -809,6 +765,7 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                 position: int,
                 missing: list[int],
                 context_fit: _RequestContextFit,
+                context_budget: int | None,
             ) -> ModelResponse:
                 queries = _multi_turn_queries(split_docs[position])
                 if queries:
@@ -823,6 +780,7 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                         stops=stops,
                         first_template=templates[position],
                         first_context_fit=context_fit,
+                        context_budget=context_budget,
                     )
                 response = _request(
                     self,
@@ -835,7 +793,7 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                     truncate_prompt_tokens=context_fit.truncate_prompt_tokens,
                     task_name=task_names[position],
                 )
-                return _postprocess_choice_response(split_docs[position], response)
+                return response
 
             with ThreadPoolExecutor(self.concurrent_requests) as executor:
                 futures: dict[
@@ -850,7 +808,13 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                     _requested_max_tokens,
                     context_fit,
                 ) in work_items:
-                    future = executor.submit(generate_one, position, missing, context_fit)
+                    future = executor.submit(
+                        generate_one,
+                        position,
+                        missing,
+                        context_fit,
+                        _effective_context_budget(task_names[position], int(self.max_length)),
+                    )
                     futures[future] = (position, sample_index, missing, existing, context_fit)
 
                 for future in tqdm(
