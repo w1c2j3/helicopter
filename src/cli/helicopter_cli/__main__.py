@@ -16,7 +16,7 @@ from .commands import (
     build_takeoff_plan,
     prepend_venv_path,
 )
-from .config import load_config
+from .config import load_config, merge_model_catalog
 from .env import DEFAULT_ENV_FILE, load_env
 from .eval_batch import run_batch
 from .eval_run import DEFAULT_SERVER_TIMEOUT_S, run_eval
@@ -34,6 +34,10 @@ from .runner import run_command
 
 def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", help="TOML config path; defaults to the newest configs/local/*.toml")
+    parser.add_argument(
+        "--model-catalog",
+        help="optional model inventory TOML; kept separate from one-benchmark configs",
+    )
     parser.add_argument("--env-file", default=DEFAULT_ENV_FILE, help="dotenv file to load first")
     parser.add_argument("--dry-run", action="store_true", help="print the command without executing it")
 
@@ -347,6 +351,8 @@ def main(argv: list[str] | None = None) -> int:
     root = find_root()
     env, _ = load_env(root, args.env_file)
     config, _ = load_config(root, args.config)
+    if getattr(args, "model_catalog", None):
+        merge_model_catalog(config, root=root, catalog_path=str(args.model_catalog))
     prepend_venv_path(env, root, config)
 
     if getattr(args, "eval_command", None) == "run":

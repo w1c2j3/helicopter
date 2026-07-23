@@ -1,0 +1,76 @@
+# g1h benchmark specification; scoring remains LightEval task-native.
+
+[benchmark]
+field = "coding"
+ordinal = 57
+name = "global_mmlu_all_swa_mcf_computer_security"
+label = "global_mmlu_all_swa_mcf:computer_security"
+task = "global_mmlu_all_swa_mcf:computer_security"
+allowed_modes = ["naive_cot", "normal_cot", "naive_nocot", "normal_nocot"]
+
+[dataset]
+source = "CohereForAI/Global-MMLU [sw]"
+source_status = "lighteval_registry"
+prompt_contract = "raw_question_only"
+gold_contract = "final_answer_only"
+
+[prompt]
+format = "choice"
+raw_question_only = true
+mode = "normal_nocot"
+template = "User✿{query}✿\nBot✿<think></think"
+add_instructions = false
+add_fewshot_cue = false
+
+[prompt.templates]
+naive_cot = "User: {query}\\nAssistant: <think"
+naive_nocot = "User: {query}\\nAssistant: <think></think"
+normal_cot = "User✿{query}✿\\nBot✿<think"
+normal_nocot = "User✿{query}✿\\nBot✿<think></think"
+
+[scoring]
+provider = "lighteval"
+metric_source = "task_default"
+
+[evaluation]
+metric = "native"
+avg_k = 1
+rollout_n = 1
+target_generations_per_benchmark = 5000
+large_benchmark_generation_threshold = 20000
+large_benchmark_sample_rate = 0.2
+
+[sampling]
+max_tokens = 128
+context_budget = 8192
+temperature = 0.96
+top_p = 0.76
+top_k = 32
+presence_penalty = 1.0
+frequency_penalty = 0.1
+penalty_decay = 0.988
+
+
+[stops]
+inherit_task_stops = false
+
+[stops.domains]
+coding = ["✿"]
+
+[stops.formats]
+python_function = ["\n```"]
+python_program = ["\n```"]
+python_snippet = ["\n```"]
+diff_patch = ["\n```"]
+generic_code = ["\n```"]
+
+[lighteval]
+provider = "openai"
+output_dir = "results/lighteval"
+save_details = false
+dataset_loading_processes = 1
+load_tasks_multilingual = true
+custom_tasks = "src/cli/helicopter_cli/lighteval_rwkv_skills_tasks.py"
+concurrent_requests = 8
+request_timeout = 900
+tasks = ["global_mmlu_all_swa_mcf:computer_security"]
