@@ -28,6 +28,11 @@ type Comparison = {
 type BenchmarkRow = {
   column: MatrixColumn;
   comparisons: Comparison[];
+  improvementCount: number;
+  regressionCount: number;
+  weaknessCount: number;
+  missingCount: number;
+  severity: number;
 };
 
 type DiagnosticItem = {
@@ -40,6 +45,17 @@ type ParameterDiagnostic = {
   weakest: DiagnosticItem[];
   regressions: DiagnosticItem[];
   missing: number;
+};
+
+type ViewMode = "all" | "improvements" | "regressions" | "weaknesses" | "missing";
+type SortMode = "issues" | "benchmark";
+
+const VIEW_LABELS: Record<ViewMode, string> = {
+  all: "全部",
+  improvements: "提升",
+  regressions: "回退",
+  weaknesses: "弱项",
+  missing: "缺失",
 };
 
 function generationTimestamp(model: string): number {
@@ -111,12 +127,14 @@ function AverageDelta({ group }: { group: ParameterGroup }) {
 }
 
 export function GenerationalBenchmarkMatrix({ matrix }: { matrix: LeaderboardMatrix }) {
-  const initialDomain = matrix.domains.find((domain) => domain.columns.length) ?? matrix.domains[0];
+  const initialDomain = matrix.domains.find((item) => item.columns.length) ?? matrix.domains[0];
   const [domainKey, setDomainKey] = useState(initialDomain?.key ?? "knowledge");
   const [query, setQuery] = useState("");
-  const [reverseBenchmarks, setReverseBenchmarks] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>("all");
+  const [sortMode, setSortMode] = useState<SortMode>("issues");
   const domain = matrix.domains.find((item) => item.key === domainKey) ?? initialDomain;
   const groups = useMemo(() => groupsForDomain(domain), [domain]);
+
   const diagnostics = useMemo<ParameterDiagnostic[]>(() => {
     if (!domain) return [];
     return groups.map((group) => {
@@ -137,7 +155,7 @@ export function GenerationalBenchmarkMatrix({ matrix }: { matrix: LeaderboardMat
           .slice(0, 3)
           .map((item) => ({ benchmark: item.benchmark, value: item.current })),
         regressions: values
-          .filter((item): item is typeof item & { delta: number } => item.delta != null && item.delta < 0)
+          .filter((item): item is typeof item & { delta: number } => item.delta != null && item.delta < -0.05)
           .sort((left, right) => left.delta - right.delta)
           .slice(0, 3)
           .map((item) => ({ benchmark: item.benchmark, value: item.delta })),
@@ -146,29 +164,74 @@ export function GenerationalBenchmarkMatrix({ matrix }: { matrix: LeaderboardMat
     });
   }, [domain, groups]);
 
-  const rows = useMemo(() => {
+  const allRows = useMemo(() => {
     if (!domain) return [];
-    const normalizedQuery = query.trim().toLowerCase();
-    const result: BenchmarkRow[] = domain.columns
-      .map((column, index) => ({
+    return domain.columns.map((column, index): BenchmarkRow => {
+      const comparisons = groups.map((group) => {
+        const current = group.current.cells[index];
+        const previous = group.previous?.cells[index] ?? null;
+        return {
+          group,
+          current,
+          previous,
+          delta: current?.percent == null || previous?.percent == null
+            ? null
+            : current.percent - previous.percent,
+        };
+      });
+      const weaknessCount = comparisons.filter((comparison) =>
+        diagnostics
+          .find((item) => item.param === comparison.group.param)
+          ?.weakest.some((item) => item.benchmark === column.label),
+      ).length;
+      const regressionDeltas = comparisons
+        .map((comparison) => comparison.delta)
+        .filter((delta): delta is number => delta != null && delta < -0.05);
+      const improvementCount = comparisons.filter(
+        (comparison) => comparison.delta != null && comparison.delta > 0.05,
+      ).length;
+      const missingCount = comparisons.filter(
+        (comparison) => comparison.current?.percent == null || comparison.previous?.percent == null,
+      ).length;
+      return {
         column,
-        comparisons: groups.map((group) => {
-          const current = group.current.cells[index];
-          const previous = group.previous?.cells[index] ?? null;
-          return {
-            group,
-            current,
-            previous,
-            delta: current?.percent == null || previous?.percent == null
-              ? null
-              : current.percent - previous.percent,
-          };
-        }),
-      }))
+        comparisons,
+        improvementCount,
+        regressionCount: regressionDeltas.length,
+        weaknessCount,
+        missingCount,
+        severity: regressionDeltas.reduce((sum, delta) => sum + Math.abs(delta), 0)
+          + weaknessCount * 5
+          + missingCount * 8,
+      };
+    });
+  }, [diagnostics, domain, groups]);
+
+  const issueCounts = useMemo<Record<ViewMode, number>>(() => ({
+    all: allRows.length,
+    improvements: allRows.filter((row) => row.improvementCount).length,
+    regressions: allRows.filter((row) => row.regressionCount).length,
+    weaknesses: allRows.filter((row) => row.weaknessCount).length,
+    missing: allRows.filter((row) => row.missingCount).length,
+  }), [allRows]);
+
+  const rows = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return allRows
       .filter((row) => !normalizedQuery || row.column.label.toLowerCase().includes(normalizedQuery))
-      .sort((left, right) => left.column.label.localeCompare(right.column.label));
-    return reverseBenchmarks ? result.reverse() : result;
-  }, [domain, groups, query, reverseBenchmarks]);
+      .filter((row) => {
+        if (viewMode === "improvements") return row.improvementCount > 0;
+        if (viewMode === "regressions") return row.regressionCount > 0;
+        if (viewMode === "weaknesses") return row.weaknessCount > 0;
+        if (viewMode === "missing") return row.missingCount > 0;
+        return true;
+      })
+      .sort((left, right) => (
+        sortMode === "issues"
+          ? right.severity - left.severity || left.column.label.localeCompare(right.column.label)
+          : left.column.label.localeCompare(right.column.label)
+      ));
+  }, [allRows, query, sortMode, viewMode]);
 
   if (!domain || !groups.length) {
     return <div className="empty">暂无模拟评测数据。</div>;
@@ -197,7 +260,8 @@ export function GenerationalBenchmarkMatrix({ matrix }: { matrix: LeaderboardMat
               onClick={() => {
                 setDomainKey(item.key);
                 setQuery("");
-                setReverseBenchmarks(false);
+                setViewMode("all");
+                setSortMode("issues");
               }}
             >
               {item.label}<span>{item.columns.length}</span>
@@ -212,9 +276,9 @@ export function GenerationalBenchmarkMatrix({ matrix }: { matrix: LeaderboardMat
       </div>
 
       <div className="generation-context">
-        <div>
+        <div className="evaluation-purpose">
           <strong>{domain.title}</strong>
-          <span>Benchmark 为行 · 四个参数量同表 · 每组仅比较当前代与上一代</span>
+          <span>当前表现 / 代际变化 / 真实弱项与缺失</span>
         </div>
         <span className="generation-legend">
           <i className="current-dot" /> 当前代
@@ -223,46 +287,53 @@ export function GenerationalBenchmarkMatrix({ matrix }: { matrix: LeaderboardMat
         </span>
       </div>
 
-      <div className="model-diagnostics">
-        <div className="diagnostic-title">
-          <strong>模型缺陷</strong>
-          <span>橙色=绝对弱项</span>
-          <span>红色=代际回退</span>
+      <div className="issue-toolbar">
+        <div className="issue-view-tabs" role="group" aria-label="评测结论筛选">
+          {(Object.keys(VIEW_LABELS) as ViewMode[]).map((mode) => (
+            <button
+              type="button"
+              key={mode}
+              className={`${mode} ${viewMode === mode ? "active" : ""}`}
+              onClick={() => setViewMode(mode)}
+            >
+              {VIEW_LABELS[mode]} <strong>{issueCounts[mode]}</strong>
+            </button>
+          ))}
         </div>
-        {diagnostics.map((diagnostic) => (
-          <div className="parameter-diagnostic" key={diagnostic.param}>
-            <header>
-              <strong>{diagnostic.param}</strong>
-              <span>{diagnostic.weakest.length + diagnostic.regressions.length + diagnostic.missing} issues</span>
-            </header>
-            <div className="diagnostic-line weak">
-              <b>弱</b>
-              {diagnostic.weakest.map((item) => (
-                <button type="button" key={item.benchmark} onClick={() => setQuery(item.benchmark)} title={item.benchmark}>
-                  {item.benchmark} {item.value.toFixed(1)}
-                </button>
-              ))}
-            </div>
-            <div className="diagnostic-line regression">
-              <b>退</b>
-              {diagnostic.regressions.length ? diagnostic.regressions.map((item) => (
-                <button type="button" key={item.benchmark} onClick={() => setQuery(item.benchmark)} title={item.benchmark}>
-                  {item.benchmark} {item.value.toFixed(1)}
-                </button>
-              )) : <span>无回退</span>}
-            </div>
-          </div>
-        ))}
+        <div className="parameter-issue-summary">
+          {diagnostics.map((diagnostic) => (
+            <span
+              key={diagnostic.param}
+              title={[
+                `弱项: ${diagnostic.weakest.map((item) => `${item.benchmark} ${item.value.toFixed(1)}`).join(", ") || "无"}`,
+                `回退: ${diagnostic.regressions.map((item) => `${item.benchmark} ${item.value.toFixed(1)}`).join(", ") || "无"}`,
+                `缺失: ${diagnostic.missing}`,
+              ].join("\n")}
+            >
+              <b>{diagnostic.param}</b>
+              <i className="weak">弱{diagnostic.weakest.length}</i>
+              <i className="regression">退{diagnostic.regressions.length}</i>
+              {diagnostic.missing ? <i className="missing">缺{diagnostic.missing}</i> : null}
+            </span>
+          ))}
+        </div>
+        <button
+          className="issue-sort"
+          type="button"
+          onClick={() => setSortMode((value) => value === "issues" ? "benchmark" : "issues")}
+        >
+          排序：{sortMode === "issues" ? "缺陷优先" : "Benchmark"}
+        </button>
       </div>
 
       <div className="generation-table-wrap">
         <table className="generation-table generation-table-all-params">
           <thead>
             <tr className="parameter-header-row">
-              <th className="benchmark-column" rowSpan={2}>
-                <button type="button" onClick={() => setReverseBenchmarks((value) => !value)}>
-                  Benchmark {reverseBenchmarks ? "↓" : "↑"}
-                </button>
+              <th className="benchmark-column" rowSpan={2}>Benchmark</th>
+              <th className="signal-column" rowSpan={2}>
+                <span>信号</span>
+                <small>升/退/弱/缺</small>
               </th>
               <th className="metric-column" rowSpan={2}>Method<br />Metric</th>
               <th className="sample-column" rowSpan={2}>Samples</th>
@@ -290,36 +361,60 @@ export function GenerationalBenchmarkMatrix({ matrix }: { matrix: LeaderboardMat
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
-              <tr key={row.column.key}>
-                <td className="benchmark-column"><strong>{row.column.label}</strong></td>
-                <td className="metric-column">
-                  <span>{row.column.eval_method}</span>
-                  <small>{row.column.metric ?? "score"}</small>
-                </td>
-                <td className="sample-column">{row.column.num_samples?.toLocaleString() ?? "—"}</td>
-                {row.comparisons.flatMap((comparison) => [
-                  <td className="model-score-column current-model group-start" key={`${comparison.group.param}:current`}>
-                    <ScoreValue
-                      cell={comparison.current}
-                      tone={comparison.delta != null && comparison.delta < 0
-                        ? "regression"
-                        : diagnostics
-                          .find((item) => item.param === comparison.group.param)
-                          ?.weakest.some((item) => item.benchmark === row.column.label)
-                          ? "weak"
-                          : "current"}
-                    />
-                  </td>,
-                  <td className="model-score-column previous-model" key={`${comparison.group.param}:previous`}>
-                    <ScoreValue cell={comparison.previous} tone="previous" />
-                  </td>,
-                  <td className="delta-column" key={`${comparison.group.param}:delta`}>
-                    <DeltaValue value={comparison.delta} />
-                  </td>,
-                ])}
-              </tr>
-            ))}
+            {rows.map((row) => {
+              const signalTitle = row.comparisons.map((comparison) => {
+                const weak = diagnostics
+                  .find((item) => item.param === comparison.group.param)
+                  ?.weakest.some((item) => item.benchmark === row.column.label);
+                const delta = comparison.delta == null
+                  ? "不可比较"
+                  : `${comparison.delta > 0 ? "+" : ""}${comparison.delta.toFixed(1)}`;
+                return `${comparison.group.param}: Δ${delta}${weak ? " · 弱项" : ""}`;
+              }).join("\n");
+              return (
+                <tr key={row.column.key}>
+                  <td className="benchmark-column">
+                    <strong title={row.column.label}>{row.column.label}</strong>
+                  </td>
+                  <td className="signal-column" title={signalTitle}>
+                    <span className="signal-set">
+                      {row.improvementCount ? <b className="improvement">↑{row.improvementCount}</b> : null}
+                      {row.regressionCount ? <b className="regression">↓{row.regressionCount}</b> : null}
+                      {row.weaknessCount ? <b className="weak">弱{row.weaknessCount}</b> : null}
+                      {row.missingCount ? <b className="missing">缺{row.missingCount}</b> : null}
+                      {!row.improvementCount && !row.regressionCount && !row.weaknessCount && !row.missingCount
+                        ? <b className="neutral">—</b>
+                        : null}
+                    </span>
+                  </td>
+                  <td className="metric-column">
+                    <span>{row.column.eval_method}</span>
+                    <small>{row.column.metric ?? "score"}</small>
+                  </td>
+                  <td className="sample-column">{row.column.num_samples?.toLocaleString() ?? "—"}</td>
+                  {row.comparisons.flatMap((comparison) => [
+                    <td className="model-score-column current-model group-start" key={`${comparison.group.param}:current`}>
+                      <ScoreValue
+                        cell={comparison.current}
+                        tone={comparison.delta != null && comparison.delta < -0.05
+                          ? "regression"
+                          : diagnostics
+                            .find((item) => item.param === comparison.group.param)
+                            ?.weakest.some((item) => item.benchmark === row.column.label)
+                            ? "weak"
+                            : "current"}
+                      />
+                    </td>,
+                    <td className="model-score-column previous-model" key={`${comparison.group.param}:previous`}>
+                      <ScoreValue cell={comparison.previous} tone="previous" />
+                    </td>,
+                    <td className="delta-column" key={`${comparison.group.param}:delta`}>
+                      <DeltaValue value={comparison.delta} />
+                    </td>,
+                  ])}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

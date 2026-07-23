@@ -1974,3 +1974,212 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
     max-height: none;
   }
 }
+
+/* Evaluation-first density: conclusions live in the matrix instead of separate cards. */
+.dashboard-shell .issue-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 29px;
+  padding: 2px 5px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border-strong);
+  background: #10141b;
+  white-space: nowrap;
+  font: 7px var(--mono);
+}
+
+.issue-view-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.issue-view-tabs button,
+.issue-sort {
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid #2d3541;
+  border-radius: 2px;
+  background: #171c24;
+  color: #9ca7b6;
+  font: 7px var(--mono);
+}
+
+.issue-view-tabs button strong {
+  margin-left: 2px;
+  color: #d9e2ed;
+  font-size: 7px;
+}
+
+.issue-view-tabs button.active {
+  border-color: #5c81b5;
+  background: #1a2a40;
+  color: #eef5ff;
+}
+
+.issue-view-tabs button.improvements.active {
+  border-color: #347c5c;
+  background: #14271f;
+}
+
+.issue-view-tabs button.regressions.active {
+  border-color: #9e4352;
+  background: #321a20;
+}
+
+.issue-view-tabs button.weaknesses.active {
+  border-color: #92703b;
+  background: #302515;
+}
+
+.parameter-issue-summary {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.parameter-issue-summary > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  height: 20px;
+  padding: 0 5px;
+  border-left: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.parameter-issue-summary b {
+  color: #dce6f2;
+  font-size: 7px;
+}
+
+.parameter-issue-summary i {
+  font-style: normal;
+  font-size: 6px;
+}
+
+.parameter-issue-summary .weak {
+  color: #e7ad55;
+}
+
+.parameter-issue-summary .regression {
+  color: #ff7182;
+}
+
+.parameter-issue-summary .missing {
+  color: #a6afbb;
+}
+
+.issue-sort {
+  flex: 0 0 auto;
+}
+
+.dashboard-shell .generation-table-wrap {
+  max-height: calc(100vh - 161px);
+}
+
+.dashboard-shell .generation-table-all-params {
+  min-width: 1270px;
+}
+
+.dashboard-shell .generation-table-all-params .benchmark-column {
+  width: 166px;
+}
+
+.dashboard-shell .generation-table-all-params .signal-column {
+  position: sticky;
+  z-index: 3;
+  left: 166px;
+  width: 66px;
+  padding: 0 3px;
+  background: var(--bg-card);
+  text-align: left;
+}
+
+.dashboard-shell .generation-table-all-params .metric-column {
+  left: 232px;
+  width: 64px;
+}
+
+.dashboard-shell .generation-table-all-params .sample-column {
+  left: 296px;
+  width: 46px;
+}
+
+.dashboard-shell .generation-table-all-params thead .benchmark-column,
+.dashboard-shell .generation-table-all-params thead .signal-column,
+.dashboard-shell .generation-table-all-params thead .metric-column,
+.dashboard-shell .generation-table-all-params thead .sample-column {
+  z-index: 8;
+  background: #171c25;
+}
+
+.dashboard-shell .generation-table-all-params thead .signal-column span,
+.dashboard-shell .generation-table-all-params thead .signal-column small {
+  display: block;
+}
+
+.dashboard-shell .generation-table-all-params thead .signal-column small {
+  margin-top: 2px;
+  color: #697586;
+  font-size: 5px;
+}
+
+.signal-set {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.signal-set b {
+  min-width: 0;
+  padding: 1px 2px;
+  border-radius: 2px;
+  font: 700 6px var(--mono);
+}
+
+.signal-set .improvement {
+  background: #153224;
+  color: #54d895;
+}
+
+.signal-set .regression {
+  background: #3a1b22;
+  color: #ff7182;
+}
+
+.signal-set .weak {
+  background: #342715;
+  color: #e8ad54;
+}
+
+.signal-set .missing,
+.signal-set .neutral {
+  background: #242a32;
+  color: #929dab;
+}
+
+.dashboard-shell .generation-table-all-params .model-score-column {
+  width: 96px;
+}
+
+.dashboard-shell .generation-table-all-params .generation-score {
+  grid-template-columns: 34px 38px;
+}
+
+.dashboard-shell .generation-table tbody tr:hover .signal-column,
+.dashboard-shell .generation-table tbody tr:hover .metric-column,
+.dashboard-shell .generation-table tbody tr:hover .sample-column {
+  background: #181e28;
+}
+
+@media (max-width: 1200px) {
+  .parameter-issue-summary {
+    display: none;
+  }
+}

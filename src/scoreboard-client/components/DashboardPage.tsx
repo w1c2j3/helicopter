@@ -40,8 +40,8 @@ export function DashboardPage({ meta, leaderboard, isMockData }: Props) {
       <div className="matrix-page-heading">
         <div>
           <span>RWKV INTERNAL REGRESSION MATRIX</span>
-          <h2>RWKV 内部代际缺陷与回归</h2>
-          <p>只比较内部 RWKV 权重检查点；同参数量当前代对上一代，不进行跨架构或跨尺寸排名。</p>
+          <h2>RWKV 内部代际评测矩阵</h2>
+          <p>只比较内部 RWKV 权重检查点；同参数量当前代对上一代，不进行跨参数量排名。</p>
         </div>
         <button className="btn" type="button" onClick={refresh}>
           {isMockData ? "刷新模拟数据" : "刷新数据"}
