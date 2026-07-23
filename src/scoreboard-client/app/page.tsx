@@ -3,6 +3,7 @@ import { DashboardPage } from "../components/DashboardPage";
 import { HistoryPage } from "../components/HistoryPage";
 import { TuningPage } from "../components/TuningPage";
 import { api } from "../lib/api";
+import { createMockLeaderboard, createMockMeta } from "../lib/mockLeaderboard";
 
 export const dynamic = "force-dynamic";
 
@@ -35,16 +36,25 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
   const isTuning = page === "normal" || page === "tuning";
   const isDashboard = !isHistory && !isTuning && page !== "admin";
   const needsLeaderboard = isDashboard || isTuning;
+  const useMockData = process.env.SCOREBOARD_USE_MOCK_DATA === "true";
   let loadError: string | null = null;
-  const meta = needsLeaderboard ? await api.meta().catch((error: unknown) => {
-    loadError = error instanceof Error ? error.message : String(error);
-    return null;
-  }) : null;
+  const meta = needsLeaderboard
+    ? useMockData
+      ? createMockMeta()
+      : await api.meta().catch((error: unknown) => {
+          loadError = error instanceof Error ? error.message : String(error);
+          return null;
+        })
+    : null;
   const selectedModel = meta ? model || meta.auto_label : model;
-  const leaderboard = meta ? await api.leaderboard(selectedModel, view).catch((error: unknown) => {
-    loadError = error instanceof Error ? error.message : String(error);
-    return null;
-  }) : null;
+  const leaderboard = meta
+    ? useMockData
+      ? createMockLeaderboard()
+      : await api.leaderboard(selectedModel, view).catch((error: unknown) => {
+          loadError = error instanceof Error ? error.message : String(error);
+          return null;
+        })
+    : null;
 
   return (
     <main className="app-shell">
@@ -69,7 +79,14 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
       ) : page === "admin" ? (
         <AdminPage />
       ) : meta && leaderboard ? (
-        <DashboardPage meta={meta} leaderboard={leaderboard} model={selectedModel} view={view} tab={tab} />
+        <DashboardPage
+          meta={meta}
+          leaderboard={leaderboard}
+          model={selectedModel}
+          view={view}
+          tab={tab}
+          isMockData={useMockData}
+        />
       ) : (
         <div className="empty">暂无数据。</div>
       )}

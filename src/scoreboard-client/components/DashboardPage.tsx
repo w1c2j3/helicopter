@@ -5,7 +5,7 @@ import { useState } from "react";
 import { api } from "../lib/api";
 import type { LeaderboardResponse } from "../lib/dtos/api/leaderboard";
 import type { MetaResponse } from "../lib/dtos/api/meta";
-import { CapabilityMatrix } from "./MatrixScoreboard";
+import { GenerationalBenchmarkMatrix } from "./GenerationalBenchmarkMatrix";
 
 interface Props {
   meta: MetaResponse;
@@ -13,12 +13,17 @@ interface Props {
   model: string;
   view: string;
   tab: string;
+  isMockData: boolean;
 }
 
-export function DashboardPage({ meta, leaderboard }: Props) {
+export function DashboardPage({ meta, leaderboard, isMockData }: Props) {
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const refresh = async () => {
     setRefreshError(null);
+    if (isMockData) {
+      window.location.reload();
+      return;
+    }
     try {
       await api.refresh();
       window.location.reload();
@@ -34,13 +39,15 @@ export function DashboardPage({ meta, leaderboard }: Props) {
       {refreshError ? <div className="error-bar">刷新失败：{refreshError}</div> : null}
       <div className="matrix-page-heading">
         <div>
-          <span>NAIVE MODEL LEADERBOARD</span>
-          <h2>模型 × Benchmark 热力榜</h2>
-          <p>保留领域导航；每个领域内纵向列出完整模型名，横向展示该领域全部 Benchmark。</p>
+          <span>GENERATION BENCHMARK MATRIX</span>
+          <h2>同参数量 · 当前一代 vs 上一代</h2>
+          <p>Benchmark 纵向排列，模型横向排列；不同参数量完全隔离，不进行无意义的跨尺寸排名。</p>
         </div>
-        <button className="btn" type="button" onClick={refresh}>刷新数据</button>
+        <button className="btn" type="button" onClick={refresh}>
+          {isMockData ? "刷新模拟数据" : "刷新数据"}
+        </button>
       </div>
-      <CapabilityMatrix matrix={leaderboard.matrix} />
+      <GenerationalBenchmarkMatrix matrix={leaderboard.matrix} />
     </>
   );
 }
