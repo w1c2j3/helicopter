@@ -12,6 +12,8 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from helicopter_cli.lighteval_answer_adapters import adapt_answer
+
 
 _LOCK = threading.Lock()
 
@@ -195,7 +197,10 @@ def _reference(doc: Mapping[str, Any]) -> str:
             # candidate must enumerate.
             if len(choices) > 1 and len(indices) == 1:
                 label = chr(ord("A") + index) if index < 26 else str(index + 1)
-                value = f"{label}. {value}"
+                # The model-side choice adapter returns this same canonical
+                # label. Keep the DB reference symmetric instead of storing
+                # the full option text on only the gold side.
+                value = f" {label}"
             selected.append(value)
         if selected:
             return _text(selected)
@@ -279,6 +284,7 @@ def sampling_config_from_env(values: Mapping[str, str]) -> dict[str, Any]:
             task_request_policy = {
                 "task": str(task_name),
                 "domain": task_policy.get("domain"),
+                "format": task_policy.get("format"),
                 "prompt_template": task_policy.get("prompt_template"),
                 "inherit_task_stops": bool(task_policy.get("inherit_task_stops", True)),
                 "stop": _jsonable(task_policy.get("stop")),
@@ -390,6 +396,13 @@ def write_lighteval_tracker(tracker: Any) -> list[str]:
     model = str(os.environ.get("HELICOPTER_SCOREBOARD_MODEL_NAME") or tracker.general_config_logger.model_name)
     rows: dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]] = {}
     sampling = _sampling_config()
+    request_policy = _json_env("HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY")
+    configured_task_policy: Mapping[str, Any] = {}
+    task_policies = request_policy.get("tasks")
+    if isinstance(task_policies, Mapping) and len(task_policies) == 1:
+        only_policy = next(iter(task_policies.values()))
+        if isinstance(only_policy, Mapping):
+            configured_task_policy = only_policy
     for task, details in tracker.details_logger.details.items():
         completions: list[dict[str, Any]] = []
         evals: list[dict[str, Any]] = []
@@ -401,7 +414,17 @@ def write_lighteval_tracker(tracker: Any) -> list[str]:
             for repeat_index in range(_rollout_count(response)):
                 rollout = _rollout_response(response, repeat_index)
                 completion_answer = _completion_answer(rollout)
-                answer = _answer(rollout)
+                answer = adapt_answer(
+                    completion_answer,
+                    domain=configured_task_policy.get("domain"),
+                    request_format=configured_task_policy.get("format"),
+                    prompt=str(prompt),
+                    stops=(
+                        configured_task_policy.get("stop")
+                        if isinstance(configured_task_policy.get("stop"), list)
+                        else []
+                    ),
+                )
                 official_passed, rollout_metrics = _rollout_official_result(response, repeat_index)
                 passed = _passed(metric) if official_passed is None else official_passed
                 key = {"sample_index": index, "repeat_index": repeat_index, "pass_index": 0}
@@ -871,7 +894,13 @@ class LightevalCheckpointSession:
             repeat_indices=repeat_indices,
             generation_size=generation_size,
         )
-        return self._loop.run_until_complete(self._write(payloads))
+        inserted = 0
+        # Keep each completed rollout durable independently.  A request with
+        # n>1 returns several choices at once, but a later process failure
+        # must not erase the choices that were already available.
+        for payload in payloads:
+            inserted += self._loop.run_until_complete(self._write([payload]))
+        return inserted
 
 
     def __exit__(self, exc_type: Any, exc: BaseException | None, traceback: Any) -> None:

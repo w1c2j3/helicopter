@@ -21,6 +21,7 @@ from lighteval.utils.cache_management import cached
 
 
 _TEMPLATE_ENV = "HELICOPTER_PROMPT_TEMPLATE"
+_OFFICIAL_USER_STOP = "\nUser:"
 _TASK_REQUEST_POLICY_ENV = "HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"
 
 
@@ -37,6 +38,17 @@ def _strip_prefill_continuation(text: str, template: str | None = None) -> str:
     if prompt_template.rstrip().endswith(("<think", "</think")) and text.startswith(">"):
         return text[1:].lstrip()
     return text
+
+
+def _truncate_official_stops(text: str) -> str:
+    """Apply RWKV's text-level stop guards after the endpoint response."""
+
+    positions = [
+        position
+        for position in (text.find(_OFFICIAL_USER_STOP), text.find("\x00"))
+        if position >= 0
+    ]
+    return text[: min(positions)] if positions else text
 
 
 def _restore_structured_prefill(
@@ -108,6 +120,9 @@ def _configured_stops(task_name: str | None, task_stops: list[str] | None) -> li
     policy = _task_request_policy(task_name)
     if not policy:
         return task_stops
+    prompt_mode = str(policy.get("prompt_mode") or "").strip().lower()
+    if prompt_mode.startswith("naive"):
+        return [_OFFICIAL_USER_STOP]
     return _merge_stops(
         task_stops,
         policy.get("stop"),
@@ -140,6 +155,11 @@ def _configured_prompt_template(task_name: str | None, default: str) -> str:
     if not isinstance(value, str) or "{query}" not in value:
         raise RuntimeError("task prompt_template must be a string containing {query}")
     return value
+
+
+def _render_prompt(template: str, query: str, *, task_name: str | None = None) -> str:
+    """Render the benchmark-owned template without assembling hidden context."""
+    return template.format(query=str(query))
 
 
 def _validate_raw_question_contract(task_name: str | None, prompt: str) -> None:
@@ -360,7 +380,10 @@ def _request(
             choices = sorted(body.get("choices") or [], key=lambda item: item.get("index", 0))
             if not choices:
                 raise RuntimeError(f"completion response has no choices: {body!r}")
-            raw_texts = [str(choice.get("text") or "") for choice in choices]
+            raw_texts = [
+                _truncate_official_stops(str(choice.get("text") or ""))
+                for choice in choices
+            ]
             finish_reasons = [choice.get("finish_reason") for choice in choices]
             configured_fence_stop = "\n```" in (payload.get("stop") or [])
             texts = [
@@ -706,13 +729,16 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
             disable=self.disable_tqdm,
         ):
             split_docs = list(split)
-            contexts = [self.prompt_manager._prepare_plain_text(doc) for doc in split_docs]
+            contexts = [str(getattr(doc, "query", "")) for doc in split_docs]
             task_names = [str(getattr(doc, "task_name", "") or dataset_name) for doc in split_docs]
             templates = [
                 _configured_prompt_template(task_name, default_template)
                 for task_name in task_names
             ]
-            prompts = [template.format(query=context) for template, context in zip(templates, contexts)]
+            prompts = [
+                _render_prompt(template, context, task_name=task_name)
+                for template, context, task_name in zip(templates, contexts, task_names)
+            ]
             for task_name, prompt_text in zip(task_names, prompts):
                 _validate_raw_question_contract(task_name, prompt_text)
             max_tokens = split[0].generation_size

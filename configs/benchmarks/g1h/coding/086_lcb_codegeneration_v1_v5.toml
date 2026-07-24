@@ -23,10 +23,10 @@ add_instructions = false
 add_fewshot_cue = false
 
 [prompt.templates]
-naive_cot = "User: {query}\\n\\nAssistant: <think>\\n</think>\\n```python"
-naive_nocot = "User: {query}\\n\\nAssistant: <think>\\n</think>\\n```python"
-normal_cot = "User✿{query}✿\\n\\nBot✿<think>\\n</think>\\n```python"
-normal_nocot = "User✿{query}✿\\n\\nBot✿<think>\\n</think>\\n```python"
+naive_cot = "User: {query}\n\nAssistant: <think>\n</think>\n```python"
+naive_nocot = "User: {query}\n\nAssistant: <think>\n</think>\n```python"
+normal_cot = "User✿{query}✿\n\nBot✿<think>\n</think>\n```python"
+normal_nocot = "User✿{query}✿\n\nBot✿<think>\n</think>\n```python"
 
 [scoring]
 provider = "lighteval"

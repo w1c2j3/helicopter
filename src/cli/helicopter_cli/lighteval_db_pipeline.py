@@ -9,6 +9,7 @@ from lighteval.pipeline import Pipeline
 from lighteval.tasks.lighteval_task import LightevalTask
 from lighteval.tasks.requests import SamplingMethod
 
+from helicopter_cli.lighteval_answer_adapters import adapt_answer
 from helicopter_cli.lighteval_raw_completion import _doc_id, _identity_value, _response_from_rollouts
 from helicopter_cli.scoreboard_bridge import load_lighteval_generation
 
@@ -99,7 +100,7 @@ def _configured_sample_policy() -> dict[str, Any] | None:
     return policy if isinstance(policy, dict) and required <= policy.keys() else None
 
 
-def _configured_request_format() -> str | None:
+def _configured_request_policy() -> dict[str, Any] | None:
     raw = os.environ.get("HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY", "").strip()
     if not raw:
         return None
@@ -112,6 +113,13 @@ def _configured_request_format() -> str | None:
         return None
     entry = next(iter(tasks.values()))
     if not isinstance(entry, dict):
+        return None
+    return entry if isinstance(entry, dict) else None
+
+
+def _configured_request_format() -> str | None:
+    entry = _configured_request_policy()
+    if entry is None:
         return None
     value = entry.get("format")
     return str(value).strip() or None if value is not None else None
@@ -243,42 +251,48 @@ def _post_process_outputs(
     sampling_method_responses: dict[str, list[Any]],
 ) -> None:
     _ORIGINAL_POST_PROCESS_OUTPUTS(self, sampling_method_responses)
-    normalize_code = _configured_request_format() in {
-        "code", "python_function", "python_program", "python_snippet", "diff_patch", "generic_code", "code_completion"
-    }
+    policy = _configured_request_policy() or {}
+    domain = policy.get("domain")
+    request_format = policy.get("format")
+    configured_stops = policy.get("stop")
+    stops = configured_stops if isinstance(configured_stops, list) else []
     for responses in sampling_method_responses.values():
         for response in responses:
             texts = list(getattr(response, "text", None) or [])
             processed = list(getattr(response, "text_post_processed", None) or texts)
-            scored: list[str]
-            if self.pipeline_parameters.remove_reasoning_tags:
-                prompt = getattr(response, "input", None)
-                requires_closing = has_unclosed_reasoning_prefill(prompt)
-                empty_reasoning_prefill = has_empty_reasoning_prefill(prompt)
-                scored = []
-                for index, text in enumerate(texts):
-                    candidate = processed[index] if index < len(processed) else text
-                    if empty_reasoning_prefill:
-                        scored.append(str(text))
-                    elif requires_closing and "</think>" not in str(text).lower():
-                        # Match native LightEval: an unmatched prefilled opening
-                        # tag is not present in the continuation, so the native
-                        # reasoning-tag remover leaves that continuation intact.
-                        # Math extractors can still recover a boxed/final answer
-                        # from a response that reached its token limit.
-                        scored.append(str(candidate))
-                    elif requires_closing:
-                        # The prompt owns the opening think tag. Work from the raw
-                        # response before LightEval removes any quoted tag pair in
-                        # the reasoning, then take everything after its first close.
-                        scored.append(strip_prefilled_reasoning(text, force=True))
-                    else:
-                        scored.append(strip_prefilled_reasoning(candidate))
-            else:
-                scored = [str(value) for value in processed]
-            if normalize_code:
-                scored = [normalize_code_fences(value) for value in scored]
-            response.text_post_processed = scored
+            prompt = str(getattr(response, "input", None) or "")
+            requires_closing = has_unclosed_reasoning_prefill(prompt)
+            empty_reasoning_prefill = has_empty_reasoning_prefill(prompt)
+            scored: list[str] = []
+            for index, text in enumerate(texts):
+                raw = str(text or "")
+                candidate = processed[index] if index < len(processed) else raw
+                # Native LightEval may set text_post_processed to an empty
+                # string when the prompt itself owns the reasoning prefill.
+                # That is not an answer; keep the raw completion available to
+                # the RWKV adapter and to the task metric.
+                if not str(candidate or "").strip():
+                    candidate = raw
+                if empty_reasoning_prefill:
+                    scored.append(raw)
+                elif requires_closing and "</think>" not in raw.lower():
+                    scored.append(str(candidate))
+                elif requires_closing:
+                    scored.append(strip_prefilled_reasoning(raw, force=True))
+                elif self.pipeline_parameters.remove_reasoning_tags:
+                    scored.append(strip_prefilled_reasoning(str(candidate)))
+                else:
+                    scored.append(str(candidate))
+            response.text_post_processed = [
+                adapt_answer(
+                    value,
+                    domain=domain,
+                    request_format=request_format,
+                    prompt=prompt,
+                    stops=stops,
+                )
+                for value in scored
+            ]
 
 
 def _evaluate(self: Pipeline) -> None:

@@ -15,6 +15,7 @@ from typing import Any
 
 
 G1H_TASK_PREFIX = "g1h__"
+PROMPT_MODES = ("naive_cot", "naive_nocot", "normal_cot", "normal_nocot")
 _FEWSHOT_SUFFIX_RE = re.compile(r"\|\d+$")
 
 
@@ -51,18 +52,28 @@ def normalize_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
 
     result = dict(policy)
     result["metric"] = str(result.get("metric", "avg")).strip().lower()
-    if result["metric"] != "avg":
-        raise ValueError("[lighteval.g1h].metric must be 'avg'")
+    if result["metric"] not in {"avg", "native"}:
+        raise ValueError("[lighteval.g1h].metric must be 'avg' or 'native'")
     result["prompt_style"] = str(result.get("prompt_style", "naive")).strip().lower()
     if result["prompt_style"] not in {"naive", "normal"}:
         raise ValueError("[lighteval.g1h].prompt_style must be 'naive' or 'normal'")
+    raw_prompt_mode = result.get("prompt_mode")
+    if raw_prompt_mode is None or not str(raw_prompt_mode).strip():
+        # The legacy g1h policy only declared a style; preserve its historical
+        # CoT default and let no_cot_tasks opt individual benchmarks out.
+        raw_prompt_mode = f"{result['prompt_style']}_cot"
+    result["prompt_mode"] = str(raw_prompt_mode).strip().lower()
+    if result["prompt_mode"] not in PROMPT_MODES:
+        allowed = ", ".join(PROMPT_MODES)
+        raise ValueError(f"prompt_mode must be one of: {allowed}")
+    result["prompt_style"] = result["prompt_mode"].split("_", 1)[0]
 
     result["zero_shot"] = bool(result.get("zero_shot", True))
     if "avg_k" not in result:
         raise ValueError("[lighteval.g1h].avg_k must be set in the TOML configuration")
     result["avg_k"] = _positive_int(result, "avg_k", 1)
     result["rollout_n"] = _positive_int(result, "rollout_n", result["avg_k"])
-    if result["rollout_n"] != result["avg_k"]:
+    if result["metric"] == "avg" and result["rollout_n"] != result["avg_k"]:
         raise ValueError("[lighteval.g1h] requires rollout_n == avg_k for ordinary avg@k")
 
     target_key = "target_generations_per_benchmark"
@@ -98,8 +109,8 @@ def normalize_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
     if result["variant_selection"] not in {"all", "avg_then_gpass"}:
         raise ValueError("[lighteval.g1h].variant_selection must be 'all' or 'avg_then_gpass'")
 
-    result.setdefault("naive_cot_template", "User: {query}\nAssistant: <think")
-    result.setdefault("naive_nocot_template", "User: {query}\nAssistant: <think></think")
+    result.setdefault("naive_cot_template", "User: {query}\n\nAssistant: <think")
+    result.setdefault("naive_nocot_template", "User: {query}\n\nAssistant: <think></think")
     result.setdefault("normal_cot_template", "User✿{query}✿\nBot✿<think")
     result.setdefault("normal_nocot_template", "User✿{query}✿\nBot✿<think></think")
     return result
@@ -201,7 +212,10 @@ def task_uses_cot(canonical_name: str, policy: Mapping[str, Any]) -> bool:
 def format_query(query: str, *, canonical_name: str, policy: Mapping[str, Any]) -> str:
     normalized = normalize_policy(policy)
     cot = task_uses_cot(canonical_name, normalized)
-    style = normalized["prompt_style"]
+    mode = normalized["prompt_mode"]
+    style = mode.split("_", 1)[0]
+    if mode.endswith("_nocot"):
+        cot = False
     key = (
         "normal_cot_template"
         if style == "normal" and cot

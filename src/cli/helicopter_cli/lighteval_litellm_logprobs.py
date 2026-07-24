@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import requests
 from tqdm import tqdm
+
+from helicopter_cli.lighteval_raw_completion import _configured_prompt_template, _render_prompt
 
 
 def _completion_url(base_url: str | None) -> str:
@@ -66,8 +69,16 @@ def patch_litellm_logprobs() -> None:
     def _call_completion_logprobs(self: LiteLLMClient, prompt: str) -> dict[str, Any]:
         url = _completion_url(self.base_url)
         headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        # The endpoint command exports the model credential through the
+        # environment instead of including it in LiteLLM's model args.  Keep
+        # logprob requests on the same auth path as raw completions.
+        api_key = (
+            os.environ.get("HELICOPTER_EVAL_API_KEY")
+            or self.api_key
+            or os.environ.get("OPENAI_API_KEY")
+        )
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         payload = {
             "model": _served_model_name(self.model),
             "prompt": prompt,
@@ -99,7 +110,22 @@ def patch_litellm_logprobs() -> None:
             position=0,
             disable=self.disable_tqdm,
         ):
-            contexts = [self.prompt_manager._prepare_plain_text(doc) for doc in split]
+            default_template = os.environ.get("HELICOPTER_PROMPT_TEMPLATE", "")
+            task_request_policy = os.environ.get("HELICOPTER_LIGHTEEVAL_TASK_REQUEST_POLICY", "")
+            contexts = []
+            for doc in split:
+                task_name = str(getattr(doc, "task_name", "") or "")
+                if default_template or task_request_policy:
+                    template = _configured_prompt_template(task_name, default_template)
+                    contexts.append(
+                        _render_prompt(
+                            template,
+                            str(getattr(doc, "query", "")),
+                            task_name=task_name,
+                        )
+                    )
+                else:
+                    contexts.append(str(getattr(doc, "query", "")))
             jobs: list[tuple[int, str, str]] = []
             for doc_index, (context, doc) in enumerate(zip(contexts, split)):
                 for choice in doc.choices:

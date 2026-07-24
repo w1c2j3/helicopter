@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from .config import default_config_path, dataset_root, resolve_model_entry, resolve_model_path, table
 from .env import env_value, pick
-from .g1h_config import alias_task_specs, normalize_policy, select_task_specs
+from .g1h_config import PROMPT_MODES, alias_task_specs, normalize_policy, select_task_specs
 from .paths import resolve_path
 
 
@@ -72,16 +72,35 @@ def format_hydra_value(value: Any) -> str:
     return str(value)
 
 
-def prompt_template_for_mode(prompt: dict[str, Any]) -> str:
-    """Return the benchmark-owned template selected by [prompt].mode."""
+def resolve_prompt_mode(args: Any, *, env: dict[str, str], prompt: dict[str, Any]) -> str:
+    """Resolve one explicit prompt profile for the whole child process."""
 
-    mode = str(prompt.get("mode", "")).strip()
+    mode = pick(
+        getattr(args, "prompt_mode", None),
+        env_value(env, "HELICOPTER_PROMPT_MODE"),
+        prompt.get("mode"),
+        "normal_nocot",
+    )
+    mode = str(mode).strip().lower()
+    if mode not in PROMPT_MODES:
+        allowed = ", ".join(PROMPT_MODES)
+        raise SystemExit(f"prompt mode must be one of: {allowed}; got {mode!r}")
+    return mode
+
+
+def prompt_template_for_mode(prompt: dict[str, Any], mode: str | None = None) -> str:
+    """Return the benchmark-owned template selected by an explicit mode."""
+
+    mode = str(mode or prompt.get("mode", "")).strip().lower()
     templates = prompt.get("templates", {})
     if isinstance(templates, dict) and mode in templates:
         value = templates[mode]
     else:
         value = prompt.get("template")
-    return str(value or "")
+    template = str(value or "")
+    if mode.startswith("naive"):
+        template = template.replace("User: {query}\nAssistant:", "User: {query}\n\nAssistant:")
+    return template
 
 
 def prepend_venv_path(env: dict[str, str], root: Path, config: dict[str, Any]) -> None:
@@ -281,6 +300,8 @@ def lighteval_model_name(model_name: str, provider: str | None) -> str:
 def lighteval_output_dir(config: dict[str, Any], *, root: Path, env: dict[str, str], args: Any) -> str:
     lighteval = table(config, "lighteval")
     value = pick(getattr(args, "output_dir", None), lighteval.get("output_dir"), "results/lighteval")
+    if getattr(args, "prompt_mode", None) and not getattr(args, "output_dir", None):
+        value = str(Path(str(value)) / str(args.prompt_mode).strip().lower())
     return str(resolve_path(str(value), root=root, env=env))
 
 
@@ -398,6 +419,7 @@ def resolve_lighteval_g1h_policy(
     *,
     env: dict[str, str],
     config: dict[str, Any],
+    prompt_mode: str | None = None,
 ) -> dict[str, Any] | None:
     """Resolve the native g1h avg/rollout policy for the LightEval child.
 
@@ -426,9 +448,9 @@ def resolve_lighteval_g1h_policy(
         prompt = table(config, "prompt")
         if not isinstance(evaluation, dict) or not isinstance(benchmark, dict):
             return None
-        prompt_mode = str(prompt.get("mode", "normal_nocot")).strip().lower()
+        prompt_mode = str(prompt_mode or prompt.get("mode", "normal_nocot")).strip().lower()
         policy = {
-            "metric": "avg",
+            "metric": str(evaluation.get("metric", "avg")),
             "prompt_style": "normal" if prompt_mode.startswith("normal") else "naive",
             "zero_shot": True,
             "avg_k": int(evaluation.get("avg_k", 1)),
@@ -451,6 +473,9 @@ def resolve_lighteval_g1h_policy(
             policy["task_evaluations"] = {task_name: dict(evaluation)}
 
     try:
+        policy = dict(policy)
+        if prompt_mode:
+            policy["prompt_mode"] = prompt_mode
         resolved = normalize_policy(policy)
         tasks = pick(getattr(args, "tasks", None), lighteval.get("tasks"))
         if tasks:
@@ -483,6 +508,7 @@ def resolve_lighteval_task_request_policy(
     config: dict[str, Any],
     selected_tasks: list[str],
     base_sampling: dict[str, Any],
+    prompt_mode: str | None = None,
 ) -> dict[str, Any]:
     """Resolve TOML domain settings to exact LightEval task request settings."""
 
@@ -564,9 +590,11 @@ def resolve_lighteval_task_request_policy(
     benchmark_specs = config.get("_benchmark_specs", {})
     if not isinstance(benchmark_specs, dict):
         raise SystemExit("internal benchmark specification map must be a table")
-    prompt_mode = str(prompt.get("mode", "")).strip()
-    mode_templates = prompt.get("templates", {})
-    if not isinstance(mode_templates, dict):
+    prompt_mode = str(prompt_mode or prompt.get("mode", "normal_nocot")).strip().lower()
+    if prompt_mode not in PROMPT_MODES:
+        allowed = ", ".join(PROMPT_MODES)
+        raise SystemExit(f"prompt mode must be one of: {allowed}; got {prompt_mode!r}")
+    if not isinstance(prompt.get("templates", {}), dict):
         raise SystemExit("[prompt.templates] must be a TOML table")
 
     def benchmark_spec_for_task(
@@ -667,7 +695,15 @@ def resolve_lighteval_task_request_policy(
         format_stops = stop_formats.get(request_format) if request_format else None
         if format_stops is not None and not isinstance(format_stops, list):
             raise SystemExit(f"[stops.formats].{request_format} must be a TOML array")
-        resolved_stops = list(dict.fromkeys([*(domain_stops or []), *(format_stops or [])])) or None
+        configured_stops = [*(domain_stops or []), *(format_stops or [])]
+        if prompt_mode.startswith("naive"):
+            # Official RWKV eval stops on the next User turn or EOD. EOD is
+            # the endpoint EOS token and is intentionally not a text stop.
+            resolved_stops = ["\nUser:"]
+        else:
+            # Normal/chat-format runs retain the configured ✿ delimiter and
+            # also keep the official next-turn guard as a safety net.
+            resolved_stops = list(dict.fromkeys(["\nUser:", *configured_stops])) or None
         format_sampling = sampling_formats.get(request_format, {}) if request_format else {}
         if not isinstance(format_sampling, dict):
             raise SystemExit(f"[sampling.formats.{request_format}] must be a TOML table")
@@ -691,8 +727,18 @@ def resolve_lighteval_task_request_policy(
             raise SystemExit(f"[prompt.formats.{request_format}] must be a TOML table")
         prompt_template = format_prompt.get(
             "template",
-            domain_prompt.get("template", mode_templates.get(prompt_mode, prompt.get("template"))),
+            domain_prompt.get("template", prompt_template_for_mode(prompt, prompt_mode)),
         )
+        if not prompt_template:
+            # Model-agnostic example configs may intentionally leave prompt
+            # assembly to LightEval. Only benchmark-owned configs need the
+            # explicit RWKV template contract.
+            prompt_template = None
+        if prompt_mode.startswith("naive") and isinstance(prompt_template, str):
+            prompt_template = prompt_template.replace(
+                "User: {query}\nAssistant:",
+                "User: {query}\n\nAssistant:",
+            )
         if prompt_template is not None and (
             not isinstance(prompt_template, str) or "{query}" not in prompt_template
         ):
@@ -718,6 +764,7 @@ def resolve_lighteval_task_request_policy(
         task_policy = {
             "domain": domain,
             "format": request_format,
+            "prompt_mode": prompt_mode,
             "inherit_task_stops": bool(stops.get("inherit_task_stops", True)),
             "stop": resolved_stops,
             "sampling": resolved_sampling,
@@ -876,7 +923,18 @@ def build_lighteval_plan(
 
     shown_env = {"PYTHON": python}
     plan_env = strip_vllm_env(env)
+    # The repository carries the LightEval source that this command is meant
+    # to exercise.  Put it on the child interpreter's PYTHONPATH explicitly
+    # instead of relying only on an editable-install record in the venv.
+    # Keeping the source path in the launch contract makes local changes
+    # effective even when the command is started from a different interpreter.
+    lighteval_source = (root / "src/eval/lighteval/src").resolve()
+    if not lighteval_source.is_dir():
+        raise SystemExit(f"local LightEval source not found: {lighteval_source}")
+    prepend_pythonpath(plan_env, lighteval_source)
     prepend_pythonpath(plan_env, root / "src/cli")
+    plan_env["HELICOPTER_LIGHTEEVAL_SOURCE_ROOT"] = str(lighteval_source)
+    plan_env["HELICOPTER_LIGHTEEVAL_ASSERT_LOCAL_SOURCE"] = "1"
     plan_env["HELICOPTER_PATCH_LIGHTEVAL_LITELLM_LOGPROBS"] = "1"
     plan_env["HELICOPTER_PATCH_LIGHTEVAL_DATASET_RETRIES"] = "1"
     plan_env["HELICOPTER_LIGHTEVAL_DATASET_ONLINE_FALLBACK"] = "1"
@@ -892,12 +950,13 @@ def build_lighteval_plan(
         )
     )
     prompt = table(config, "prompt")
-    prompt_template = prompt_template_for_mode(prompt)
+    prompt_mode = resolve_prompt_mode(args, env=env, prompt=prompt)
+    prompt_template = prompt_template_for_mode(prompt, prompt_mode)
     if prompt_template:
         plan_env["HELICOPTER_PROMPT_TEMPLATE"] = prompt_template
-    prompt_mode = str(prompt.get("mode") or "").strip()
     if prompt_mode:
         plan_env["HELICOPTER_SCOREBOARD_PROMPT_MODE"] = prompt_mode
+        plan_env["HELICOPTER_PROMPT_MODE"] = prompt_mode
     plan_env["HELICOPTER_SCOREBOARD_COT_MODE"] = "NoCoT" if "nocot" in prompt_mode.lower() else "CoT"
     configured_path = Path(args.config) if getattr(args, "config", None) else default_config_path(root)
     if not configured_path.is_absolute():
@@ -909,13 +968,19 @@ def build_lighteval_plan(
         )
     if api_key:
         plan_env["OPENAI_API_KEY"] = api_key
-    g1h_policy = resolve_lighteval_g1h_policy(args, env=env, config=config)
+    g1h_policy = resolve_lighteval_g1h_policy(
+        args,
+        env=env,
+        config=config,
+        prompt_mode=prompt_mode,
+    )
     if g1h_policy is not None:
         selected_tasks = [str(item) for item in g1h_policy.get("selected_tasks", [])]
         request_policy = resolve_lighteval_task_request_policy(
             config=config,
             selected_tasks=selected_tasks,
             base_sampling=sampling,
+            prompt_mode=prompt_mode,
         )
         plan_env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"] = json.dumps(
             request_policy,

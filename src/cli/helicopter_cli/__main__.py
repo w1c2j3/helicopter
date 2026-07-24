@@ -49,6 +49,11 @@ def add_lighteval_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--base-url", help="OpenAI-compatible endpoint base URL")
     parser.add_argument("--provider", help="LiteLLM provider prefix; defaults to openai")
     parser.add_argument("--api-key", help="API key passed through OPENAI_API_KEY")
+    parser.add_argument(
+        "--prompt-mode",
+        choices=("naive_cot", "naive_nocot", "normal_cot", "normal_nocot"),
+        help="one isolated RWKV prompt profile for this evaluation process",
+    )
     parser.add_argument("--concurrent-requests", type=int)
     parser.add_argument(
         "--request-timeout",

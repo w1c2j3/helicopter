@@ -265,7 +265,11 @@ class Metrics(Enum):
             language=Language.ENGLISH,
             fallback_mode="first_match",
             precision=5,
-            gold_extraction_target=(ExprExtractionConfig(),),
+            # Our type-level math adapter canonicalizes both sides as
+            # delimited LaTeX. Keep the gold contract symmetric with the
+            # prediction contract so fractions, roots, and equivalent forms
+            # are handled by the same extractor/comparator.
+            gold_extraction_target=(ExprExtractionConfig(), LatexExtractionConfig(boxed_match_priority=0)),
             # Match boxed first before trying other regexes
             pred_extraction_target=(ExprExtractionConfig(), LatexExtractionConfig(boxed_match_priority=0)),
             aggregation_function=max,

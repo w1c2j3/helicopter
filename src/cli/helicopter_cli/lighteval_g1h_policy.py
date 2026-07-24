@@ -234,6 +234,35 @@ def _wrap_prompt(
             # belong to the benchmark's native scorer and sampling method.
             if not os.environ.get("HELICOPTER_PROMPT_TEMPLATE"):
                 doc.query = format_query(doc.query, canonical_name=canonical_name, policy=policy)
+            request_format = os.environ.get("HELICOPTER_LIGHTEEVAL_TASK_REQUEST_POLICY", "")
+            try:
+                request_format = json.loads(request_format).get("tasks", {})
+                request_format = next(iter(request_format.values())).get("format")
+            except (AttributeError, StopIteration, TypeError, ValueError):
+                request_format = None
+            if str(request_format or "").strip().lower() in {
+                "math",
+                "math_boxed",
+                "math_free_response",
+                "math_open_qa",
+            }:
+                # All math benchmarks share one answer type even when their
+                # native metrics differ (avg, pass@k, maj@n, ...). Normalize
+                # the reference through the same adapter used for the model
+                # continuation so `$\\boxed{36}$`, `\\boxed{36}`, and `36`
+                # are one value for every math benchmark.
+                from helicopter_cli.lighteval_answer_adapters import adapt_answer
+
+                choices = getattr(doc, "choices", None)
+                if isinstance(choices, (list, tuple)):
+                    doc.choices = [
+                        adapt_answer(
+                            str(choice),
+                            domain="math",
+                            request_format=str(request_format),
+                        )
+                        for choice in choices
+                    ]
             return doc
 
         if isinstance(formatted, list):

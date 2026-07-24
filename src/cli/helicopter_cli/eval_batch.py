@@ -50,6 +50,7 @@ class BatchUnit:
     model: str
     kind: str  # one of UNIT_KINDS
     tasks: list[str]
+    prompt_mode: str | None = None
     status: str = "pending"
     message: str = ""
     attempts: int = 0
@@ -159,6 +160,22 @@ def run_model_aware_scheduler(
                 completed_futures.append(future)
             for future in completed_futures:
                 future.result()
+
+
+def benchmark_groups(units: list[BatchUnit]) -> list[list[BatchUnit]]:
+    """Group model runs so one benchmark forms a generation/score barrier."""
+
+    groups: list[list[BatchUnit]] = []
+    positions: dict[tuple[str, tuple[str, ...], str | None], int] = {}
+    for unit in units:
+        key = (unit.kind, tuple(unit.tasks), unit.prompt_mode)
+        position = positions.get(key)
+        if position is None:
+            position = len(groups)
+            positions[key] = position
+            groups.append([])
+        groups[position].append(unit)
+    return groups
 
 
 def _as_str_list(value: Any) -> list[str]:
@@ -312,12 +329,24 @@ def resolve_batch_plan(
             "[eval.batch].fc_tasks in the config"
         )
 
+    prompt_mode = str(
+        getattr(args, "prompt_mode", None)
+        or table(config, "prompt").get("mode", "normal_nocot")
+    ).strip().lower()
+
     # Interleave models by benchmark so one slow model cannot monopolize the
     # head of the queue. Every pair remains an independent persistence unit.
     units: list[BatchUnit] = []
     for task in lighteval_tasks:
         for model in models:
-            units.append(BatchUnit(model=model, kind="lighteval", tasks=[task]))
+            units.append(
+                BatchUnit(
+                    model=model,
+                    kind="lighteval",
+                    tasks=[task],
+                    prompt_mode=prompt_mode,
+                )
+            )
     for task in fc_tasks:
         for model in models:
             units.append(BatchUnit(model=model, kind="fc", tasks=[task]))
@@ -438,10 +467,19 @@ def derive_model_concurrency(
     pending_benchmarks = max(1, int(pending_benchmarks))
     benchmark_workers = min(pending_benchmarks, max(1, int(replica_count)))
     if max_num_seqs is None:
+        # RWKV-compatible vLLM servers may not expose the optional
+        # ``/server_info`` endpoint. Keep the benchmark/configured request
+        # concurrency in that case; falling back to one disables batching.
+        fallback_requests = max(
+            1,
+            int(configured_request_ceiling)
+            if configured_request_ceiling is not None
+            else 1,
+        )
         return ModelConcurrency(
             model,
             benchmark_workers,
-            1,
+            fallback_requests,
             rollout_n,
             None,
             running_requests,
@@ -517,11 +555,13 @@ def resolve_model_concurrency(
         or policy.get("avg_k")
         or 1
     )
-    # Presets describe evaluation semantics, not model capacity. Only an
-    # explicit CLI/environment override may cap the model-derived request count.
+    # Use an explicit override first, then the benchmark's request ceiling.
+    # The latter is also the safe fallback when the endpoint does not expose
+    # max_num_seqs through /server_info.
     ceiling_value = pick(
         getattr(args, "concurrent_requests", None),
         env_value(env, "HELICOPTER_EVAL_CONCURRENT_REQUESTS"),
+        lighteval.get("concurrent_requests"),
     )
     ceiling = int(ceiling_value) if ceiling_value is not None else None
     try:
@@ -862,7 +902,8 @@ def query_catalog_lighteval_tasks(*, args: Any, root: Path, env: dict[str, str])
 
 def _safe_unit_slug(unit: BatchUnit, slot: GpuSlot) -> str:
     digest = hashlib.sha1(",".join(unit.tasks).encode("utf-8")).hexdigest()[:8]
-    raw = f"slot{slot.index:02d}_gpu{slot.gpu if slot.gpu is not None else 'none'}_{unit.model}_{unit.kind}_{digest}"
+    mode = unit.prompt_mode or "default"
+    raw = f"slot{slot.index:02d}_gpu{slot.gpu if slot.gpu is not None else 'none'}_{unit.model}_{unit.kind}_{mode}_{digest}"
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("_") or f"unit_{digest}"
 
 
@@ -877,6 +918,7 @@ def _unit_args(
     unit_args = copy.copy(args)
     unit_args.model = unit.model
     unit_args.tasks = ",".join(unit.tasks)
+    unit_args.prompt_mode = unit.prompt_mode
     unit_args.no_server = getattr(args, "no_server", False)
     unit_args.keep_server = False
     unit_args.scoreboard = True
@@ -1248,32 +1290,7 @@ def run_batch(
             replica_queue.put(replica)
         replica_queues[model] = replica_queue
     unit_indices = {id(unit): index for index, unit in enumerate(runnable)}
-    score_capacity = max(1, int(env.get("HELICOPTER_SCORE_CONCURRENT_REQUESTS", "10")))
-    configured_score_workers = env.get("HELICOPTER_SCORE_WORKERS")
-    score_workers = derive_postprocess_workers(
-        runnable_count=len(runnable),
-        score_capacity=score_capacity,
-        configured_ceiling=int(configured_score_workers) if configured_score_workers else None,
-    )
-    score_executor = ThreadPoolExecutor(max_workers=score_workers)
-    score_futures: list[Any] = []
-    score_futures_lock = threading.Lock()
-    print(f"eval batch: LightEval postprocess workers={score_workers}")
-
-    def score_worker(unit: BatchUnit) -> None:
-        run_unit(
-            unit,
-            args=args,
-            slot=GpuSlot(index=unit_indices[id(unit)], gpu=None, port=0),
-            root=root,
-            env=env,
-            config=config,
-            max_retries=max_retries,
-            concurrent_requests=1,
-            pipeline_stage="score",
-        )
-
-    def worker(unit: BatchUnit) -> None:
+    def generate_and_score(unit: BatchUnit) -> None:
         replica = replica_queues[unit.model].get()
         slot = (
             GpuSlot(index=unit_indices[id(unit)], gpu=None, port=0)
@@ -1293,29 +1310,53 @@ def run_batch(
                 pipeline_stage="generate",
                 replica=replica,
             )
+            if unit.status == "completed":
+                # Do not let the next benchmark start until this model's
+                # score has been written.  The generation path itself
+                # checkpoints every returned rollout as soon as it arrives.
+                print(
+                    f"eval batch: [{unit.model}/{unit.kind}] generation complete; "
+                    f"scoring before next benchmark tasks={','.join(unit.tasks)}"
+                )
+                run_unit(
+                    unit,
+                    args=args,
+                    slot=slot,
+                    root=root,
+                    env=env,
+                    config=config,
+                    max_retries=max_retries,
+                    concurrent_requests=1,
+                    pipeline_stage="score",
+                )
         finally:
             if not external_endpoint:
                 slot_queue.put(slot)
             replica_queues[unit.model].put(replica)
 
-        if unit.status == "completed":
-            with score_futures_lock:
-                score_futures.append(score_executor.submit(score_worker, unit))
-
     try:
-        run_model_aware_scheduler(
-            runnable,
-            model_worker_limits={
-                model: item.benchmark_workers
-                for model, item in model_concurrency.items()
-            },
-            max_workers=workers,
-            worker=worker,
+        model_worker_limits = {
+            model: item.benchmark_workers
+            for model, item in model_concurrency.items()
+        }
+        groups = benchmark_groups(runnable)
+        print(
+            f"eval batch: {len(groups)} benchmark barrier(s); "
+            "each barrier runs generation then score before the next"
         )
-        for future in score_futures:
-            future.result()
+        for index, group in enumerate(groups, start=1):
+            print(
+                f"eval batch: benchmark barrier {index}/{len(groups)} "
+                f"tasks={','.join(group[0].tasks)} models={','.join(unit.model for unit in group)}"
+            )
+            run_model_aware_scheduler(
+                group,
+                model_worker_limits=model_worker_limits,
+                max_workers=min(workers, len(group)),
+                worker=generate_and_score,
+            )
     finally:
-        score_executor.shutdown(wait=True)
+        pass
 
     print(format_summary(units))
     failed = [unit for unit in units if unit.status == "failed"]

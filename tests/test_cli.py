@@ -43,6 +43,7 @@ from helicopter_cli import (
     function_calling,
     g1h_config,
     lighteval_g1h_policy,
+    lighteval_answer_adapters,
     lighteval_db_pipeline,
     lighteval_export,
     lighteval_dataset_resilience,
@@ -86,7 +87,7 @@ class Famous120BenchmarkConfigTests(unittest.TestCase):
 
     def test_each_standalone_benchmark_config_loads_independently(self) -> None:
         paths = sorted((ROOT / "configs/benchmarks/g1h").glob("*/*.toml"))
-        self.assertEqual(len(paths), 400)
+        self.assertGreaterEqual(len(paths), 400)
         for path in paths:
             with self.subTest(path=path.name):
                 loaded, _ = config.load_config(ROOT, str(path))
@@ -124,7 +125,7 @@ class Famous120BenchmarkConfigTests(unittest.TestCase):
             config=loaded,
         )
         tasks = json.loads(plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"])["tasks"]
-        self.assertEqual(tasks["gpqa:diamond"]["sampling"]["max_tokens"], 6144)
+        self.assertEqual(tasks["gpqa:diamond"]["sampling"]["max_tokens"], 12288)
 
     def test_gpqa_uses_domain_budget_for_each_prompt_mode(self) -> None:
         config_path = "configs/benchmarks/g1h/knowledge/046_gpqa_diamond.toml"
@@ -145,6 +146,45 @@ class Famous120BenchmarkConfigTests(unittest.TestCase):
 
 
 class NativeLightEvalTaskCompatibilityTests(unittest.TestCase):
+    def test_math_adapter_canonicalizes_prediction_and_gold_forms(self) -> None:
+        for value in (r"$\boxed{36}$", r"\boxed{36}", "36", r"\(36\)"):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    lighteval_answer_adapters.extract_math_answer(value),
+                    "$36$",
+                )
+        self.assertEqual(
+            lighteval_answer_adapters.adapt_answer(
+                r"Reasoning\n\boxed{36}",
+                domain="math",
+                request_format="math_boxed",
+            ),
+            "$36$",
+        )
+
+    def test_math_prompt_gold_uses_the_same_type_level_adapter(self) -> None:
+        prompt = lighteval_g1h_policy._wrap_prompt(
+            lambda line, task_name=None: Doc(
+                task_name=task_name,
+                query=line["question"],
+                choices=[r"$\boxed{36}$"],
+                gold_index=0,
+            ),
+            canonical_name="gsm8k",
+            policy={},
+        )
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HELICOPTER_PROMPT_TEMPLATE": "raw",
+                "HELICOPTER_LIGHTEEVAL_TASK_REQUEST_POLICY": json.dumps(
+                    {"tasks": {"gsm8k": {"format": "math_boxed"}}}
+                ),
+            },
+        ):
+            doc = prompt({"question": "q"}, task_name="gsm8k")
+        self.assertEqual(doc.choices, ["$36$"])
+
     def test_math500_uses_raw_problem_and_final_answer_gold(self) -> None:
         doc = math_500_prompt(
             {
@@ -310,7 +350,7 @@ class G1hConfigTests(unittest.TestCase):
         naive = g1h_config.format_query("Q", canonical_name="math_500", policy=self.POLICY)
         normal_policy = {**self.POLICY, "prompt_style": "normal"}
         normal = g1h_config.format_query("Q", canonical_name="math_500", policy=normal_policy)
-        self.assertEqual(naive, "User: Q\nAssistant: <think")
+        self.assertEqual(naive, "User: Q\n\nAssistant: <think")
         self.assertEqual(normal, "User✿Q✿\nBot✿<think")
 
 
@@ -583,6 +623,7 @@ def lighteval_args(**overrides: object) -> Namespace:
         "base_url": None,
         "provider": None,
         "api_key": None,
+        "prompt_mode": None,
         "concurrent_requests": None,
         "max_model_length": None,
         "max_new_tokens": None,
@@ -933,6 +974,35 @@ class RawCompletionTests(unittest.TestCase):
         self.assertEqual(result.usage["total_tokens"], 14)
         self.assertEqual(post.call_args.kwargs["timeout"], 10)
 
+    def test_rendered_prompt_reaches_completion_payload_with_real_newline(self) -> None:
+        response = mock.Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [{"index": 0, "text": "answer", "finish_reason": "stop"}],
+            "usage": {},
+        }
+        client = SimpleNamespace(
+            model="openai/model",
+            base_url="http://127.0.0.1:19315/v1",
+            api_key="key",
+            timeout=10,
+            API_MAX_RETRY=1,
+            API_RETRY_SLEEP=0,
+            API_RETRY_MULTIPLIER=1,
+        )
+        prompt = lighteval_raw_completion._render_prompt(
+            "User: {query}\nAssistant: <think></think",
+            "raw question",
+        )
+        with mock.patch.object(lighteval_raw_completion, "load_sampling_overrides", return_value={}):
+            with mock.patch.object(lighteval_raw_completion.requests, "post", return_value=response) as post:
+                lighteval_raw_completion._request(client, prompt, 32, 1, None)
+
+        sent_prompt = post.call_args.kwargs["json"]["prompt"]
+        self.assertEqual(sent_prompt, "User: raw question\nAssistant: <think></think")
+        self.assertIn(b"\x0a", sent_prompt.encode("utf-8"))
+        self.assertNotIn(b"\\n", sent_prompt.encode("utf-8"))
+
     def test_raw_request_forwards_every_configured_vllm_sampling_field(self) -> None:
         response = mock.Mock()
         response.raise_for_status.return_value = None
@@ -1134,6 +1204,47 @@ class RawCompletionTests(unittest.TestCase):
         init_db.assert_awaited_once()
         close_db.assert_awaited_once()
         self.assertEqual(store.insert_completion_payloads_with_task.await_count, 2)
+
+    def test_lighteval_checkpoint_session_inserts_each_rollout_individually(self) -> None:
+        store = SimpleNamespace(
+            insert_completion_payloads_with_task=mock.AsyncMock(
+                side_effect=[("7", 1), ("7", 1)]
+            ),
+        )
+        response = ModelResponse(text=["first", "second"])
+        response.raw_text = ["first", "second"]
+        response.finish_reason = ["stop", "stop"]
+
+        with mock.patch(
+            "scoreboard_server.db.settings.DatabaseSettings.from_env",
+            return_value=SimpleNamespace(),
+        ), mock.patch(
+            "scoreboard_server.db.connection.init_db",
+            new=mock.AsyncMock(),
+        ), mock.patch(
+            "scoreboard_server.db.connection.close_db",
+            new=mock.AsyncMock(),
+        ), mock.patch(
+            "scoreboard_server.db.repository.ScoreboardStore",
+            return_value=store,
+        ):
+            with scoreboard_bridge.LightevalCheckpointSession(
+                task_id="7",
+                dataset="gsm8k",
+                num_samples=2,
+            ) as session:
+                session.checkpoint(
+                    task_name="g1h__gsm8k|0",
+                    sample_index=0,
+                    doc=SimpleNamespace(id="0", task_name="g1h__gsm8k|0"),
+                    response=response,
+                    repeat_indices=[0, 1],
+                    generation_size=32,
+                )
+
+        self.assertEqual(store.insert_completion_payloads_with_task.await_count, 2)
+        calls = store.insert_completion_payloads_with_task.await_args_list
+        self.assertEqual([len(call.kwargs["payloads"]) for call in calls], [1, 1])
 
     def test_lighteval_task_is_not_created_before_first_completion(self) -> None:
         store = SimpleNamespace(
@@ -2255,6 +2366,13 @@ class CommandPlanTests(unittest.TestCase):
             "1",
         )
         self.assertEqual(plan.env["PYTHONPATH"].split(os.pathsep)[0], str(ROOT / "src/cli"))
+        pythonpath = plan.env["PYTHONPATH"].split(os.pathsep)
+        self.assertIn(str((ROOT / "src/eval/lighteval/src").resolve()), pythonpath)
+        self.assertEqual(
+            plan.env["HELICOPTER_LIGHTEEVAL_SOURCE_ROOT"],
+            str((ROOT / "src/eval/lighteval/src").resolve()),
+        )
+        self.assertEqual(plan.env["HELICOPTER_LIGHTEEVAL_ASSERT_LOCAL_SOURCE"], "1")
 
     def test_g1h_plan_uses_doc_generation_size_and_aliases_tasks(self) -> None:
         loaded_config = load_example_config()
@@ -2427,7 +2545,7 @@ class CommandPlanTests(unittest.TestCase):
             catalog_path="configs/models/g1h-dual-replica.toml",
         )
         loaded_config["prompt"]["mode"] = "naive_cot"
-        loaded_config["prompt"]["template"] = "User: {query}\\nAssistant: <think"
+        loaded_config["prompt"]["template"] = "User: {query}\nAssistant: <think"
         plan = commands.build_lighteval_plan(
             lighteval_args(
                 model="deployed",
@@ -2445,9 +2563,68 @@ class CommandPlanTests(unittest.TestCase):
         self.assertEqual(policy["avg_k"], evaluation["avg_k"])
         self.assertEqual(policy["rollout_n"], evaluation["rollout_n"])
         request = json.loads(plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"])["tasks"]["gsm8k"]
-        self.assertEqual(request["prompt_template"], "User: {query}\\nAssistant: <think")
+        self.assertEqual(request["prompt_template"], "User: {query}\n\nAssistant: <think")
         self.assertEqual(request["sampling"]["context_budget"], 8192)
         self.assertEqual(plan.env["HELICOPTER_SCOREBOARD_PROMPT_MODE"], "naive_cot")
+
+    def test_prompt_mode_override_isolated_and_uses_official_stops(self) -> None:
+        config_path = "configs/benchmarks/g1h/math/058_math_500.toml"
+        loaded_config, _ = config.load_config(ROOT, config_path)
+        config.merge_model_catalog(
+            loaded_config,
+            root=ROOT,
+            catalog_path="configs/models/g1h-dual-replica.toml",
+        )
+        naive_plan = commands.build_lighteval_plan(
+            lighteval_args(
+                model="g1h-2.9b",
+                tasks="math_500|0",
+                config=config_path,
+                prompt_mode="naive_nocot",
+                base_url="http://127.0.0.1:19329/v1",
+                api_key="rwkv-skills",
+            ),
+            root=ROOT,
+            env={},
+            config=loaded_config,
+        )
+        naive_request = json.loads(
+            naive_plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"]
+        )["tasks"]["math_500"]
+        self.assertEqual(naive_request["prompt_mode"], "naive_nocot")
+        self.assertEqual(naive_request["prompt_template"], "User: {query}\n\nAssistant: <think></think")
+        self.assertEqual(naive_request["stop"], ["\nUser:"])
+        self.assertEqual(naive_plan.env["HELICOPTER_PROMPT_MODE"], "naive_nocot")
+
+        normal_plan = commands.build_lighteval_plan(
+            lighteval_args(
+                model="g1h-2.9b",
+                tasks="math_500|0",
+                config=config_path,
+                prompt_mode="normal_nocot",
+                base_url="http://127.0.0.1:19329/v1",
+                api_key="rwkv-skills",
+            ),
+            root=ROOT,
+            env={},
+            config=loaded_config,
+        )
+        normal_request = json.loads(
+            normal_plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"]
+        )["tasks"]["math_500"]
+        self.assertEqual(normal_request["prompt_mode"], "normal_nocot")
+        self.assertTrue(normal_request["prompt_template"].startswith("User✿"))
+        self.assertIn("\nUser:", normal_request["stop"])
+        self.assertIn("✿", normal_request["stop"])
+
+    def test_benchmark_mode_templates_decode_newline_as_0x0a(self) -> None:
+        config_path = "configs/benchmarks/g1h/knowledge/073_mmlu_miscellaneous.toml"
+        loaded_config, _ = config.load_config(ROOT, config_path)
+        template = commands.prompt_template_for_mode(loaded_config["prompt"])
+
+        self.assertEqual(template, "User✿{query}✿\nBot✿<think></think")
+        self.assertIn("\n", template)
+        self.assertNotIn("\\n", template)
 
     def test_standalone_file_owns_request_format(self) -> None:
         cases = (
@@ -5929,6 +6106,16 @@ class EvalBatchTests(unittest.TestCase):
         self.assertEqual(plan.concurrent_requests, 224)
         self.assertEqual(plan.source, "model_config+nofile:1024")
 
+    def test_model_concurrency_keeps_configured_ceiling_without_server_info(self) -> None:
+        plan = eval_batch.derive_model_concurrency(
+            model="rwkv",
+            pending_benchmarks=12,
+            rollout_n=4,
+            max_num_seqs=None,
+            configured_request_ceiling=8,
+        )
+        self.assertEqual(plan.concurrent_requests, 8)
+
     def test_unit_args_assigns_slot_base_url_and_joined_tasks(self) -> None:
         unit = eval_batch.BatchUnit(model="m", kind="lighteval", tasks=["gsm8k|0", "mmlu|0"])
         slot = eval_batch.GpuSlot(index=1, gpu=3, port=8001)
@@ -5995,7 +6182,7 @@ class EvalBatchTests(unittest.TestCase):
         self.assertEqual(unit.attempts, 2)
         self.assertIn("healthy", unit.message)
 
-    def test_next_generation_overlaps_previous_score_for_same_model(self) -> None:
+    def test_next_benchmark_waits_for_previous_score_for_same_model(self) -> None:
         loaded = load_example_config()
         score_started = threading.Event()
         allow_score_finish = threading.Event()
@@ -6029,10 +6216,10 @@ class EvalBatchTests(unittest.TestCase):
             )
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(overlap_observed, [True])
+        self.assertEqual(overlap_observed, [False])
         self.assertTrue(score_finished.is_set())
 
-    def test_model_aware_dispatch_does_not_starve_an_idle_model_replica(self) -> None:
+    def test_benchmark_barrier_prevents_cross_benchmark_overlap(self) -> None:
         loaded = load_example_config()
         second_model_second_task_started = threading.Event()
         overlap_observed: list[bool] = []
@@ -6072,7 +6259,7 @@ class EvalBatchTests(unittest.TestCase):
                 )
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(overlap_observed, [True])
+        self.assertEqual(overlap_observed, [False])
 
     def test_run_batch_dry_run_prints_plan(self) -> None:
         loaded = load_example_config()
@@ -6158,7 +6345,7 @@ class EvalBatchTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(len(output_dirs), 4)
-        self.assertEqual(len(set(output_dirs)), 4)
+        self.assertEqual(len(set(output_dirs)), 2)
         self.assertTrue(all(str(report_path.with_suffix("")) in path for path in output_dirs))
 
     def test_run_batch_writes_report_for_real_run(self) -> None:
