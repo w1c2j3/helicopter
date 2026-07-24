@@ -112,17 +112,16 @@ def extract_choice_answer(text: str, *, prompt: str = "") -> str:
 
 def _last_boxed(text: str) -> str | None:
     matches = list(re.finditer(r"\\(?:boxed|fbox)\s*\{", text, re.IGNORECASE))
-    if not matches:
-        return None
-    start = matches[-1].end()
-    depth = 1
-    for index in range(start, len(text)):
-        if text[index] == "{" and (index == 0 or text[index - 1] != "\\"):
-            depth += 1
-        elif text[index] == "}" and (index == 0 or text[index - 1] != "\\"):
-            depth -= 1
-            if depth == 0:
-                return text[start:index].strip()
+    for match in reversed(matches):
+        start = match.end()
+        depth = 1
+        for index in range(start, len(text)):
+            if text[index] == "{" and (index == 0 or text[index - 1] != "\\"):
+                depth += 1
+            elif text[index] == "}" and (index == 0 or text[index - 1] != "\\"):
+                depth -= 1
+                if depth == 0:
+                    return text[start:index].strip()
     return None
 
 
@@ -158,23 +157,18 @@ def extract_math_answer(text: str) -> str:
     """
 
     raw_value = str(text or "")
-    value = answer_region(raw_value)
-    boxed = _last_boxed(value)
-    # Some RWKV CoT completions put the final boxed value immediately before
-    # the generated ``</think>`` tag and leave nothing after it.  In that
-    # shape the post-think region is empty, so retain a narrow fallback to the
-    # full response.  An unclosed boxed expression still returns ``None`` and
-    # therefore remains an empty/truncated answer.
-    if boxed is None and not value.strip():
-        boxed = _last_boxed(raw_value)
+    # Math answers may be emitted inside the think block.  Search the complete
+    # response first and choose the last *complete* boxed expression; the
+    # parser skips a later, truncated ``\boxed{`` and can still use an earlier
+    # complete answer.
+    boxed = _last_boxed(raw_value)
     if boxed is not None:
         return _format_math_value(boxed)
 
-    if re.search(r"\\(?:boxed|fbox)\s*\{", value, re.IGNORECASE):
+    if re.search(r"\\(?:boxed|fbox)\s*\{", raw_value, re.IGNORECASE):
         return ""
 
-    if not value.strip() and raw_value.strip():
-        value = raw_value.strip()
+    value = answer_region(raw_value)
 
     answer_cue = re.compile(
         r"(?:final\s+answer|answer|therefore|答案|结果|所以)\s*(?:is|为|是)?\s*[:：]?\s*(.+)",

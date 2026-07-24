@@ -34,6 +34,8 @@ def test_math_adapter_prefers_the_last_boxed_answer() -> None:
 
 def test_math_adapter_falls_back_to_boxed_value_before_closing_think() -> None:
     assert extract_math_answer("reasoning\n\\boxed{42}</think>") == "$42$"
+    assert extract_math_answer("\\boxed{3}\nreasoning\n\\boxed{42}</think>") == "$42$"
+    assert extract_math_answer("\\boxed{3}\nreasoning\n\\boxed{42") == "$3$"
     assert extract_math_answer("reasoning\n\\boxed{42") == ""
 
 
