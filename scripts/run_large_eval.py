@@ -243,6 +243,8 @@ def build_job_queue(
 
     jobs: list[tuple[dict[str, Any], str]] = []
     for entry in benchmarks:
+        if bool(entry.get("skip", False)):
+            continue
         modes = list(base_modes)
         if str(entry["field"]) in cot_fields:
             for cot_mode in cot_modes:

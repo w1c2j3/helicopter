@@ -57,6 +57,26 @@ SAMPLING_BY_FIELD: dict[str, dict[str, str]] = {
     },
 }
 
+# Keep short NoCoT requests fast, but give every future CoT run enough room to
+# reach the final answer. The values are deliberately mode-specific: a single
+# integer here would also make all multiple-choice NoCoT requests unnecessarily
+# long. Math gets the larger budget because AIME/MATH-style derivations are
+# the most likely to need it; the other domains use 4K.
+COT_MAX_TOKENS_BY_FIELD = {
+    "math": 8192,
+    "knowledge": 4096,
+    "coding": 4096,
+    "instruction_following": 4096,
+}
+
+NOCOT_MAX_TOKENS_BY_FIELD = {
+    "math": 2048,
+    "knowledge": 1024,
+    # Code-generation outputs need more than a short multiple-choice answer.
+    "coding": 4096,
+    "instruction_following": 2048,
+}
+
 
 def _section(text: str, name: str) -> tuple[int, int, str]:
     match = re.search(
@@ -74,6 +94,32 @@ def _set_key(section: str, key: str, value: str) -> str:
     if pattern.search(section):
         return pattern.sub(replacement, section, count=1)
     return section.rstrip() + f"\n{replacement}\n"
+
+
+def _mode_max_tokens(
+    raw_value: object,
+    *,
+    allowed_modes: list[str],
+    field: str,
+) -> str:
+    """Return a TOML mode table preserving NoCoT and sizing CoT explicitly."""
+
+    if isinstance(raw_value, dict):
+        values = {str(mode): int(value) for mode, value in raw_value.items()}
+    else:
+        values = {mode: int(raw_value) for mode in allowed_modes}
+    cot_budget = COT_MAX_TOKENS_BY_FIELD[field]
+    for mode in ("naive_cot", "normal_cot"):
+        if mode in allowed_modes:
+            values[mode] = cot_budget
+    nocot_budget = NOCOT_MAX_TOKENS_BY_FIELD[field]
+    for mode in ("naive_nocot", "normal_nocot"):
+        if mode in allowed_modes:
+            values[mode] = nocot_budget
+    # benchmark_specs validates that a mode table has exactly the declared
+    # allowed modes; keep the emitted TOML deterministic and complete.
+    ordered = {mode: values[mode] for mode in allowed_modes}
+    return "{ " + ", ".join(f"{mode} = {value}" for mode, value in ordered.items()) + " }"
 
 
 def main() -> int:
@@ -119,6 +165,18 @@ def main() -> int:
         updated_sampling = sampling
         for key, value in SAMPLING_BY_FIELD[field].items():
             updated_sampling = _set_key(updated_sampling, key, value)
+        allowed_modes = [str(mode) for mode in benchmark.get("allowed_modes", [])]
+        if not allowed_modes:
+            raise SystemExit(f"missing benchmark.allowed_modes in {relative}")
+        updated_sampling = _set_key(
+            updated_sampling,
+            "max_tokens",
+            _mode_max_tokens(
+                parsed.get("sampling", {}).get("max_tokens"),
+                allowed_modes=allowed_modes,
+                field=field,
+            ),
+        )
         if updated != evaluation or updated_sampling != sampling:
             rewritten = (
                 text[:start]

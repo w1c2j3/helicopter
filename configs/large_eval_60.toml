@@ -18,11 +18,13 @@ proxy_url = "http://192.168.0.243:7890"
 field = "math"
 config = "configs/benchmarks/g1h/math/058_math_500.toml"
 task = "math_500"
+skip = true
 
 [[benchmarks]]
 field = "math"
 config = "configs/benchmarks/g1h/math/050_gsm8k.toml"
 task = "gsm8k"
+skip = true
 
 [[benchmarks]]
 field = "math"

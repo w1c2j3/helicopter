@@ -13,10 +13,10 @@ def test_mode_specific_max_tokens_are_resolved_before_model_args() -> None:
     config_path = "configs/benchmarks/g1h/math/051_math_algebra.toml"
     loaded, _ = config.load_config(ROOT, config_path)
     expected = {
-        "naive_nocot": 512,
-        "normal_nocot": 512,
-        "naive_cot": 5120,
-        "normal_cot": 5120,
+        "naive_nocot": 2048,
+        "normal_nocot": 2048,
+        "naive_cot": 8192,
+        "normal_cot": 8192,
     }
     for mode, max_tokens in expected.items():
         args = SimpleNamespace(
