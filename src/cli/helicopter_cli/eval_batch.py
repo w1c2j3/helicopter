@@ -1328,6 +1328,7 @@ def run_batch(
                     max_retries=max_retries,
                     concurrent_requests=1,
                     pipeline_stage="score",
+                    replica=replica,
                 )
         finally:
             if not external_endpoint:
