@@ -34,8 +34,8 @@ metric_source = "task_default"
 
 [evaluation]
 metric = "avg"
-avg_k = 1
-rollout_n = 1
+avg_k = 8
+rollout_n = 8
 pass_k = 1
 pass_n = 4
 target_generations_per_benchmark = 5000

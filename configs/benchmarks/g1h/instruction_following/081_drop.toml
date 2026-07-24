@@ -33,8 +33,8 @@ provider = "lighteval"
 metric_source = "task_default"
 
 [evaluation]
-metric = "avg"
-avg_k = 4
+metric = "native"
+avg_k = 1
 rollout_n = 4
 target_generations_per_benchmark = 5000
 large_benchmark_generation_threshold = 20000
