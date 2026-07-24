@@ -44,7 +44,7 @@ large_benchmark_sample_rate = 0.2
 
 [sampling]
 max_tokens = { naive_cot = 4096, normal_cot = 4096, naive_nocot = 1024, normal_nocot = 1024 }
-context_budget = 8192
+context_budget = 10240
 temperature = 0.96
 top_p = 0.76
 top_k = 32

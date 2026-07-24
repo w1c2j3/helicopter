@@ -43,7 +43,7 @@ pass_k = 1
 pass_n = 4
 [sampling]
 max_tokens = { naive_cot = 4096, normal_cot = 4096, naive_nocot = 4096, normal_nocot = 4096 }
-context_budget = 8192
+context_budget = 10240
 temperature = 0.96
 top_p = 0.76
 top_k = 32

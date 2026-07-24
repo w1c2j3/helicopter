@@ -77,6 +77,8 @@ NOCOT_MAX_TOKENS_BY_FIELD = {
     "instruction_following": 2048,
 }
 
+CONTEXT_BUDGET = 10240
+
 
 def _section(text: str, name: str) -> tuple[int, int, str]:
     match = re.search(
@@ -177,6 +179,7 @@ def main() -> int:
                 field=field,
             ),
         )
+        updated_sampling = _set_key(updated_sampling, "context_budget", str(CONTEXT_BUDGET))
         if updated != evaluation or updated_sampling != sampling:
             rewritten = (
                 text[:start]

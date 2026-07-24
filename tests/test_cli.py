@@ -125,7 +125,7 @@ class Famous120BenchmarkConfigTests(unittest.TestCase):
             config=loaded,
         )
         tasks = json.loads(plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"])["tasks"]
-        self.assertEqual(tasks["gpqa:diamond"]["sampling"]["max_tokens"], 12288)
+        self.assertEqual(tasks["gpqa:diamond"]["sampling"]["max_tokens"], 1024)
 
     def test_gpqa_uses_domain_budget_for_each_prompt_mode(self) -> None:
         config_path = "configs/benchmarks/g1h/knowledge/046_gpqa_diamond.toml"
@@ -142,7 +142,7 @@ class Famous120BenchmarkConfigTests(unittest.TestCase):
             config=loaded,
         )
         tasks = json.loads(plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"])["tasks"]
-        self.assertEqual(tasks["gpqa:diamond"]["sampling"]["context_budget"], 8192)
+        self.assertEqual(tasks["gpqa:diamond"]["sampling"]["context_budget"], 10240)
 
 class NativeLightEvalTaskCompatibilityTests(unittest.TestCase):
     def test_math_adapter_canonicalizes_prediction_and_gold_forms(self) -> None:
@@ -2565,7 +2565,7 @@ class CommandPlanTests(unittest.TestCase):
         self.assertEqual(policy["rollout_n"], evaluation["rollout_n"])
         request = json.loads(plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"])["tasks"]["gsm8k"]
         self.assertEqual(request["prompt_template"], "User: {query}\n\nAssistant: <think")
-        self.assertEqual(request["sampling"]["context_budget"], 8192)
+        self.assertEqual(request["sampling"]["context_budget"], 10240)
         self.assertEqual(plan.env["HELICOPTER_SCOREBOARD_PROMPT_MODE"], "naive_cot")
 
     def test_prompt_mode_override_isolated_and_uses_official_stops(self) -> None:
@@ -2662,7 +2662,7 @@ class CommandPlanTests(unittest.TestCase):
         self.assertEqual(spec["evaluation"]["metric"], "avg")
         self.assertEqual(spec["evaluation"]["pass_k"], 1)
         self.assertEqual(spec["evaluation"]["avg_k"], spec["evaluation"]["rollout_n"])
-        self.assertEqual(spec["sampling"]["context_budget"], 8192)
+        self.assertEqual(spec["sampling"]["context_budget"], 10240)
 
     def test_lighteval_plan_cli_max_new_tokens_overrides_config(self) -> None:
         loaded_config = load_example_config()
