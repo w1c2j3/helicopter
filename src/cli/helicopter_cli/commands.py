@@ -348,6 +348,18 @@ def resolve_lighteval_sampling(
                 sampling.get(field),
                 lighteval.get("max_new_tokens"),
             )
+            if isinstance(value, dict):
+                prompt_mode = resolve_prompt_mode(
+                    args,
+                    env=env,
+                    prompt=table(config, "prompt"),
+                )
+                if prompt_mode not in value:
+                    raise SystemExit(
+                        "sampling.max_tokens has no budget for prompt mode "
+                        f"{prompt_mode!r}"
+                    )
+                value = value[prompt_mode]
         elif field == "stop":
             value = pick(
                 cli_value,
