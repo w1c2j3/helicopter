@@ -276,7 +276,20 @@ def run_model_queue(
             pass
 
     failures = 0
-    completed_index = int(model_state.get("last_completed_index", -1))
+    # A failed child must remain resumable.  Older state files incorrectly
+    # advanced last_completed_index for every return code, so derive the
+    # checkpoint from successful job records first.
+    successful_indices = [
+        int(item.get("index", -1))
+        for item in model_state.get("jobs", [])
+        if int(item.get("return_code", 1)) == 0
+    ]
+    if successful_indices:
+        completed_index = max(successful_indices)
+    elif not model_state.get("jobs"):
+        completed_index = int(model_state.get("last_completed_index", -1))
+    else:
+        completed_index = -1
     effective_start = max(start_at, completed_index + 1)
     for job_index, (entry, mode) in enumerate(jobs):
         if job_index < effective_start:
@@ -302,12 +315,23 @@ def run_model_queue(
                 "ended_at": now(),
             }
         )
-        model_state["last_completed_index"] = job_index
+        if return_code == 0:
+            model_state["last_completed_index"] = job_index
+            model_state.pop("last_failed_index", None)
+        else:
+            model_state["last_failed_index"] = job_index
         model_state_path.write_text(
             json.dumps(model_state, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
         failures += int(return_code != 0)
+        if return_code != 0:
+            print(
+                f"large-eval: STOP {model} after failed job index={job_index}; "
+                "the same job will be retried on the next launcher run",
+                flush=True,
+            )
+            break
     print(f"large-eval: MODEL END {model} failures={failures}", flush=True)
     return failures
 

@@ -19,7 +19,7 @@ def test_choice_adapter_matches_rwkv_direct_letter_and_cot_answer() -> None:
 
 
 def test_math_adapter_prefers_the_last_boxed_answer() -> None:
-    assert extract_math_answer("work\n\\boxed{3}\nmore work\n\\boxed{42}") == r"\boxed{42}"
+    assert extract_math_answer("work\n\\boxed{3}\nmore work\n\\boxed{42}") == "$42$"
 
 
 def test_code_adapter_keeps_the_last_program_block() -> None:

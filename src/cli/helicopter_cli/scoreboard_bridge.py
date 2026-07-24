@@ -143,7 +143,18 @@ def _answer(response: Mapping[str, Any]) -> str:
 
 
 def _completion_answer(response: Mapping[str, Any]) -> str:
-    return _text(response.get("text")) or _answer(response)
+    answer = _text(response.get("text"))
+    if answer:
+        return answer
+    logprobs = response.get("logprobs")
+    if isinstance(logprobs, list) and logprobs:
+        try:
+            choice_index = max(range(len(logprobs)), key=lambda index: float(logprobs[index]))
+        except (TypeError, ValueError):
+            choice_index = -1
+        if choice_index >= 0:
+            return f" {chr(ord('A') + choice_index) if choice_index < 26 else choice_index + 1}"
+    return _answer(response)
 
 
 def _stop_reason(response: Mapping[str, Any]) -> str | None:
@@ -771,6 +782,39 @@ def _generation_payloads(
     return payloads
 
 
+def _loglikelihood_payload(
+    *,
+    task_name: str,
+    sample_index: int,
+    doc: Any,
+    response: Any,
+) -> dict[str, Any]:
+    """Build one durable completion row for a loglikelihood document."""
+
+    doc_payload = _jsonable(doc)
+    if not isinstance(doc_payload, dict):
+        doc_payload = {"value": doc_payload}
+    response_payload = _response_payload(response)
+    prompt = _text(response_payload.get("input") or doc_payload.get("query") or "")
+    return {
+        "_stage": "generation",
+        "status": "Completed",
+        "sample_index": int(sample_index),
+        "repeat_index": 0,
+        "pass_index": 0,
+        "prompt1": prompt,
+        "completion1": _completion_answer(response_payload),
+        "stop_reason1": None,
+        "sampling_config": _sampling_config(),
+        "stats": {"lighteval_task": task_name, "loglikelihood_checkpoint": True},
+        "agent_result": {
+            "doc": _compact_lighteval_doc(doc_payload),
+            "model_response": response_payload,
+        },
+        "task_id": doc_payload.get("id"),
+    }
+
+
 
 
 async def _checkpoint_generation(
@@ -901,6 +945,24 @@ class LightevalCheckpointSession:
         for payload in payloads:
             inserted += self._loop.run_until_complete(self._write([payload]))
         return inserted
+
+    def checkpoint_loglikelihood(
+        self,
+        *,
+        task_name: str,
+        sample_index: int,
+        doc: Any,
+        response: Any,
+    ) -> int:
+        if self._loop is None:
+            raise RuntimeError("LightEval checkpoint session is not open")
+        payload = _loglikelihood_payload(
+            task_name=task_name,
+            sample_index=sample_index,
+            doc=doc,
+            response=response,
+        )
+        return self._loop.run_until_complete(self._write([payload]))
 
 
     def __exit__(self, exc_type: Any, exc: BaseException | None, traceback: Any) -> None:

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from typing import Any
 
 import requests
@@ -66,6 +67,55 @@ def patch_litellm_logprobs() -> None:
     from lighteval.tasks.requests import SamplingMethod
     from lighteval.utils.cache_management import cached
 
+    response_fields = {
+        "input",
+        "input_tokens",
+        "text",
+        "output_tokens",
+        "text_post_processed",
+        "reasonings",
+        "logprobs",
+        "argmax_logits_eq_gold",
+        "logits",
+        "unconditioned_logprobs",
+        "truncated_tokens_count",
+        "padded_tokens_count",
+    }
+
+    def restore_response(payload: dict[str, Any]) -> ModelResponse:
+        return ModelResponse(
+            **{key: value for key, value in payload.items() if key in response_fields}
+        )
+
+    def stored_loglikelihood(task_id: str | None) -> dict[int, dict[str, Any]]:
+        if not task_id:
+            return {}
+        from helicopter_cli.scoreboard_bridge import load_lighteval_generation
+
+        stored: dict[int, dict[str, Any]] = {}
+        for row in load_lighteval_generation(task_id=task_id):
+            if str(row.get("status") or "").lower() != "completed":
+                continue
+            context = row.get("context")
+            if not isinstance(context, dict):
+                continue
+            stats = context.get("stats")
+            if not isinstance(stats, dict) or not stats.get("loglikelihood_checkpoint"):
+                continue
+            agent_result = context.get("agent_result")
+            if not isinstance(agent_result, dict):
+                continue
+            response = agent_result.get("model_response")
+            doc = agent_result.get("doc")
+            if not isinstance(response, dict) or not isinstance(doc, dict):
+                continue
+            stored[int(row["sample_index"])] = {
+                "model_response": response,
+                "dataset_row_id": doc.get("id"),
+                "prompt": response.get("input"),
+            }
+        return stored
+
     def _call_completion_logprobs(self: LiteLLMClient, prompt: str) -> dict[str, Any]:
         url = _completion_url(self.base_url)
         headers = {"Content-Type": "application/json"}
@@ -102,69 +152,148 @@ def patch_litellm_logprobs() -> None:
     @cached(SamplingMethod.LOGPROBS)
     def loglikelihood(self: LiteLLMClient, docs: list[Any]) -> list[Any]:
         dataset = LoglikelihoodDataset(requests=docs, num_dataset_splits=self.DATASET_SPLITS)
+        default_template = os.environ.get("HELICOPTER_PROMPT_TEMPLATE", "")
+        task_request_policy = os.environ.get("HELICOPTER_LIGHTEEVAL_TASK_REQUEST_POLICY", "")
+        task_id = os.environ.get("HELICOPTER_SCOREBOARD_TASK_ID", "").strip() or None
+        dataset_name = os.environ.get("HELICOPTER_SCOREBOARD_DATASET", "").strip()
+        stored = stored_loglikelihood(task_id)
+        original_indices = {id(doc): index for index, doc in enumerate(docs)}
         results: list[Any] = []
-        for split in tqdm(
-            dataset.splits_iterator(),
-            total=dataset.num_dataset_splits,
-            desc="Splits",
-            position=0,
-            disable=self.disable_tqdm,
-        ):
-            default_template = os.environ.get("HELICOPTER_PROMPT_TEMPLATE", "")
-            task_request_policy = os.environ.get("HELICOPTER_LIGHTEEVAL_TASK_REQUEST_POLICY", "")
-            contexts = []
-            for doc in split:
-                task_name = str(getattr(doc, "task_name", "") or "")
-                if default_template or task_request_policy:
-                    template = _configured_prompt_template(task_name, default_template)
-                    contexts.append(
-                        _render_prompt(
-                            template,
-                            str(getattr(doc, "query", "")),
-                            task_name=task_name,
-                        )
-                    )
-                else:
-                    contexts.append(str(getattr(doc, "query", "")))
-            jobs: list[tuple[int, str, str]] = []
-            for doc_index, (context, doc) in enumerate(zip(contexts, split)):
-                for choice in doc.choices:
-                    jobs.append((doc_index, context, context + choice))
 
-            with ThreadPoolExecutor(self.concurrent_requests) as executor:
-                responses = list(
-                    tqdm(
-                        executor.map(lambda item: _call_completion_logprobs(self, item[2]), jobs),
-                        total=len(jobs),
+        if task_id or dataset_name:
+            from helicopter_cli.scoreboard_bridge import LightevalCheckpointSession
+
+            checkpoint_context = LightevalCheckpointSession(
+                task_id=task_id,
+                dataset=dataset_name,
+                num_samples=len(docs),
+            )
+        else:
+            checkpoint_context = nullcontext(None)
+
+        with checkpoint_context as checkpoint_session:
+            for split in tqdm(
+                dataset.splits_iterator(),
+                total=dataset.num_dataset_splits,
+                desc="Splits",
+                position=0,
+                disable=self.disable_tqdm,
+            ):
+                split_docs = list(split)
+                contexts: list[str] = []
+                task_names: list[str] = []
+                sample_indices: list[int] = []
+                for doc in split_docs:
+                    sample_index = original_indices.get(id(doc))
+                    if sample_index is None:
+                        raise RuntimeError(
+                            "LightEval changed document identity; cannot assign a stable sample_index"
+                        )
+                    task_name = str(getattr(doc, "task_name", "") or dataset_name)
+                    task_names.append(task_name)
+                    sample_indices.append(sample_index)
+                    if default_template or task_request_policy:
+                        template = _configured_prompt_template(task_name, default_template)
+                        contexts.append(
+                            _render_prompt(
+                                template,
+                                str(getattr(doc, "query", "")),
+                                task_name=task_name,
+                            )
+                        )
+                    else:
+                        contexts.append(str(getattr(doc, "query", "")))
+
+                responses: list[ModelResponse | None] = [None] * len(split_docs)
+                grouped_logprobs: list[list[float | None]] = [
+                    [None] * len(doc.choices) for doc in split_docs
+                ]
+                grouped_argmax: list[list[bool | None]] = [
+                    [None] * len(doc.choices) for doc in split_docs
+                ]
+                grouped_tokens: list[list[list[str] | None]] = [
+                    [None] * len(doc.choices) for doc in split_docs
+                ]
+                jobs: list[tuple[int, int, str, str]] = []
+                for doc_index, (doc, context, sample_index) in enumerate(
+                    zip(split_docs, contexts, sample_indices)
+                ):
+                    checkpoint = stored.get(sample_index)
+                    if checkpoint is not None:
+                        stored_doc_id = checkpoint.get("dataset_row_id")
+                        current_doc_id = getattr(doc, "id", None)
+                        if stored_doc_id is None or (
+                            current_doc_id is not None
+                            and str(stored_doc_id) != str(current_doc_id)
+                        ):
+                            raise RuntimeError(
+                                f"loglikelihood checkpoint {sample_index} belongs to a different dataset row"
+                            )
+                        if checkpoint.get("prompt") != context:
+                            raise RuntimeError(
+                                f"loglikelihood checkpoint {sample_index} prompt changed; refusing resume"
+                            )
+                        responses[doc_index] = restore_response(checkpoint["model_response"])
+                        continue
+                    for choice_index, choice in enumerate(doc.choices):
+                        full_prompt = context + str(choice)
+                        jobs.append((doc_index, choice_index, context, full_prompt))
+
+                def finish_document(doc_index: int) -> None:
+                    logprobs = grouped_logprobs[doc_index]
+                    argmax = grouped_argmax[doc_index]
+                    tokens = grouped_tokens[doc_index]
+                    if any(value is None for value in (*logprobs, *argmax, *tokens)):
+                        return
+                    response = ModelResponse(
+                        input=contexts[doc_index],
+                        logprobs=[float(value) for value in logprobs if value is not None],
+                        argmax_logits_eq_gold=[bool(value) for value in argmax if value is not None],
+                        output_tokens=[value for value in tokens if value is not None],
+                    )
+                    if checkpoint_session is not None:
+                        checkpoint_session.checkpoint_loglikelihood(
+                            task_name=task_names[doc_index],
+                            sample_index=sample_indices[doc_index],
+                            doc=split_docs[doc_index],
+                            response=response,
+                        )
+                    responses[doc_index] = response
+
+                with ThreadPoolExecutor(self.concurrent_requests) as executor:
+                    futures = {
+                        executor.submit(_call_completion_logprobs, self, full_prompt): (
+                            doc_index,
+                            choice_index,
+                            context,
+                            full_prompt,
+                        )
+                        for doc_index, choice_index, context, full_prompt in jobs
+                    }
+                    for future in tqdm(
+                        as_completed(futures),
+                        total=len(futures),
                         desc="Loglikelihoods",
                         position=1,
                         leave=False,
                         disable=self.disable_tqdm,
-                    )
-                )
+                    ):
+                        doc_index, choice_index, context, full_prompt = futures[future]
+                        response_payload = future.result()
+                        logprob, argmax, tokens = _choice_token_logprobs(
+                            response_payload,
+                            context_chars=len(context),
+                            prompt_chars=len(full_prompt),
+                        )
+                        grouped_logprobs[doc_index][choice_index] = logprob
+                        grouped_argmax[doc_index][choice_index] = argmax
+                        grouped_tokens[doc_index][choice_index] = tokens
+                        finish_document(doc_index)
 
-            grouped_logprobs: list[list[float]] = [[] for _ in split]
-            grouped_argmax: list[list[bool]] = [[] for _ in split]
-            grouped_tokens: list[list[list[str]]] = [[] for _ in split]
-            for (doc_index, context, full_prompt), response in zip(jobs, responses):
-                logprob, argmax, tokens = _choice_token_logprobs(
-                    response,
-                    context_chars=len(context),
-                    prompt_chars=len(full_prompt),
-                )
-                grouped_logprobs[doc_index].append(logprob)
-                grouped_argmax[doc_index].append(argmax)
-                grouped_tokens[doc_index].append(tokens)
-
-            for context, logprobs, argmax, tokens in zip(contexts, grouped_logprobs, grouped_argmax, grouped_tokens):
-                results.append(
-                    ModelResponse(
-                        input=context,
-                        logprobs=logprobs,
-                        argmax_logits_eq_gold=argmax,
-                        output_tokens=tokens,
-                    )
-                )
+                for response in responses:
+                    if response is None:
+                        raise RuntimeError("loglikelihood returned an incomplete response set")
+                    results.append(response)
 
         return dataset.get_original_order(results)
 

@@ -208,6 +208,62 @@ def _responses_from_database(pipeline: Pipeline) -> dict[Any, list[Any]]:
 
     outputs: dict[Any, list[Any]] = {}
     for sampling_method, docs in pipeline.sampling_docs.items():
+        if sampling_method == SamplingMethod.LOGPROBS:
+            from lighteval.models.model_output import ModelResponse
+
+            responses = []
+            for sample_index, doc in enumerate(docs):
+                stored = grouped.get(sample_index, {})
+                checkpoint = stored.get(0)
+                if checkpoint is None:
+                    raise RuntimeError(
+                        f"task {task_id} generation is incomplete at loglikelihood sample "
+                        f"{sample_index}: missing response"
+                    )
+                stored_doc_id = checkpoint.get("dataset_row_id")
+                current_doc_id = _doc_id(doc)
+                if stored_doc_id is None:
+                    raise RuntimeError(
+                        f"task {task_id} loglikelihood checkpoint {sample_index} has no dataset identity"
+                    )
+                if (
+                    current_doc_id is not None
+                    and _identity_value(stored_doc_id) != _identity_value(current_doc_id)
+                ):
+                    raise RuntimeError(
+                        f"task {task_id} loglikelihood checkpoint {sample_index} belongs to dataset row "
+                        f"{stored_doc_id!r}, not current row {current_doc_id!r}"
+                    )
+                response_payload = checkpoint["model_response"]
+                if not isinstance(response_payload, dict):
+                    raise RuntimeError(
+                        f"task {task_id} loglikelihood checkpoint {sample_index} has no model response"
+                    )
+                response_fields = {
+                    "input",
+                    "input_tokens",
+                    "text",
+                    "output_tokens",
+                    "text_post_processed",
+                    "reasonings",
+                    "logprobs",
+                    "argmax_logits_eq_gold",
+                    "logits",
+                    "unconditioned_logprobs",
+                    "truncated_tokens_count",
+                    "padded_tokens_count",
+                }
+                responses.append(
+                    ModelResponse(
+                        **{
+                            key: value
+                            for key, value in response_payload.items()
+                            if key in response_fields
+                        }
+                    )
+                )
+            outputs[sampling_method] = responses
+            continue
         if sampling_method != SamplingMethod.GENERATIVE:
             raise RuntimeError(f"database score stage does not support {sampling_method}")
         responses = []
