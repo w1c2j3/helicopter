@@ -33,9 +33,9 @@ provider = "lighteval"
 metric_source = "task_default"
 
 [evaluation]
-metric = "native"
+metric = "avg"
 avg_k = 1
-rollout_n = 48
+rollout_n = 1
 gpass_k = 16
 gpass_n = 48
 target_generations_per_benchmark = 5000

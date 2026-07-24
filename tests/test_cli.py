@@ -144,7 +144,6 @@ class Famous120BenchmarkConfigTests(unittest.TestCase):
         tasks = json.loads(plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"])["tasks"]
         self.assertEqual(tasks["gpqa:diamond"]["sampling"]["context_budget"], 8192)
 
-
 class NativeLightEvalTaskCompatibilityTests(unittest.TestCase):
     def test_math_adapter_canonicalizes_prediction_and_gold_forms(self) -> None:
         for value in (r"$\boxed{36}$", r"\boxed{36}", "36", r"\(36\)"):
@@ -815,7 +814,7 @@ class RawCompletionTests(unittest.TestCase):
             "```\nfn main() {}\n```",
         )
 
-    def test_native_logprob_mcq_choices_are_serialized_before_generation(self) -> None:
+    def test_avg_logprob_mcq_choices_are_serialized_before_generation(self) -> None:
         from lighteval.tasks.tasks.arc import arc_challenge
 
         configured = lighteval_g1h_policy._policy_config(
@@ -842,7 +841,9 @@ class RawCompletionTests(unittest.TestCase):
             ["carbon dioxide", "oxygen", "nitrogen", "helium"],
         )
         self.assertNotIn("helicopter_generated_mcq", converted.specific or {})
-        self.assertEqual(configured.metrics[0].category, lighteval_g1h_policy.SamplingMethod.LOGPROBS)
+        self.assertEqual(configured.metrics[0].category, lighteval_g1h_policy.SamplingMethod.GENERATIVE)
+        self.assertIsInstance(configured.metrics[0].sample_level_fn, lighteval_g1h_policy.AvgAtN)
+        self.assertEqual(configured.metrics[0].sample_level_fn.n, 8)
 
     def test_ifbench_resource_check_never_downloads_during_scoring(self) -> None:
         with mock.patch.object(ifbench_instructions.nltk.data, "find"), mock.patch.object(
@@ -2653,13 +2654,14 @@ class CommandPlanTests(unittest.TestCase):
                 else:
                     self.assertNotIn("```", request["prompt_template"])
 
-    def test_native_controls_remain_in_standalone_benchmark_toml(self) -> None:
+    def test_avg_controls_remain_in_standalone_benchmark_toml(self) -> None:
         config_path = "configs/benchmarks/g1h/knowledge/046_gpqa_diamond.toml"
         loaded_config, _ = config.load_config(ROOT, config_path)
         spec = loaded_config["_benchmark_specs"]["gpqa:diamond"]
         self.assertNotIn("g1h", loaded_config.get("lighteval", {}))
-        self.assertEqual(spec["evaluation"]["metric"], "native")
+        self.assertEqual(spec["evaluation"]["metric"], "avg")
         self.assertEqual(spec["evaluation"]["pass_k"], 1)
+        self.assertEqual(spec["evaluation"]["avg_k"], spec["evaluation"]["rollout_n"])
         self.assertEqual(spec["sampling"]["context_budget"], 8192)
 
     def test_lighteval_plan_cli_max_new_tokens_overrides_config(self) -> None:
@@ -5185,7 +5187,7 @@ class CommandPlanTests(unittest.TestCase):
         self.assertEqual(wrapped.metric_name, ["declared_name"])
         self.assertIsInstance(wrapped.sample_level_fn, JudgeLLM)
 
-    def test_avg_wrapper_preserves_native_pass_at_k(self) -> None:
+    def test_avg_wrapper_converts_native_pass_at_k_to_real_avg(self) -> None:
         from lighteval.metrics.metrics_sample import PassAtK
 
         metric = SimpleNamespace(
@@ -5196,8 +5198,31 @@ class CommandPlanTests(unittest.TestCase):
             higher_is_better=True,
         )
         wrapped = lighteval_g1h_policy._avg_metric(metric, k=8, name="avg@8")
-        self.assertIsInstance(wrapped.sample_level_fn, PassAtK)
-        self.assertEqual(wrapped.metric_name, metric.metric_name)
+        self.assertIsInstance(wrapped.sample_level_fn, lighteval_g1h_policy.AvgAtN)
+        self.assertEqual(wrapped.sample_level_fn.n, 8)
+        self.assertEqual(type(wrapped.sample_level_fn.compute_score.__self__).__name__, "_SinglePredictionScorer")
+
+    def test_avg_wrapper_converts_gpass_to_real_avg(self) -> None:
+        from lighteval.metrics.metrics import Metrics
+
+        wrapped = lighteval_g1h_policy._avg_metric(
+            Metrics.g_pass_at_k.value,
+            k=3,
+            name="avg@3",
+        )
+        score = wrapped.sample_level_fn.compute(
+            Doc(
+                task_name="toy",
+                query="Pick one.",
+                choices=["A", "B"],
+                gold_index=0,
+            ),
+            ModelResponse(text=["A", "B", "A"]),
+        )
+
+        self.assertIsInstance(wrapped.sample_level_fn, lighteval_g1h_policy.AvgAtN)
+        self.assertEqual(wrapped.sample_level_fn.n, 3)
+        self.assertEqual(score, 2 / 3)
 
     def test_avg_policy_prefers_native_avg_over_duplicate_pass_metric(self) -> None:
         from lighteval.metrics.metrics_sample import AvgAtN, PassAtK
@@ -5355,13 +5380,62 @@ class CommandPlanTests(unittest.TestCase):
         self.assertIsInstance(wrapped.sample_level_fn, lighteval_g1h_policy.AvgAtN)
         self.assertEqual(wrapped_score, native_score / 2)
 
-    def test_logprob_metric_is_not_converted_to_avg_generation(self) -> None:
+    def test_logprob_metric_gets_a_real_avg_generation_branch(self) -> None:
         from lighteval.metrics.metrics import Metrics
 
         metric = Metrics.loglikelihood_acc.value
         wrapped = lighteval_g1h_policy._avg_metric(metric, k=8, name="avg@8")
-        self.assertEqual(wrapped.category, lighteval_g1h_policy.SamplingMethod.LOGPROBS)
-        self.assertIs(type(wrapped.sample_level_fn), type(metric.sample_level_fn))
+        self.assertEqual(wrapped.category, lighteval_g1h_policy.SamplingMethod.GENERATIVE)
+        self.assertIsInstance(wrapped.sample_level_fn, lighteval_g1h_policy.AvgAtN)
+        self.assertEqual(wrapped.sample_level_fn.n, 8)
+
+    def test_logprob_avg_policy_drives_real_rollout_count(self) -> None:
+        from lighteval.tasks.registry import Registry
+
+        source = Registry.load_all_task_configs(custom_tasks=None, load_multilingual=True)[
+            "ceval_zho_mcf:college_programming"
+        ]
+        configured = lighteval_g1h_policy._policy_config(
+            source,
+            canonical_name="ceval_zho_mcf:college_programming",
+            policy={
+                "metric": "avg",
+                "avg_k": 3,
+                "rollout_n": 3,
+                "long_rollout_tasks": [],
+                "zero_shot": True,
+                "generation_size": 256,
+                "gpass_generation_size": 256,
+            },
+        )
+        self.assertEqual(configured.metrics[0].metric_name, "avg@3")
+        self.assertEqual(configured.metrics[0].category, lighteval_g1h_policy.SamplingMethod.GENERATIVE)
+        self.assertEqual(configured.metrics[0].sample_level_fn.n, 3)
+        self.assertEqual(configured.num_samples, [3])
+
+    def test_native_policy_keeps_logprob_metric_unchanged(self) -> None:
+        from lighteval.tasks.registry import Registry
+
+        source = Registry.load_all_task_configs(custom_tasks=None, load_multilingual=True)[
+            "ceval_zho_mcf:college_programming"
+        ]
+        configured = lighteval_g1h_policy._policy_config(
+            source,
+            canonical_name="ceval_zho_mcf:college_programming",
+            policy={
+                "metric": "native",
+                "avg_k": 8,
+                "rollout_n": 8,
+                "long_rollout_tasks": [],
+                "zero_shot": True,
+                "generation_size": 256,
+                "gpass_generation_size": 256,
+            },
+        )
+        self.assertEqual(len(configured.metrics), 1)
+        self.assertEqual(configured.metrics[0].metric_name, "acc")
+        self.assertEqual(type(configured.metrics[0].sample_level_fn).__name__, "LoglikelihoodAcc")
+        self.assertEqual(configured.metrics[0].category, lighteval_g1h_policy.SamplingMethod.LOGPROBS)
 
 
 

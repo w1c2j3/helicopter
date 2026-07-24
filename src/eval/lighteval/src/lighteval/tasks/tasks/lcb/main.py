@@ -74,6 +74,28 @@ def lcb_codegeneration_prompt_fn(line, task_name: str = "lcb:codegeneration") ->
 
 
 class CodegenMetric(SampleLevelComputation):
+    def score_one(self, doc: Doc, prediction: str) -> float:
+        """Return the pass/fail score for one generated completion.
+
+        ``compute`` keeps the historical multi-sample Pass@1 behavior.  The
+        avg@k branch uses this scalar scorer once per completion and lets
+        LightEval's official ``AvgAtN`` perform the aggregation.
+        """
+        assert doc.specific is not None, "Doc specific field is required for codegen_metric"
+
+        evaluation_sample = {
+            "inputs": doc.specific["inputs"],
+            "outputs": doc.specific["outputs"],
+            "fn_name": doc.specific["fn_name"],
+        }
+        metrics, _ = codegen_metrics(
+            [{"input_output": json.dumps(evaluation_sample)}],
+            [[extract_code(prediction)]],
+            k_list=[1],
+            num_process_evaluate=8,
+        )
+        return float(metrics["pass@1"])
+
     def compute(self, model_response: ModelResponse, doc: Doc, **kwargs) -> dict:
         """Estimates the Pass@1 metric for the code generation task.
         Extract the code from each prediction, Runs it for each sample and generations,

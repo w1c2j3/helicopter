@@ -1,9 +1,9 @@
 """Apply the common rollout policy to the curated large-eval suite.
 
 This edits the [evaluation] and [sampling] policy keys in the 60 benchmark
-TOMLs.  The task-native metric declared by each benchmark is preserved: avg
-tasks use avg@4, while native tasks keep their native scorer and receive four
-rollouts for its own aggregation.
+TOMLs.  The metric and avg_k declared by each benchmark are preserved: avg
+tasks use the TOML-selected avg@k and native tasks keep their native scorer
+and receive four rollouts for its own aggregation.
 
 Sampling is deliberately field-specific.  Math follows the local RWKV math
 evaluation family (temperature 0.8 with the math top-p/presence settings),
@@ -103,10 +103,13 @@ def main() -> int:
         metric = str(parsed.get("evaluation", {}).get("metric", "avg")).strip().lower()
         if metric not in {"avg", "native"}:
             raise SystemExit(f"unsupported metric {metric!r} in {relative}")
+        configured_avg_k = int(parsed.get("evaluation", {}).get("avg_k", 4))
+        if configured_avg_k <= 0:
+            raise SystemExit(f"invalid avg_k {configured_avg_k} in {relative}")
         updates = {
             "metric": f'"{metric}"',
-            "avg_k": "4" if metric == "avg" else "1",
-            "rollout_n": "4",
+            "avg_k": str(configured_avg_k if metric == "avg" else 1),
+            "rollout_n": str(configured_avg_k if metric == "avg" else 4),
             "pass_k": "1",
             "pass_n": "4",
         }

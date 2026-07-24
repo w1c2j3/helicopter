@@ -1,9 +1,10 @@
 """LightEval task aliases for the TOML-driven G1h policy.
 
-The policy changes sampling only through LightEval's own metric classes.  In
-particular, ordinary avg@k uses the official :class:`AvgAtN` with the task's
-native sample scorer as its ``sample_scoring_function``.  It never replaces a
-benchmark scorer with a project-wide parser, judge, or regular expression.
+The policy changes sampling only through LightEval's own metric classes.  The
+avg branch uses the official :class:`AvgAtN` and keeps the benchmark-specific
+single-completion scorer.  Log-probability multiple-choice tasks receive a
+generative choice scorer only in that avg branch; their native LOGPROBS branch
+is left unchanged.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from lighteval.metrics.metrics_sample import (
     PassAtK,
     SampleLevelComputation,
 )
+from lighteval.metrics.avg_at_n import build_avg_at_n_metric
 from lighteval.metrics.metrics import Metrics
 from lighteval.metrics.utils.metric_utils import SampleLevelMetric
 from lighteval.tasks.lighteval_task import LightevalTaskConfig
@@ -83,48 +85,13 @@ def _is_g_pass(metric: Any) -> bool:
 
 
 def _avg_metric(metric: Any, *, k: int, name: str) -> Any:
-    """Configure one metric using only LightEval's native scorer contract.
-
-    ``AvgAtN`` itself is reused and configured in place on a copy.  Otherwise,
-    a scalar generative native scorer is passed directly to a new official
-    ``AvgAtN``.  Judge, pass-at-k, grouped, batched, and non-generative
-    LightEval metrics are preserved because their contracts are not an
-    ordinary mean of independent scalar rollouts. Project-defined scorers are
-    replaced by an official LightEval metric and are never called.
-    """
+    """Build a real LightEval ``AvgAtN`` metric without changing native mode."""
 
     sample_fn = getattr(metric, "sample_level_fn", None)
-    metric_names = getattr(metric, "metric_name", None)
 
     if sample_fn is None or not type(sample_fn).__module__.startswith("lighteval."):
         return _official_fallback_metric(metric)
-
-    if isinstance(sample_fn, AvgAtN):
-        cloned = copy.deepcopy(metric)
-        cloned.sample_level_fn.n = int(k)
-        cloned.metric_name = name
-        return cloned
-
-    if (
-        not isinstance(sample_fn, SampleLevelComputation)
-        or isinstance(sample_fn, (JudgeLLM, MajAtN, PassAtK, GPassAtK))
-        or isinstance(metric_names, (list, tuple))
-        or getattr(metric, "batched_compute", False)
-        or getattr(metric, "category", None) != SamplingMethod.GENERATIVE
-    ):
-        return copy.deepcopy(metric)
-
-    return SampleLevelMetric(
-        metric_name=name,
-        sample_level_fn=AvgAtN(
-            n=int(k),
-            sample_scoring_function=copy.deepcopy(sample_fn),
-        ),
-        category=SamplingMethod.GENERATIVE,
-        corpus_level_fn=copy.deepcopy(getattr(metric, "corpus_level_fn")),
-        higher_is_better=bool(getattr(metric, "higher_is_better", True)),
-        batched_compute=False,
-    )
+    return build_avg_at_n_metric(metric, k=int(k), name=name)
 
 
 def _official_fallback_metric(metric: Any) -> Any:
@@ -371,22 +338,27 @@ def _policy_config(
         cloned.num_fewshots = 0
 
     cloned.metrics = tuple(_configure_native_metrics(cloned.metrics, policy=effective_policy))
-    gpass_metrics, gpass_n = _g_pass_metrics(cloned.metrics, policy=effective_policy)
-    if gpass_metrics:
-        cloned.metrics = tuple(gpass_metrics)
-        if gpass_n is not None:
-            cloned.num_samples = [gpass_n]
-        cloned.generation_size = int(
-            effective_policy.get("gpass_generation_size", policy["gpass_generation_size"])
-        )
-        return cloned
+    selected_metric = str(effective_policy.get("metric", "avg")).strip().lower()
 
-    # Native benchmark contracts stay native.  In particular, do not wrap
-    # pass@k, maj@N, judge, or another official LightEval metric in AvgAtN just
-    # because the surrounding launcher has an avg policy section.  The
-    # benchmark TOML decides whether this task uses avg or its task-native
-    # metric, and the native metric's own k/n controls were applied above.
-    if str(effective_policy.get("metric", "avg")).strip().lower() == "native":
+    # GPass remains an independent native branch.  When the TOML selects avg,
+    # it goes through the same AvgAtN conversion as every other sampling
+    # metric, so gpass-specific TOML controls cannot silently override metric.
+    if selected_metric == "native":
+        gpass_metrics, gpass_n = _g_pass_metrics(cloned.metrics, policy=effective_policy)
+        if gpass_metrics:
+            cloned.metrics = tuple(gpass_metrics)
+            if gpass_n is not None:
+                cloned.num_samples = [gpass_n]
+            cloned.generation_size = int(
+                effective_policy.get("gpass_generation_size", policy["gpass_generation_size"])
+            )
+            return cloned
+
+    # The benchmark TOML decides whether this task uses avg or its task-native
+    # metric.  The native branch below is deliberately untouched; only the
+    # avg branch converts the selected native scorer to a per-completion
+    # scorer wrapped by LightEval's official AvgAtN.
+    if selected_metric == "native":
         native_n = effective_policy.get("native_n")
         rollout_n = effective_policy.get("rollout_n")
         if native_n is not None:
@@ -416,8 +388,8 @@ def _policy_config(
         for metric, name in zip(metrics, names)
     )
 
-    # Only official AvgAtN needs avg_k responses. Unsupported native contracts
-    # keep the task's original num_samples and metric implementation.
+    # Every supported avg metric is represented by AvgAtN, so LightEval's
+    # request builder asks the model for exactly avg_k completions.
     uses_avg_at_n = any(
         isinstance(getattr(metric, "sample_level_fn", None), AvgAtN)
         for metric in cloned.metrics
