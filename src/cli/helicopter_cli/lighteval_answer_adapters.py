@@ -157,10 +157,24 @@ def extract_math_answer(text: str) -> str:
     whether one side happened to contain ``$`` or ``\\boxed{...}``.
     """
 
-    value = answer_region(text)
+    raw_value = str(text or "")
+    value = answer_region(raw_value)
     boxed = _last_boxed(value)
+    # Some RWKV CoT completions put the final boxed value immediately before
+    # the generated ``</think>`` tag and leave nothing after it.  In that
+    # shape the post-think region is empty, so retain a narrow fallback to the
+    # full response.  An unclosed boxed expression still returns ``None`` and
+    # therefore remains an empty/truncated answer.
+    if boxed is None and not value.strip():
+        boxed = _last_boxed(raw_value)
     if boxed is not None:
         return _format_math_value(boxed)
+
+    if re.search(r"\\(?:boxed|fbox)\s*\{", value, re.IGNORECASE):
+        return ""
+
+    if not value.strip() and raw_value.strip():
+        value = raw_value.strip()
 
     answer_cue = re.compile(
         r"(?:final\s+answer|answer|therefore|答案|结果|所以)\s*(?:is|为|是)?\s*[:：]?\s*(.+)",
