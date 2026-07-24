@@ -18,6 +18,16 @@ def test_choice_adapter_matches_rwkv_direct_letter_and_cot_answer() -> None:
     assert extract_choice_answer("<think>reasoning</think>\nC", prompt=prompt) == " C"
 
 
+def test_choice_adapter_does_not_treat_roman_numerals_as_option_labels() -> None:
+    prompt = (
+        "Question\n"
+        "I. first statement\n"
+        "II. second statement\n"
+        "Answer Choices: (A)I only (B)II only (C)both"
+    )
+    assert extract_choice_answer(" A", prompt=prompt) == " A"
+
+
 def test_math_adapter_prefers_the_last_boxed_answer() -> None:
     assert extract_math_answer("work\n\\boxed{3}\nmore work\n\\boxed{42}") == "$42$"
 

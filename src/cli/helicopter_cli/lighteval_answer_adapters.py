@@ -58,8 +58,24 @@ def answer_region(text: str) -> str:
 
 
 def _choice_letters(prompt: str) -> set[str]:
-    labels = re.findall(r"(?m)^\s*([A-Z])\s*[.)：:]", str(prompt or ""))
-    return {label for label in labels} or set("ABCD")
+    value = str(prompt or "")
+    # Statements such as ``I.``/``II.`` often appear at the beginning of a
+    # multiple-choice question. Parse labels only from the answer choices
+    # section so those Roman-numeral statements cannot reject A/B/C/D.
+    marker = re.search(r"answer\s+choices?\s*[:：]", value, re.IGNORECASE)
+    choices_text = value[marker.end() :] if marker else value
+    matches = re.findall(
+        r"(?:\(([A-Z])\)|\[([A-Z])\]|^\s*([A-Z])\s*[.):：])",
+        choices_text,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    labels = {
+        group.upper()
+        for match in matches
+        for group in match
+        if group
+    }
+    return labels or set("ABCD")
 
 
 def extract_choice_answer(text: str, *, prompt: str = "") -> str:
