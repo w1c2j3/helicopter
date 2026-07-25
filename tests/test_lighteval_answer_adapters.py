@@ -61,6 +61,21 @@ def test_math_adapter_falls_back_to_boxed_value_before_closing_think() -> None:
     assert extract_math_answer("reasoning\n\\boxed{42") == ""
 
 
+def test_math_adapter_extracts_final_delimited_answer_after_think() -> None:
+    completion = (
+        "long reasoning with the answer 540 before the boundary"
+        "</think>"
+        r"The maximum is \(\sqrt{324^2 + 432^2}=540\)."
+    )
+    assert extract_math_answer(completion) == "$540$"
+    assert answers_match(
+        completion,
+        r"$540$",
+        domain="math",
+        request_format="math_boxed",
+    ) is True
+
+
 def test_code_adapter_keeps_the_last_program_block() -> None:
     text = "explanation\n```text\nnot code\n```\n```python\ndef f():\n    return 1\n```"
     assert extract_code_completion(text) == "```\ndef f():\n    return 1\n```"

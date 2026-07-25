@@ -301,6 +301,35 @@ def _cued_math_value(value: str) -> str:
     return candidate.rstrip(".;,。；，")
 
 
+def _last_delimited_math_value(text: str) -> str | None:
+    """Extract the value from the final complete inline/display math block.
+
+    Reasoning-prefilled completions often repeat the result after ``</think>``
+    without writing ``Final answer:`` or ``\\boxed{...}``, for example
+    ``The maximum is \\(\\sqrt{...}=540\\).`` The final equality's right
+    hand side is the answer, while earlier equations in the explanation must
+    not be considered. This helper is only used on the post-think answer
+    region, so it does not turn arbitrary reasoning numbers into answers.
+    """
+
+    blocks = list(
+        re.finditer(
+            r"\\\(([^\n\r]*?)\\\)|\\\[([^\n\r]*?)\\\]|\$([^\n\r]+?)\$",
+            text,
+        )
+    )
+    if not blocks:
+        return None
+    candidate = next(group for group in blocks[-1].groups() if group is not None).strip()
+    # A final explanatory display frequently contains ``expression = answer``.
+    # Split only on an unescaped equality sign; LaTeX relations such as
+    # ``\\le`` and ``\\neq`` must remain untouched.
+    equalities = list(re.finditer(r"(?<!\\)=(?!=)", candidate))
+    if equalities:
+        candidate = candidate[equalities[-1].end() :].strip()
+    return candidate or None
+
+
 def _normalize_math_value(value: str) -> str:
     """Return one delimiter-free value for both prediction and gold text."""
 
@@ -404,6 +433,16 @@ def extract_math_answer(text: str) -> str:
                 return candidate
         return ""
 
+    # A closed reasoning prefill may repeat the final result as prose without
+    # an explicit answer cue. Use only the final complete math block in the
+    # answer region and, for ``expression = result``, its right-hand side.
+    if "</think>" in raw_value.lower():
+        candidate = _last_delimited_math_value(value)
+        if candidate:
+            formatted = _format_math_value(candidate)
+            if formatted:
+                return formatted
+
     # Without a cue, accept only a standalone short answer. Never scan the
     # last reasoning line: a long equation at the token limit is not an
     # answer and must remain empty.
@@ -438,8 +477,10 @@ def answers_match(
     # specific than the broad domain and must win here, just as it does in
     # adapt_answer().
     if domain_name == "math" or format_name in _MATH_FORMATS:
-        left = normalize_math_answer(model_answer)
-        right = normalize_math_answer(reference_answer)
+        # Use the same extractor on both sides. It handles ordinary LaTeX
+        # wrappers as well as a model's closed ``</think>`` answer region.
+        left = extract_math_answer(model_answer)
+        right = extract_math_answer(reference_answer)
         return bool(left and right and left == right)
     if domain_name == "coding" or format_name in _CODE_FORMATS:
         left = extract_code_completion(model_answer)
