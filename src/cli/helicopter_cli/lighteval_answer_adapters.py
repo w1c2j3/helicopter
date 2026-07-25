@@ -231,12 +231,14 @@ def _looks_like_math_value(value: str) -> bool:
         return False
     if not re.search(r"\d|\\[A-Za-z]+|[=^_]", value):
         return False
-    # Compact variable expressions such as x=10 are valid; ordinary prose
-    # such as ``substitutingintothesecondequation`` is not.
-    if "\\" not in value:
-        words = re.findall(r"[A-Za-z]+", value)
-        if any(len(word) > 2 for word in words):
-            return False
+    # Remove LaTeX command names before inspecting bare words. This permits
+    # ``P(\\omega)=...`` but rejects prose such as ``Theproduct`` even when
+    # the same line also contains a LaTeX command.
+    residual = re.sub(r"\\[A-Za-z]+", " ", value)
+    residual = re.sub(r"[0-9{}()[\]^_+\-*/=.,%<>|!\s]+", " ", residual)
+    words = re.findall(r"[A-Za-z]+", residual)
+    if any(len(word) > 2 for word in words):
+        return False
     return True
 
 
@@ -386,9 +388,11 @@ def extract_math_answer(text: str) -> str:
                 return candidate
         return ""
 
-    lines = [line.strip() for line in value.splitlines() if line.strip()]
-    for line in reversed(lines):
-        candidate = _format_math_value(line)
+    # Without a cue, accept only a standalone short answer. Never scan the
+    # last reasoning line: a long equation at the token limit is not an
+    # answer and must remain empty.
+    if "\n" not in value:
+        candidate = _format_math_value(value)
         if candidate:
             return candidate
     return ""

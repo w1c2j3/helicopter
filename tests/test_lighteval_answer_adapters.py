@@ -84,6 +84,11 @@ def test_math_adapter_rejects_prose_and_uses_the_last_valid_cue() -> None:
         domain="math",
         request_format="math_boxed",
     ) == ""
+    assert adapt_answer(
+        r"reasoning\nThe product \(\prod_{k=0}^{12}(2-2\omega^k)\) is evaluated repeatedly",
+        domain="math",
+        request_format="math_boxed",
+    ) == ""
 
 
 def test_math_adapter_normalizes_integer_leading_zeros_symmetrically() -> None:
