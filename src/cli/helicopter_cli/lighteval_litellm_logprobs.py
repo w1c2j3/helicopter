@@ -153,7 +153,10 @@ def patch_litellm_logprobs() -> None:
     def loglikelihood(self: LiteLLMClient, docs: list[Any]) -> list[Any]:
         dataset = LoglikelihoodDataset(requests=docs, num_dataset_splits=self.DATASET_SPLITS)
         default_template = os.environ.get("HELICOPTER_PROMPT_TEMPLATE", "")
-        task_request_policy = os.environ.get("HELICOPTER_LIGHTEEVAL_TASK_REQUEST_POLICY", "")
+        task_request_policy = os.environ.get(
+            "HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY",
+            os.environ.get("HELICOPTER_LIGHTEEVAL_TASK_REQUEST_POLICY", ""),
+        )
         task_id = os.environ.get("HELICOPTER_SCOREBOARD_TASK_ID", "").strip() or None
         dataset_name = os.environ.get("HELICOPTER_SCOREBOARD_DATASET", "").strip()
         stored = stored_loglikelihood(task_id)

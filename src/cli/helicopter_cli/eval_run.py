@@ -236,7 +236,12 @@ def _lighteval_detail_payloads(
 
     request_policy: Mapping[str, Any] = {}
     try:
-        payload = json.loads(os.environ.get("HELICOPTER_LIGHTEEVAL_TASK_REQUEST_POLICY", ""))
+        payload = json.loads(
+            os.environ.get(
+                "HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY",
+                os.environ.get("HELICOPTER_LIGHTEEVAL_TASK_REQUEST_POLICY", ""),
+            )
+        )
         tasks = payload.get("tasks", {})
         if isinstance(tasks, Mapping) and len(tasks) == 1:
             entry = next(iter(tasks.values()))

@@ -5180,6 +5180,22 @@ class CommandPlanTests(unittest.TestCase):
 
         self.assertEqual(wrapped.sample_level_fn.compute(doc, response), 0.5)
 
+    def test_request_policy_reads_the_launcher_environment_name(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY": json.dumps(
+                    {"tasks": {"aime24": {"domain": "math", "format": "math_boxed"}}}
+                ),
+                "HELICOPTER_LIGHTEEVAL_TASK_REQUEST_POLICY": "",
+            },
+            clear=False,
+        ):
+            request_policy = lighteval_g1h_policy._request_policy_from_environment()
+
+        self.assertEqual(request_policy["domain"], "math")
+        self.assertEqual(request_policy["format"], "math_boxed")
+
     def test_avg_wrapper_uses_native_light_eval_math_metric(self) -> None:
         from lighteval.metrics.metrics_sample import ExactMatches
 

@@ -47,6 +47,8 @@ from .g1h_config import alias_task_name, canonical_task_name, format_query, norm
 
 POLICY_ENV = "HELICOPTER_LIGHTEEVAL_G1H_POLICY"
 TASKS_ENV = "HELICOPTER_LIGHTEEVAL_TASKS"
+TASK_REQUEST_POLICY_ENV = "HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"
+LEGACY_TASK_REQUEST_POLICY_ENV = "HELICOPTER_LIGHTEEVAL_TASK_REQUEST_POLICY"
 _TASK_SPEC_SUFFIX_RE = re.compile(r"\|\d+$")
 
 
@@ -256,7 +258,12 @@ def _metrics_for_avg(metrics: Iterable[Any]) -> list[Any]:
 def _request_policy_from_environment() -> Mapping[str, Any]:
     """Read the task request policy shared by prompt and score adapters."""
 
-    raw = os.environ.get("HELICOPTER_LIGHTEEVAL_TASK_REQUEST_POLICY", "")
+    # The launcher, raw completion client, DB pipeline, and scoreboard bridge
+    # use TASK_REQUEST_POLICY_ENV. Accept the old misspelled name only as a
+    # compatibility fallback for already-created local commands.
+    raw = os.environ.get(TASK_REQUEST_POLICY_ENV, "").strip()
+    if not raw:
+        raw = os.environ.get(LEGACY_TASK_REQUEST_POLICY_ENV, "").strip()
     try:
         payload = json.loads(raw)
         tasks = payload.get("tasks", {})
