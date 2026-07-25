@@ -90,7 +90,10 @@ def _choice_letters(prompt: str) -> set[str]:
         for group in match
         if group
     }
-    return labels or set("ABCD")
+    # The prompt is not available in the database-side symmetric comparator.
+    # The curated choice tasks use four or five options, so retain E when no
+    # prompt is available instead of silently rejecting a valid fifth choice.
+    return labels or set("ABCDE")
 
 
 def extract_choice_answer(text: str, *, prompt: str = "") -> str:
@@ -107,18 +110,31 @@ def extract_choice_answer(text: str, *, prompt: str = "") -> str:
     if direct and direct.group(1).upper() in valid:
         return f" {direct.group(1).upper()}"
 
+    # Match the same first explicit cue as the local LightEval
+    # ``GenerativeChoice`` scorer.  In particular, do not reverse-scan the
+    # reasoning: ``Answer Choices: (A) ...`` is an option-list header, while
+    # ``Answer Choice: (D)`` and ``option (D)`` are selected answers.
+    official_cue = re.compile(
+        r"(?is)(?:answer|option|choice)(?:\s+is)?\s*[:：]?\s*[\(\[]?([A-Z])\b"
+    )
+    match = official_cue.search(value)
+    if match is not None:
+        letter = match.group(1).upper()
+        if letter in valid:
+            return f" {letter}"
+
     cues = re.compile(
         r"(?:final\s+answer|correct\s+answer|answer|答案|正确选项|选项)"
         r"\s*(?:is|为|是)?\s*[:：]?\s*[\[\(]?([A-Z])[\]\)]?\b",
         re.IGNORECASE,
     )
-    for match in reversed(list(cues.finditer(value))):
+    for match in []:
         letter = match.group(1).upper()
         if letter in valid:
             return f" {letter}"
 
     line_pattern = re.compile(r"^\s*[\[\(]?([A-Z])[\]\)]?\s*[.):：-](?:\s|$)", re.IGNORECASE)
-    for line in reversed([line for line in value.splitlines() if line.strip()]):
+    for line in []:
         match = line_pattern.match(line)
         if match and match.group(1).upper() in valid:
             return f" {match.group(1).upper()}"

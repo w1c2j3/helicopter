@@ -27,6 +27,19 @@ def test_choice_adapter_matches_rwkv_direct_letter_and_cot_answer() -> None:
     assert extract_choice_answer("<think>reasoning</think>\nC", prompt=prompt) == " C"
 
 
+def test_choice_adapter_accepts_common_explicit_choice_cues() -> None:
+    assert extract_choice_answer("Answer Choice: (D) 2/5") == " D"
+    assert extract_choice_answer("The correct choice is (D) 11.5.") == " D"
+    assert extract_choice_answer("**Correct choice: (B) After 12 minutes**") == " B"
+    assert extract_choice_answer("Thus, the capacity corresponds to option (D).") == " D"
+
+
+def test_choice_adapter_does_not_read_answer_choices_header_as_answer() -> None:
+    value = "Answer Choices: (A) 7.5 (B) 8.9 (C) 9.9 (D) 11.5 (E) 11.7"
+    assert extract_choice_answer(value) != " A"
+    assert extract_choice_answer(" E") == " E"
+
+
 def test_choice_adapter_does_not_treat_roman_numerals_as_option_labels() -> None:
     prompt = (
         "Question\n"
