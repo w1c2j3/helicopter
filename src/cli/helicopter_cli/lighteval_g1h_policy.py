@@ -18,6 +18,8 @@ from pathlib import Path
 from string import ascii_uppercase
 from typing import Any
 
+import numpy as np
+
 from lighteval.metrics.metrics_sample import (
     AvgAtN,
     GPassAtK,
@@ -84,13 +86,81 @@ def _is_g_pass(metric: Any) -> bool:
     return isinstance(sample_fn, GPassAtK) or "g-pass@" in str(names).lower()
 
 
-def _avg_metric(metric: Any, *, k: int, name: str) -> Any:
+class _CanonicalAnswerScorer(SampleLevelComputation):
+    """Score one rollout with the same adapter used by the DB eval rows."""
+
+    def __init__(self, *, domain: str, request_format: str):
+        self.domain = str(domain or "").strip().lower()
+        self.request_format = str(request_format or "").strip().lower()
+
+    def compute(self, doc: Doc, model_response: Any, **kwargs: Any) -> float:
+        del kwargs
+        predictions = list(getattr(model_response, "final_text", []) or [])
+        if not any(str(item or "").strip() for item in predictions):
+            predictions = list(getattr(model_response, "text", []) or [])
+        if not predictions:
+            return 0.0
+        prediction = str(predictions[0] or "")
+
+        from helicopter_cli.lighteval_answer_adapters import answers_match
+
+        format_name = self.request_format
+        if format_name in {"choice", "multiple_choice", "multichoice", "mmlu"}:
+            choices = list(getattr(doc, "choices", None) or [])
+            gold_indices = getattr(doc, "gold_index", [])
+            if not isinstance(gold_indices, (list, tuple, set)):
+                gold_indices = [gold_indices]
+            golds = [
+                ascii_uppercase[int(index)]
+                for index in gold_indices
+                if isinstance(index, int) and 0 <= int(index) < len(ascii_uppercase)
+            ]
+        else:
+            golds = list(doc.get_golds())
+
+        for gold in golds:
+            matched = answers_match(
+                prediction,
+                str(gold),
+                domain=self.domain,
+                request_format=self.request_format,
+            )
+            if matched is True:
+                return 1.0
+        return 0.0
+
+
+def _avg_metric(
+    metric: Any,
+    *,
+    k: int,
+    name: str,
+    domain: str | None = None,
+    request_format: str | None = None,
+) -> Any:
     """Build a real LightEval ``AvgAtN`` metric without changing native mode."""
 
     sample_fn = getattr(metric, "sample_level_fn", None)
 
     if sample_fn is None or not type(sample_fn).__module__.startswith("lighteval."):
         return _official_fallback_metric(metric)
+
+    domain_name = str(domain or "").strip().lower()
+    format_name = str(request_format or "").strip().lower()
+    if domain_name == "math" or format_name in {"choice", "multiple_choice", "multichoice", "mmlu"}:
+        return SampleLevelMetric(
+            metric_name=name,
+            sample_level_fn=AvgAtN(
+                n=int(k),
+                sample_scoring_function=_CanonicalAnswerScorer(
+                    domain=domain_name,
+                    request_format=format_name,
+                ),
+            ),
+            category=SamplingMethod.GENERATIVE,
+            corpus_level_fn=np.mean,
+            higher_is_better=True,
+        )
     return build_avg_at_n_metric(metric, k=int(k), name=name)
 
 
@@ -469,8 +539,17 @@ def _policy_config(
         f"avg@{avg_k}" if len(metrics) == 1 else f"avg@{avg_k}_{index}"
         for index in range(len(metrics))
     ]
+    request_policy = _request_policy_from_environment()
+    request_domain = str(request_policy.get("domain") or "").strip().lower()
+    request_format = str(request_policy.get("format") or "").strip().lower()
     cloned.metrics = tuple(
-        _avg_metric(metric, k=avg_k, name=name)
+        _avg_metric(
+            metric,
+            k=avg_k,
+            name=name,
+            domain=request_domain,
+            request_format=request_format,
+        )
         for metric, name in zip(metrics, names)
     )
 

@@ -5159,6 +5159,27 @@ class CommandPlanTests(unittest.TestCase):
 
         self.assertEqual(wrapped.sample_level_fn.compute(doc, response), 0.5)
 
+    def test_avg_math_uses_the_canonical_answer_adapter_when_configured(self) -> None:
+        from lighteval.metrics.metrics import Metrics
+
+        metric = Metrics.avg_at_n_math.value
+        wrapped = lighteval_g1h_policy._avg_metric(
+            metric,
+            k=2,
+            name="avg@2",
+            domain="math",
+            request_format="math_boxed",
+        )
+        doc = Doc(query="Find the value.", choices=["$\\boxed{540}$"], gold_index=0)
+        response = ModelResponse(
+            text=[
+                r"reasoning</think>The maximum is \(\sqrt{324^2 + 432^2}=540\).",
+                r"\boxed{541}",
+            ]
+        )
+
+        self.assertEqual(wrapped.sample_level_fn.compute(doc, response), 0.5)
+
     def test_avg_wrapper_uses_native_light_eval_math_metric(self) -> None:
         from lighteval.metrics.metrics_sample import ExactMatches
 
