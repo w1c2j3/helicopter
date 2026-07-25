@@ -231,7 +231,7 @@ def _lighteval_detail_payloads(
     except ImportError:
         return [], []
 
-    from .lighteval_answer_adapters import adapt_answer
+    from .lighteval_answer_adapters import adapt_answer, answers_match
     from .scoreboard_bridge import _compact_lighteval_doc, _reference
 
     request_policy: Mapping[str, Any] = {}
@@ -275,7 +275,21 @@ def _lighteval_detail_payloads(
                 prompt=str(response.get("input") or doc.get("query") or ""),
                 stops=(request_policy.get("stop") if isinstance(request_policy.get("stop"), list) else []),
             )
-            passed = _lighteval_passed(metrics)
+            adapted_passed = answers_match(
+                answer,
+                reference,
+                domain=request_policy.get("domain"),
+                request_format=request_policy.get("format"),
+            )
+            if adapted_passed is not None:
+                passed = adapted_passed
+            elif any(
+                any(token in str(name).lower() for token in ("avg@", "maj@", "gpass@", "stderr"))
+                for name in metrics
+            ):
+                passed = False
+            else:
+                passed = _lighteval_passed(metrics)
             key = {"sample_index": sample_index, "repeat_index": 0, "pass_index": 0}
             completion_payloads.append(
                 {

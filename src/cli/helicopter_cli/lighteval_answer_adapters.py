@@ -33,6 +33,13 @@ _CODE_FORMATS = {
 }
 _CHOICE_FORMATS = {"choice", "multiple_choice", "multichoice", "mmlu"}
 _MATH_FORMATS = {"math", "math_boxed", "math_free_response", "math_open_qa"}
+_MATH_CUE = re.compile(
+    r"(?:final\s+answer|answer\s+is|the\s+answer(?:\s+is)?|therefore|answer|"
+    r"最终答案|答案|结论)"
+    r"\s*(?:[,：:]\s*)?(?:the\s+answer\s*(?:is|[:：])\s*)?"
+    r"(?P<value>[^\n\r]*)",
+    re.IGNORECASE,
+)
 
 
 def truncate_rwkv_completion(text: str, stops: Iterable[str] = ()) -> str:
@@ -124,9 +131,18 @@ def extract_choice_answer(text: str, *, prompt: str = "") -> str:
     return lines[-1] if lines else ""
 
 
-def _last_boxed(text: str) -> str | None:
+def _boxed_candidates(text: str) -> list[str]:
+    """Return complete boxed values in source order.
+
+    A completion can be cut off after a later ``\\boxed{``. We must not let
+    that incomplete tail hide the last complete answer that came before it.
+    Keeping all complete candidates also lets the math validator skip a
+    syntactically complete box whose contents contain a truncated ``\\frac``.
+    """
+
+    candidates: list[str] = []
     matches = list(re.finditer(r"\\(?:boxed|fbox)\s*\{", text, re.IGNORECASE))
-    for match in reversed(matches):
+    for match in matches:
         start = match.end()
         depth = 1
         for index in range(start, len(text)):
@@ -135,8 +151,136 @@ def _last_boxed(text: str) -> str | None:
             elif text[index] == "}" and (index == 0 or text[index - 1] != "\\"):
                 depth -= 1
                 if depth == 0:
-                    return text[start:index].strip()
-    return None
+                    candidates.append(text[start:index].strip())
+                    break
+    return candidates
+
+
+def _last_boxed(text: str) -> str | None:
+    candidates = _boxed_candidates(text)
+    return candidates[-1] if candidates else None
+
+
+def _read_math_argument(text: str, start: int) -> tuple[str | None, int]:
+    """Read one fraction argument and return ``(value, next_index)``."""
+
+    index = start
+    while index < len(text) and text[index].isspace():
+        index += 1
+    if index >= len(text):
+        return None, index
+
+    if text[index] != "{":
+        # LightEval accepts the compact form ``\\frac12``. It treats the
+        # next two tokens as the numerator and denominator.
+        return text[index], index + 1
+
+    begin = index + 1
+    depth = 1
+    index += 1
+    while index < len(text):
+        if text[index] == "{" and (index == 0 or text[index - 1] != "\\"):
+            depth += 1
+        elif text[index] == "}" and (index == 0 or text[index - 1] != "\\"):
+            depth -= 1
+            if depth == 0:
+                value = text[begin:index]
+                return (value if value.strip() else None), index + 1
+        index += 1
+    return None, index
+
+
+def _has_complete_fractions(text: str) -> bool:
+    """Reject truncated fraction commands before calling LightEval.
+
+    The upstream normalizer indexes the suffix after ``\\frac``. A cut-off
+    completion such as ``\\frac`` or ``\\frac{1}`` therefore raises instead
+    of producing an answer. This check requires two non-empty arguments for
+    every fraction command.
+    """
+
+    for match in re.finditer(r"\\(?:dfrac|tfrac|frac)\b", text):
+        numerator, next_index = _read_math_argument(text, match.end())
+        if numerator is None:
+            return False
+        denominator, _ = _read_math_argument(text, next_index)
+        if denominator is None:
+            return False
+    return True
+
+
+def _is_complete_math_value(value: str) -> bool:
+    if not value.strip() or not _has_complete_fractions(value):
+        return False
+    depth = 0
+    for index, char in enumerate(value):
+        if char == "{" and (index == 0 or value[index - 1] != "\\"):
+            depth += 1
+        elif char == "}" and (index == 0 or value[index - 1] != "\\"):
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
+
+
+def _looks_like_math_value(value: str) -> bool:
+    """Reject prose that happens to follow an answer cue."""
+
+    value = str(value or "").strip()
+    if not value or re.search(r"[^0-9A-Za-z\\{}()[\]^_+\-*/=.,%<>|! ]", value):
+        return False
+    if not re.search(r"\d|\\[A-Za-z]+|[=^_]", value):
+        return False
+    # Compact variable expressions such as x=10 are valid; ordinary prose
+    # such as ``substitutingintothesecondequation`` is not.
+    if "\\" not in value:
+        words = re.findall(r"[A-Za-z]+", value)
+        if any(len(word) > 2 for word in words):
+            return False
+    return True
+
+
+def _canonical_integer(value: str) -> str:
+    """Canonicalize integer spelling, including AIME's leading zeros."""
+
+    match = re.fullmatch(r"([+-]?)(\d+)", value)
+    if not match:
+        return value
+    sign, digits = match.groups()
+    canonical = str(int(digits))
+    return f"-{canonical}" if sign == "-" and canonical != "0" else canonical
+
+
+def _cued_math_value(value: str) -> str:
+    """Extract a short math expression from one answer-cue match."""
+
+    candidate = str(value or "").strip().strip("` ")
+    candidate = re.sub(
+        r"^(?:[,;:：=]|is\b|the\s+answer\s*(?:is|[:：]))\s*",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+    delimited = list(
+        re.finditer(
+            r"\\\(([^\n\r]*?)\\\)|\\\[([^\n\r]*?)\\\]|\$([^\n\r]+?)\$",
+            candidate,
+        )
+    )
+    if delimited:
+        match = delimited[-1]
+        candidate = next(group for group in match.groups() if group is not None).strip()
+
+    integer_or_decimal = re.match(r"[+-]?\d[\d,]*(?:\.\d+)?", candidate)
+    if integer_or_decimal:
+        return integer_or_decimal.group(0)
+    fraction = re.match(r"\\(?:frac|dfrac|tfrac)\b", candidate)
+    if fraction:
+        _, next_index = _read_math_argument(candidate, fraction.end())
+        _, end_index = _read_math_argument(candidate, next_index)
+        if end_index > next_index:
+            return candidate[:end_index]
+    return candidate.rstrip(".;,。；，")
 
 
 def _normalize_math_value(value: str) -> str:
@@ -163,11 +307,21 @@ def _normalize_math_value(value: str) -> str:
 
 def _format_math_value(value: str) -> str:
     normalized = _normalize_math_value(value)
+    if not _looks_like_math_value(normalized) or not _is_complete_math_value(normalized):
+        return ""
+    normalized = _canonical_integer(normalized)
     if normalized and _official_math_normalizer is not None:
         # LightEval's normalizer expects a complete solution containing a
         # boxed answer. Re-wrap our already extracted value to reuse its
         # fraction/spacing equivalence rules.
-        normalized = _official_math_normalizer(f"\\boxed{{{normalized}}}") or normalized
+        try:
+            normalized = _official_math_normalizer(f"\\boxed{{{normalized}}}") or normalized
+        except Exception:
+            # A malformed candidate is not an answer. The caller will try the
+            # previous complete candidate, if one exists.
+            return ""
+        if not _is_complete_math_value(normalized):
+            return ""
     return f"${normalized}$" if normalized else ""
 
 
@@ -181,10 +335,21 @@ def normalize_math_answer(value: str) -> str:
     """
 
     raw = str(value or "")
-    boxed = _last_boxed(raw)
-    if boxed is not None:
-        raw = boxed
-    return _format_math_value(raw)
+    boxed_candidates = _boxed_candidates(raw)
+    if boxed_candidates:
+        for boxed in reversed(boxed_candidates):
+            formatted = _format_math_value(boxed)
+            if formatted:
+                return formatted
+        return ""
+    formatted = _format_math_value(raw)
+    if formatted:
+        return formatted
+    for match in reversed(list(_MATH_CUE.finditer(raw))):
+        formatted = _format_math_value(_cued_math_value(match.group("value")))
+        if formatted:
+            return formatted
+    return ""
 
 
 def extract_math_answer(text: str) -> str:
@@ -200,26 +365,63 @@ def extract_math_answer(text: str) -> str:
     # response first and choose the last *complete* boxed expression; the
     # parser skips a later, truncated ``\boxed{`` and can still use an earlier
     # complete answer.
-    boxed = _last_boxed(raw_value)
-    if boxed is not None:
-        return normalize_math_answer(boxed)
+    boxed_candidates = _boxed_candidates(raw_value)
+    if boxed_candidates:
+        for boxed in reversed(boxed_candidates):
+            formatted = _format_math_value(boxed)
+            if formatted:
+                return formatted
+        return ""
 
     if re.search(r"\\(?:boxed|fbox)\s*\{", raw_value, re.IGNORECASE):
         return ""
 
     value = answer_region(raw_value)
 
-    answer_cue = re.compile(
-        r"(?:final\s+answer|answer|therefore|答案|结果|所以)\s*(?:is|为|是)?\s*[:：]?\s*(.+)",
-        re.IGNORECASE,
-    )
-    matches = list(answer_cue.finditer(value))
+    matches = list(_MATH_CUE.finditer(value))
     if matches:
-        candidate = matches[-1].group(1).strip()
-    else:
-        lines = [line.strip() for line in value.splitlines() if line.strip()]
-        candidate = lines[-1] if lines else ""
-    return normalize_math_answer(candidate)
+        for match in reversed(matches):
+            candidate = _format_math_value(_cued_math_value(match.group("value")))
+            if candidate:
+                return candidate
+        return ""
+
+    lines = [line.strip() for line in value.splitlines() if line.strip()]
+    for line in reversed(lines):
+        candidate = _format_math_value(line)
+        if candidate:
+            return candidate
+    return ""
+
+
+def answers_match(
+    model_answer: str,
+    reference_answer: str,
+    *,
+    domain: str | None,
+    request_format: str | None,
+) -> bool | None:
+    """Compare two answers with the same domain-specific normalization.
+
+    ``None`` means the domain has a richer native scorer and should not be
+    reduced to string equality in the per-completion diagnostic table.
+    """
+
+    domain_name = str(domain or "").strip().lower()
+    format_name = str(request_format or "").strip().lower()
+    if domain_name == "math" or format_name in _MATH_FORMATS:
+        left = normalize_math_answer(model_answer)
+        right = normalize_math_answer(reference_answer)
+        return bool(left and right and left == right)
+    if format_name in _CHOICE_FORMATS:
+        left = extract_choice_answer(model_answer)
+        right = extract_choice_answer(reference_answer)
+        return bool(left and right and left == right)
+    if domain_name == "coding" or format_name in _CODE_FORMATS:
+        left = extract_code_completion(model_answer)
+        right = extract_code_completion(reference_answer)
+        return bool(left and right and left == right)
+    return None
 
 
 def extract_code_completion(text: str) -> str:

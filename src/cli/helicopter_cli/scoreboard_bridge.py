@@ -12,7 +12,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from helicopter_cli.lighteval_answer_adapters import adapt_answer
+from helicopter_cli.lighteval_answer_adapters import adapt_answer, answers_match
 
 
 _LOCK = threading.Lock()
@@ -234,6 +234,15 @@ def _passed(metrics: Mapping[str, Any]) -> bool:
             pass
     return False
 
+
+def _aggregate_only(metrics: Mapping[str, Any]) -> bool:
+    """Whether a metric describes the whole Avg/Maj/GPass sample group."""
+
+    return any(
+        any(token in str(name).lower() for token in ("avg@", "maj@", "gpass@", "stderr"))
+        for name in metrics
+    )
+
 def _rollout_official_result(
     response: Mapping[str, Any],
     repeat_index: int,
@@ -437,7 +446,6 @@ def write_lighteval_tracker(tracker: Any) -> list[str]:
                     ),
                 )
                 official_passed, rollout_metrics = _rollout_official_result(response, repeat_index)
-                passed = _passed(metric) if official_passed is None else official_passed
                 key = {"sample_index": index, "repeat_index": repeat_index, "pass_index": 0}
                 stage_payload = _completion_stages(
                     rollout,
@@ -472,6 +480,21 @@ def write_lighteval_tracker(tracker: Any) -> list[str]:
                         else []
                     ),
                 )
+                adapted_passed = answers_match(
+                    answer,
+                    reference,
+                    domain=configured_task_policy.get("domain"),
+                    request_format=configured_task_policy.get("format"),
+                )
+                if official_passed is not None:
+                    passed = official_passed
+                elif adapted_passed is not None:
+                    passed = adapted_passed
+                elif _aggregate_only(metric):
+                    # An aggregate result cannot be copied to one rollout.
+                    passed = False
+                else:
+                    passed = _passed(metric)
                 evals.append(
                     {
                         **key,

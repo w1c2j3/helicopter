@@ -343,6 +343,10 @@ def main() -> int:
     parser.add_argument("--env-file")
     parser.add_argument("--proxy", help="HTTP proxy for dataset/judge downloads")
     parser.add_argument("--start-at", type=int, default=0)
+    parser.add_argument(
+        "--models",
+        help="comma-separated model aliases to run; defaults to all models in the manifest",
+    )
     parser.add_argument("--max-retries", type=int, default=1)
     parser.add_argument(
         "--results-dir",
@@ -380,8 +384,23 @@ def main() -> int:
         "g1h-7.2b": "http://127.0.0.1:29572/v1",
         "g1h-13.3b": "http://127.0.0.1:29533/v1",
     }
-    models = [str(item) for item in run["models"]]
-    tunnels = ensure_tunnels(endpoints, api_key)
+    configured_models = [str(item) for item in run["models"]]
+    if args.models:
+        models = [item.strip() for item in str(args.models).split(",") if item.strip()]
+        unknown_models = sorted(set(models) - set(configured_models))
+        if unknown_models:
+            raise SystemExit(
+                "unknown model aliases in --models: "
+                + ", ".join(unknown_models)
+                + "; configured aliases: "
+                + ", ".join(configured_models)
+            )
+        if not models:
+            raise SystemExit("--models must contain at least one model alias")
+    else:
+        models = configured_models
+    selected_endpoints = {model: endpoints[model] for model in models}
+    tunnels = ensure_tunnels(selected_endpoints, api_key)
     try:
         asyncio.run(check_database(ROOT))
         print("large-eval: database and all four model endpoints are healthy", flush=True)

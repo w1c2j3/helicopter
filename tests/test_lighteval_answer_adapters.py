@@ -11,9 +11,11 @@ from lighteval.tasks.requests import Doc
 
 from helicopter_cli.lighteval_answer_adapters import (
     adapt_answer,
+    answers_match,
     extract_choice_answer,
     extract_code_completion,
     extract_math_answer,
+    normalize_math_answer,
 )
 from helicopter_cli.lighteval_g1h_policy import _normalize_doc_references
 
@@ -62,6 +64,36 @@ def test_math_adapter_is_symmetric_for_latex_wrappers() -> None:
     assert {adapt_answer(value, domain="math", request_format="math_boxed") for value in values} == {"$4000$"}
     assert adapt_answer(r"$1/2$", domain="math", request_format="math_boxed") == r"$\frac{1}{2}$"
     assert adapt_answer(r"\frac{1}{2}", domain="math", request_format="math_boxed") == r"$\frac{1}{2}$"
+
+
+def test_math_adapter_falls_back_from_truncated_fraction_to_previous_answer() -> None:
+    assert adapt_answer("Final answer: 42\nFinal answer: \\frac", domain="math", request_format="math_boxed") == "$42$"
+    assert adapt_answer(r"Final answer: \frac", domain="math", request_format="math_boxed") == ""
+    assert adapt_answer(r"Final answer: \frac{1}", domain="math", request_format="math_boxed") == ""
+    assert adapt_answer("\\boxed{42}\n\\boxed{\\frac}", domain="math", request_format="math_boxed") == "$42$"
+
+
+def test_math_adapter_rejects_prose_and_uses_the_last_valid_cue() -> None:
+    assert adapt_answer(
+        "The answer is 25.\nsubstituting into the second equation:",
+        domain="math",
+        request_format="math_boxed",
+    ) == "$25$"
+    assert adapt_answer(
+        "substituting into the second equation:",
+        domain="math",
+        request_format="math_boxed",
+    ) == ""
+
+
+def test_math_adapter_normalizes_integer_leading_zeros_symmetrically() -> None:
+    assert normalize_math_answer(r"$025$") == "$25$"
+    assert answers_match(
+        r"$025$",
+        r"\boxed{25}",
+        domain="math",
+        request_format="math_boxed",
+    ) is True
 
 
 def test_code_adapter_is_symmetric_for_fenced_and_plain_reference() -> None:
