@@ -75,6 +75,7 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
           <a className={isDashboard ? "active" : ""} href={pageHref("/?page=dashboard")}>评测看板</a>
           <a className={isHistory ? "active" : ""} href={pageHref("/?page=history")}>分数历史</a>
           {page === "admin" ? <a className="active" href={pageHref("/?page=admin")}>管理面板</a> : null}
+          {page !== "admin" ? <a href={pageHref("/?page=admin")}>任务管理</a> : null}
         </nav>
       </header>
       {loadError ? <div className="error-bar">加载评测看板失败：{loadError}</div> : null}

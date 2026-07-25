@@ -4,6 +4,7 @@ import json
 import os
 import re
 import signal
+import shutil
 import subprocess
 import sys
 import threading
@@ -85,16 +86,71 @@ def _latest_config() -> str:
     return "configs/example.toml"
 
 
-def admin_options() -> dict[str, Any]:
+def _gpu_options() -> list[dict[str, Any]]:
+    if shutil.which("nvidia-smi") is None:
+        return []
+    try:
+        completed = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,memory.total,memory.used",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, TypeError, subprocess.TimeoutExpired):
+        return []
+    if completed.returncode != 0:
+        return []
+    result: list[dict[str, Any]] = []
+    for line in completed.stdout.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 4 or not parts[0].isdigit():
+            continue
+        result.append(
+            {
+                "id": parts[0],
+                "name": parts[1],
+                "memory_total_mib": int(float(parts[2])),
+                "memory_used_mib": int(float(parts[3])),
+            }
+        )
+    return result
+
+
+def admin_options(*, include_gpu: bool = True) -> dict[str, Any]:
     configs = sorted((REPO_ROOT / "configs").rglob("*.toml"))
     models: set[str] = set()
+    model_options: dict[str, dict[str, Any]] = {}
     tasks: set[str] = set()
     for path in configs:
         try:
             data = tomllib.loads(path.read_text(encoding="utf-8"))
         except (OSError, tomllib.TOMLDecodeError):
             continue
-        models.update(str(key) for key in (data.get("models") or {}))
+        config_name = path.relative_to(REPO_ROOT).as_posix()
+        for key, raw in (data.get("models") or {}).items():
+            if not isinstance(raw, dict) or key == "deployed":
+                continue
+            name = str(key)
+            models.add(name)
+            option = model_options.setdefault(
+                name,
+                {
+                    "name": name,
+                    "weight_path": raw.get("path") or raw.get("file"),
+                    "served_model_name": raw.get("served_model_name"),
+                    "configs": [],
+                    "runtime": "local-vllm-rwkv",
+                },
+            )
+            option["configs"].append(config_name)
+            if not option.get("weight_path"):
+                option["weight_path"] = raw.get("path") or raw.get("file")
+            if not option.get("served_model_name"):
+                option["served_model_name"] = raw.get("served_model_name")
         light = data.get("lighteval") or {}
         batch = (data.get("eval") or {}).get("batch") or {}
         tasks.update(_as_list(batch.get("tasks") or light.get("tasks")))
@@ -102,6 +158,8 @@ def admin_options() -> dict[str, Any]:
         "jobs": [{"name": task, "domain": "lighteval"} for task in sorted(tasks)],
         "domains": sorted(tasks),
         "model_select": sorted(models),
+        "model_options": [model_options[name] for name in sorted(model_options)],
+        "gpu_options": _gpu_options() if include_gpu else [],
         "worker_profile": ["local-managed", "existing-endpoint"],
         "protocol": ["openai"],
         "run_mode": ["skip-completed", "rerun"],

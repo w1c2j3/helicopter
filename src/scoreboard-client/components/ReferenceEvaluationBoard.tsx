@@ -1,8 +1,10 @@
 "use client";
 
-import type { CSSProperties } from "react";
 import { useEffect, useMemo, useState } from "react";
 
+import { api } from "../lib/api";
+import type { EvalContextResponse } from "../lib/dtos/api/eval_context";
+import type { EvalRecord } from "../lib/dtos/api/eval_records";
 import type {
   LeaderboardMatrix,
   MatrixCell,
@@ -36,9 +38,10 @@ type ScoreSelection = {
   cell: MatrixCell;
 };
 
-type MockAnswer = {
+type AnswerRecord = {
   id: string;
   repeatId: number;
+  passIndex: number;
   groundTruth: string;
   modelAnswer: string;
   category: AnswerCategory;
@@ -46,6 +49,8 @@ type MockAnswer = {
   completion: string;
   generatedTokens: number;
   latencyMs: number;
+  failReason: string;
+  source: EvalRecord | null;
 };
 
 const EXPERIMENT_TABS = [
@@ -161,10 +166,10 @@ function hashString(input: string): number {
   return Math.abs(value);
 }
 
-function makeMockAnswers(selection: ScoreSelection): MockAnswer[] {
+function makeMockAnswers(selection: ScoreSelection): AnswerRecord[] {
   const seed = hashString(`${selection.model}:${selection.benchmark.key}`);
   const isMath = /aime|math|gsm|minerva|olympiad/i.test(selection.benchmark.label);
-  const rows: MockAnswer[] = [];
+  const rows: AnswerRecord[] = [];
   (["correct", "incorrect", "unanswered"] as AnswerCategory[]).forEach((category, categoryIndex) => {
     for (let index = 0; index < 10; index += 1) {
       const ordinal = categoryIndex * 10 + index + 1;
@@ -181,6 +186,7 @@ function makeMockAnswers(selection: ScoreSelection): MockAnswer[] {
       rows.push({
         id: `${selection.benchmark.label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${String(ordinal).padStart(4, "0")}`,
         repeatId: index % 4,
+        passIndex: 0,
         groundTruth: truth,
         modelAnswer: answer,
         category,
@@ -192,10 +198,37 @@ function makeMockAnswers(selection: ScoreSelection): MockAnswer[] {
           : `<think>已完成逐步推理并核验结果。</think>\n${answer}`,
         generatedTokens: 168 + ((seed + ordinal * 23) % 240),
         latencyMs: 1800 + ((seed + ordinal * 97) % 2400),
+        failReason: category === "correct" ? "" : category === "unanswered" ? "empty completion" : "answer mismatch",
+        source: null,
       });
     }
   });
   return rows;
+}
+
+function categoryForRecord(record: EvalRecord): AnswerCategory {
+  if (record.is_passed) return "correct";
+  const diagnostic = `${record.answer || ""} ${record.fail_reason || ""}`.toLowerCase();
+  return !record.answer?.trim() || /empty|unanswer|no answer|truncat|max length|未作答|截断/.test(diagnostic)
+    ? "unanswered"
+    : "incorrect";
+}
+
+function answerFromRecord(record: EvalRecord, benchmark: DisplayBenchmark): AnswerRecord {
+  return {
+    id: `${benchmark.label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${String(record.sample_index).padStart(4, "0")}`,
+    repeatId: record.repeat_index,
+    passIndex: record.pass_index,
+    groundTruth: record.ref_answer || "—",
+    modelAnswer: record.answer || "—",
+    category: categoryForRecord(record),
+    prompt: record.context_preview || "完整提示词请打开 detail 查看。",
+    completion: record.answer || "—",
+    generatedTokens: 0,
+    latencyMs: 0,
+    failReason: record.fail_reason || "",
+    source: record,
+  };
 }
 
 function truncationRate(selection: ScoreSelection): number {
@@ -367,15 +400,10 @@ function CompactScore({
   const potential = cell.potential_percent == null
     ? null
     : Math.max(standard, Math.min(100, cell.potential_percent));
-  const style = {
-    "--standard-score": `${standard}%`,
-    "--potential-score": `${potential ?? standard}%`,
-  } as CSSProperties;
   return (
     <button
       type="button"
       className={`compact-score${selected ? " selected" : ""}${potential == null ? "" : " has-potential"}`}
-      style={style}
       disabled={!onClick}
       onClick={onClick}
       title={potential == null
@@ -383,18 +411,23 @@ function CompactScore({
         : `标准分 ${scoreText(standard)}；潜力分 ${scoreText(potential)}`}
     >
       <span>{standard.toFixed(1)}{potential == null ? "" : <small> ({potential.toFixed(1)})</small>}%</span>
-      <i>
-        <b className="compact-standard-bar" />
-        {potential == null ? null : <b className="compact-potential-bar" />}
-      </i>
     </button>
   );
 }
 
 function AnswerDetails({ selection, onClear }: { selection: ScoreSelection; onClear: () => void }) {
   const [category, setCategory] = useState<AnswerCategory>("correct");
-  const [contextAnswer, setContextAnswer] = useState<MockAnswer | null>(null);
-  const answers = useMemo(() => makeMockAnswers(selection), [selection]);
+  const [contextAnswer, setContextAnswer] = useState<AnswerRecord | null>(null);
+  const [databaseRecords, setDatabaseRecords] = useState<EvalRecord[] | null>(null);
+  const [recordsLoading, setRecordsLoading] = useState(false);
+  const [recordsError, setRecordsError] = useState<string | null>(null);
+  const taskId = selection.cell.meta?.task_id ?? null;
+  const answers = useMemo(
+    () => databaseRecords === null
+      ? makeMockAnswers(selection)
+      : databaseRecords.map((record) => answerFromRecord(record, selection.benchmark)),
+    [databaseRecords, selection],
+  );
   const visibleAnswers = answers.filter((answer) => answer.category === category);
   const estimatedTotal = Math.max(
     10,
@@ -414,6 +447,35 @@ function AnswerDetails({ selection, onClear }: { selection: ScoreSelection; onCl
     setCategory("correct");
     setContextAnswer(null);
   }, [selection]);
+
+  useEffect(() => {
+    if (taskId === null) {
+      setDatabaseRecords(null);
+      setRecordsError(null);
+      setRecordsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setDatabaseRecords([]);
+    setRecordsLoading(true);
+    setRecordsError(null);
+    api.evalRecords(taskId, false, 200, 0)
+      .then((payload) => {
+        if (!cancelled) setDatabaseRecords(payload.records);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setRecordsError(error instanceof Error ? error.message : String(error));
+          setDatabaseRecords([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setRecordsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [taskId]);
 
   return (
     <>
@@ -435,6 +497,9 @@ function AnswerDetails({ selection, onClear }: { selection: ScoreSelection; onCl
           {selection.cell.potential_percent == null ? null : (
             <span className="potential-chip">潜力：{selection.cell.potential_percent.toFixed(1)}%</span>
           )}
+          <span className={taskId === null ? "warning" : "success"}>
+            {taskId === null ? "模拟明细" : `数据库 task_id=${taskId}`}
+          </span>
         </div>
 
         <div className="configuration-row">
@@ -467,9 +532,14 @@ function AnswerDetails({ selection, onClear }: { selection: ScoreSelection; onCl
           ))}
         </nav>
 
-        <p className="answer-sampling-note">
+        {recordsLoading ? <div className="spinner">正在读取数据库作答明细…</div> : null}
+        {recordsError ? <div className="error-bar">数据库明细加载失败：{recordsError}</div> : null}
+
+        {taskId === null ? <p className="answer-sampling-note">
           从该结果类别的 {estimatedTotal} 条记录中随机抽取 <strong>{visibleAnswers.length}</strong> 条
-        </p>
+        </p> : <p className="answer-sampling-note">
+          当前已读取 <strong>{answers.length}</strong> 条数据库记录，本类显示 <strong>{visibleAnswers.length}</strong> 条
+        </p>}
 
         <div className="answer-table-wrap">
           <table className="answer-table">
@@ -498,6 +568,9 @@ function AnswerDetails({ selection, onClear }: { selection: ScoreSelection; onCl
                   <td><button className="answer-detail-button" type="button" onClick={() => setContextAnswer(answer)}>detail</button></td>
                 </tr>
               ))}
+              {!recordsLoading && visibleAnswers.length === 0 ? (
+                <tr><td colSpan={6} className="muted">该分类暂无记录。</td></tr>
+              ) : null}
             </tbody>
           </table>
         </div>
@@ -509,6 +582,7 @@ function AnswerDetails({ selection, onClear }: { selection: ScoreSelection; onCl
           selection={selection}
           accuracy={accuracy}
           truncation={truncation}
+          taskId={taskId}
           onClose={() => setContextAnswer(null)}
         />
       ) : null}
@@ -530,14 +604,38 @@ function FullContextModal({
   selection,
   accuracy,
   truncation,
+  taskId,
   onClose,
 }: {
-  answer: MockAnswer;
+  answer: AnswerRecord;
   selection: ScoreSelection;
   accuracy: number;
   truncation: number;
+  taskId: number | null;
   onClose: () => void;
 }) {
+  const [databaseContext, setDatabaseContext] = useState<EvalContextResponse | null>(null);
+  const [contextError, setContextError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (taskId === null || answer.source === null) {
+      setDatabaseContext(null);
+      setContextError(null);
+      return;
+    }
+    let cancelled = false;
+    api.evalContext(taskId, answer.source.sample_index, answer.source.repeat_index, answer.source.pass_index)
+      .then((payload) => {
+        if (!cancelled) setDatabaseContext(payload);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setContextError(error instanceof Error ? error.message : String(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [answer.source, taskId]);
+
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -552,6 +650,11 @@ function FullContextModal({
   }, [onClose]);
 
   const passed = answer.category === "correct";
+  const contextText = databaseContext?.view === "text"
+    ? databaseContext.raw_text
+    : databaseContext?.context
+      ? JSON.stringify(databaseContext.context, null, 2)
+      : null;
   return (
     <div className="reference-modal-backdrop" onClick={onClose}>
       <div className="reference-modal" onClick={(event) => event.stopPropagation()}>
@@ -561,6 +664,11 @@ function FullContextModal({
         </header>
         <div className="reference-modal-grid">
           <div className="context-main">
+            {contextError ? <div className="error-bar">数据库 context 加载失败：{contextError}</div> : null}
+            {taskId !== null && answer.source !== null && !databaseContext && !contextError
+              ? <div className="spinner">正在读取完整模型上下文…</div>
+              : null}
+            {contextText ? <ContextBlock label="database context" value={contextText} /> : null}
             <ContextBlock label="assembled prompt" value={`User❉${answer.prompt}❉\nBot❉<think`} />
             <ContextBlock label="raw completion" value={answer.completion} />
           </div>
@@ -579,6 +687,8 @@ function FullContextModal({
             <dl className="context-key-values">
               <dt>problem_id</dt><dd>{answer.id}</dd>
               <dt>repeat_id</dt><dd>{answer.repeatId}</dd>
+              <dt>pass_index</dt><dd>{answer.passIndex}</dd>
+              <dt>task_id</dt><dd>{taskId ?? "mock"}</dd>
               <dt>generation</dt><dd>{generationLabel(selection.generation)}</dd>
               <dt>is_passed</dt><dd><span className={`answer-outcome ${passed ? "pass" : "fail"}`}>{passed ? "true" : "false"}</span></dd>
             </dl>

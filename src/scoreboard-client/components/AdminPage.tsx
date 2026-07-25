@@ -4,441 +4,340 @@ import { useEffect, useMemo, useState } from "react";
 
 import { getAdminToken, setAdminToken } from "../lib/admin_token";
 import { api } from "../lib/api";
-import type { AdminBackpressureResponse, BackpressureModel } from "../lib/dtos/api/admin/backpressure";
-import type { AdminHealthResponse } from "../lib/dtos/api/admin/health";
 import type { AdminEvalOptionsResponse } from "../lib/dtos/api/admin/eval/options";
 import type { AdminEvalStatusResponse } from "../lib/dtos/api/admin/eval/status";
 
 const TERMINAL = new Set(["idle", "completed", "cancelled", "failed"]);
+const FALLBACK_MODELS = ["g1h-1.5b", "g1h-2.9b", "g1h-7.2b", "g1h-13.3b"];
+const FALLBACK_TASKS = ["aime_2024", "aime_2025", "math_500", "gsm8k_test", "mmlu_test", "ifeval"];
 
 function statusClass(status: string): string {
   if (status === "running" || status === "starting" || status === "cancelling") return "stat-run";
-  if (status === "paused" || status === "pausing") return "stat-warn";
+  if (status === "paused") return "stat-warn";
   if (status === "completed") return "stat-good";
   if (status === "failed") return "stat-bad";
   return "stat-idle";
 }
 
-function fmtTime(ms: number | null): string {
-  if (!ms) return "-";
-  try {
-    return new Date(ms).toLocaleString();
-  } catch {
-    return String(ms);
-  }
-}
-
 export function AdminPage() {
-  const [health, setHealth] = useState<AdminHealthResponse | null>(null);
-  const [status, setStatus] = useState<AdminEvalStatusResponse | null>(null);
   const [options, setOptions] = useState<AdminEvalOptionsResponse | null>(null);
-  const [draft, setDraft] = useState<Record<string, unknown> | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [refreshToken, setRefreshToken] = useState(0);
+  const [status, setStatus] = useState<AdminEvalStatusResponse | null>(null);
+  const [draft, setDraft] = useState<Record<string, unknown>>({});
+  const [connectionError, setConnectionError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([
-      api.adminHealth().catch(() => null),
-      api.adminStatus(),
-      api.adminOptions(),
-      api.adminDraft(),
-    ])
-      .then(([healthPayload, statusPayload, optionsPayload, draftPayload]) => {
-        if (cancelled) return;
-        setHealth(healthPayload);
-        setStatus(statusPayload);
-        setOptions(optionsPayload);
-        setDraft(draftPayload);
-        setError(null);
+  const load = () => {
+    Promise.all([api.adminOptions(), api.adminDraft(), api.adminStatus()])
+      .then(([nextOptions, nextDraft, nextStatus]) => {
+        setOptions(nextOptions);
+        setDraft(nextDraft);
+        setStatus(nextStatus);
+        setConnectionError(null);
       })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      .catch((error: unknown) => {
+        setConnectionError(error instanceof Error ? error.message : String(error));
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshToken]);
+  };
 
   useEffect(() => {
+    load();
     const timer = window.setInterval(() => {
-      api.adminStatus()
-        .then((next) => {
-          setStatus(next);
-          setError(null);
-        })
-        .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+      api.adminStatus().then(setStatus).catch(() => undefined);
     }, 3000);
     return () => window.clearInterval(timer);
   }, []);
 
-  const disabled = useMemo(() => {
-    const current = status?.status;
-    return !!current && !TERMINAL.has(current);
-  }, [status?.status]);
+  const running = !!status && !TERMINAL.has(status.status);
 
   return (
-    <div>
-      <section className="card" style={{ marginBottom: 18 }}>
-        <div className="controls">
-          <TokenField onChange={() => setRefreshToken((value) => value + 1)} />
-          {health?.auth_required ? <span className="muted mono-sm">服务端已开启鉴权，请填写 Token。</span> : null}
-          {health === null ? <span className="muted mono-sm">admin health 暂无响应。</span> : null}
+    <div className="task-admin-page">
+      <section className="task-admin-intro">
+        <div>
+          <strong>评测任务管理</strong>
+          <span>本地 vllm-rwkv · 单模型权重部署 · 多 benchmark 批量评测</span>
         </div>
+        <TokenField onChange={load} />
       </section>
 
-      {error ? <div className="error-bar">读取调度器状态失败：{error}</div> : null}
-      {status ? (
-        <>
-          <StatusPanel status={status} onStatus={setStatus} />
-          <div className="admin-grid">
-            <ConfigPanel disabled={disabled} draft={draft ?? {}} options={options} onStatus={setStatus} />
-            <div>
-              <QueuePanel status={status} />
-              <TelemetryPanel status={status} />
-            </div>
-          </div>
-        </>
-      ) : (
-        <div className="spinner">加载调度器状态...</div>
-      )}
+      {connectionError ? (
+        <div className="error-bar">
+          管理后端暂不可用：{connectionError}。页面仍可配置任务，但连接恢复前不会启动真实评测。
+        </div>
+      ) : null}
+
+      <div className="task-admin-layout">
+        <TaskComposer
+          connected={!connectionError && options !== null}
+          disabled={running}
+          draft={draft}
+          options={options}
+          onStatus={setStatus}
+        />
+        <RunMonitor status={status} onStatus={setStatus} />
+      </div>
     </div>
   );
 }
 
-function StatusPanel({
-  status,
-  onStatus,
-}: {
-  status: AdminEvalStatusResponse;
-  onStatus: (status: AdminEvalStatusResponse) => void;
-}) {
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [pending, setPending] = useState<string | null>(null);
-  const isTerminal = TERMINAL.has(status.status);
-  const canControl = !isTerminal && status.status !== "idle";
-  const pct = Math.round((status.progress_percent ?? 0) * 100);
-
-  const run = async (name: string, fn: () => Promise<AdminEvalStatusResponse>) => {
-    setPending(name);
-    setActionError(null);
-    try {
-      onStatus(await fn());
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setPending(null);
-    }
-  };
-
-  return (
-    <section className="card">
-      <div className="admin-status-head">
-        <span className={`stat-pill ${statusClass(status.status)}`}>{status.status}</span>
-        {status.run_id ? <span className="muted mono-sm">{status.run_id}</span> : null}
-        {status.desired_state && status.desired_state !== status.status ? (
-          <span className="muted mono-sm">-&gt; {status.desired_state}</span>
-        ) : null}
-        <div className="admin-controls">
-          <button className="btn" disabled={!canControl || status.status === "paused" || pending === "pause"} onClick={() => run("pause", api.adminPause)}>
-            暂停
-          </button>
-          <button className="btn" disabled={status.status !== "paused" || pending === "resume"} onClick={() => run("resume", api.adminResume)}>
-            恢复
-          </button>
-          <button className="btn btn-danger" disabled={!canControl || pending === "cancel"} onClick={() => run("cancel", api.adminCancel)}>
-            取消
-          </button>
-        </div>
-      </div>
-
-      {status.error ? <div className="error-bar" style={{ marginTop: 12 }}>{status.error}</div> : null}
-      {actionError ? <div className="error-bar" style={{ marginTop: 12 }}>{actionError}</div> : null}
-
-      <div className="progress-bar" title={`${pct}%`}>
-        <div className={`progress-fill ${statusClass(status.status)}`} style={{ width: `${pct}%` }} />
-      </div>
-
-      <div className="stat-grid">
-        <Stat label="总任务" value={status.tasks_total} />
-        <Stat label="待处理" value={status.pending_jobs} />
-        <Stat label="运行中" value={status.running_jobs} />
-        <Stat label="已完成" value={status.completed_jobs} good />
-        <Stat label="失败" value={status.failed_jobs} bad={status.failed_jobs > 0} />
-        <Stat label="进度" value={`${pct}%`} />
-      </div>
-
-      <div className="muted mono-sm" style={{ marginTop: 10 }}>
-        开始 {fmtTime(status.started_at_unix_ms)} · 更新 {fmtTime(status.updated_at_unix_ms)}
-        {status.finished_at_unix_ms ? ` · 结束 ${fmtTime(status.finished_at_unix_ms)}` : ""}
-      </div>
-      {(status.log_tail?.length ?? 0) > 0 ? (
-        <details className="run-log" open={status.status === "failed"}>
-          <summary>实时运行日志 · {status.log_path ?? ""}</summary>
-          <pre>{status.log_tail.join("\n")}</pre>
-        </details>
-      ) : null}
-    </section>
-  );
-}
-
-function Stat({ label, value, good, bad }: { label: string; value: number | string; good?: boolean; bad?: boolean }) {
-  return (
-    <div className="stat-cell">
-      <div className="stat-num" style={{ color: bad ? "var(--bad)" : good ? "var(--good)" : undefined }}>
-        {value}
-      </div>
-      <div className="stat-label">{label}</div>
-    </div>
-  );
-}
-
-function QueuePanel({ status }: { status: AdminEvalStatusResponse }) {
-  return (
-    <section className="card">
-      <div className="card-title">任务队列</div>
-      <div className="queue-cols">
-        <div>
-          <div className="queue-head-label">运行中 ({status.active_jobs.length})</div>
-          {status.active_jobs.length === 0 ? (
-            <div className="muted">无</div>
-          ) : (
-            <ul className="job-list">
-              {status.active_jobs.map((job) => (
-                <li key={job} className="job-item active">{job}</li>
-              ))}
-            </ul>
-          )}
-        </div>
-        <div>
-          <div className="queue-head-label">队列头部 ({status.queue_head.length})</div>
-          {status.queue_head.length === 0 ? (
-            <div className="muted">空</div>
-          ) : (
-            <ul className="job-list">
-              {status.queue_head.map((job) => (
-                <li key={job} className="job-item">{job}</li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function TelemetryPanel({ status }: { status: AdminEvalStatusResponse }) {
-  const inferUrl = (status.request?.base_url as string) || (status.request?.infer_base_url as string) || "";
-  const [override, setOverride] = useState("");
-  const [backpressure, setBackpressure] = useState<AdminBackpressureResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const url = override || inferUrl;
-
-  const refresh = async () => {
-    setError(null);
-    try {
-      setBackpressure(await api.adminBackpressure(url || undefined));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 5000);
-    return () => window.clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url]);
-
-  return (
-    <section className="card">
-      <div className="card-title">GPU / 推理 worker 遥测</div>
-
-      <div style={{ marginBottom: 12 }}>
-        <span className="muted mono-sm">本地 GPU：</span>
-        {status.available_gpus.length === 0 ? (
-          <span className="muted"> 无上报</span>
-        ) : (
-          status.available_gpus.map((gpu) => <span key={gpu} className="chip">{gpu}</span>)
-        )}
-      </div>
-
-      <div className="controls" style={{ marginBottom: 12 }}>
-        <div className="control-group" style={{ flex: 1 }}>
-          <label>infer_base_url（留空用当前任务配置）</label>
-          <input
-            type="text"
-            value={override}
-            placeholder={inferUrl || "http://127.0.0.1:8000/v1"}
-            onChange={(event) => setOverride(event.target.value)}
-            style={{ minWidth: 320 }}
-          />
-        </div>
-        <button className="btn" type="button" onClick={() => void refresh()}>刷新</button>
-      </div>
-
-      {error ? <div className="error-bar">{error}</div> : null}
-      {backpressure?.error ? <div className="error-bar">{backpressure.error}</div> : null}
-      {!url ? <div className="muted">未配置远端推理服务，无 worker 遥测。</div> : null}
-
-      {backpressure && backpressure.models.length > 0 ? (
-        <div className="pivot-wrap">
-          <table className="pivot">
-            <thead>
-              <tr>
-                <th>模型</th>
-                <th>状态</th>
-                <th>路由 (健康/总)</th>
-                <th>排队</th>
-                <th>批大小</th>
-                <th>失败批</th>
-                <th>tok/s</th>
-              </tr>
-            </thead>
-            <tbody>
-              {backpressure.models.map((model: BackpressureModel) => (
-                <tr key={model.model_slug}>
-                  <td className="bench">{model.model}</td>
-                  <td className={model.status === "ok" ? "delta up" : "delta down"}>{model.status}</td>
-                  <td className="score">{model.ok_route_count}/{model.route_count}</td>
-                  <td className="score">{model.pending_queue}</td>
-                  <td className="score">{model.max_batch_size ?? "-"}</td>
-                  <td className="score">{model.failed_batches}</td>
-                  <td className="score">{model.last_total_tok_s != null ? model.last_total_tok_s.toFixed(1) : "-"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-function ConfigPanel({
+function TaskComposer({
+  connected,
   disabled,
   draft,
   options,
   onStatus,
 }: {
+  connected: boolean;
   disabled: boolean;
   draft: Record<string, unknown>;
   options: AdminEvalOptionsResponse | null;
   onStatus: (status: AdminEvalStatusResponse) => void;
 }) {
-  const [text, setText] = useState("{}");
-  const [parseError, setParseError] = useState<string | null>(null);
-  const [startError, setStartError] = useState<string | null>(null);
+  const configs = options?.configs ?? [];
+  const [config, setConfig] = useState("");
+  const [model, setModel] = useState("");
+  const [tasks, setTasks] = useState<string[]>([]);
+  const [gpuIds, setGpuIds] = useState<string[]>([]);
+  const [gpuText, setGpuText] = useState("");
+  const [search, setSearch] = useState("");
+  const [parallel, setParallel] = useState("1");
+  const [maxRetries, setMaxRetries] = useState("0");
+  const [rerun, setRerun] = useState(false);
+  const [dryRun, setDryRun] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
 
   useEffect(() => {
-    setText(JSON.stringify(draft, null, 2));
-  }, [draft]);
+    const draftModels = Array.isArray(draft.models) ? draft.models.map(String) : [];
+    const draftTasks = Array.isArray(draft.tasks) ? draft.tasks.map(String) : [];
+    setConfig(String(draft.config || configs[0] || ""));
+    setModel(draftModels[0] || options?.model_select?.[0] || FALLBACK_MODELS[0]);
+    setTasks(draftTasks.length ? draftTasks : (options?.domains ?? FALLBACK_TASKS).slice(0, 1));
+    setGpuText(String(draft.gpus || ""));
+    setParallel(String(draft.parallel || "1"));
+    setMaxRetries(String(draft.max_retries || "0"));
+    setRerun(Boolean(draft.rerun));
+    setDryRun(Boolean(draft.dry_run));
+  }, [configs, draft, options]);
 
-  const patch = (key: string, value: unknown) => {
-    try {
-      const obj = JSON.parse(text || "{}") as Record<string, unknown>;
-      obj[key] = value;
-      setText(JSON.stringify(obj, null, 2));
-      setParseError(null);
-    } catch {
-      setParseError("当前 JSON 无法解析，无法快捷修改。");
-    }
+  const availableModels = useMemo(() => {
+    const details = options?.model_options ?? [];
+    const inConfig = details.filter((item) => !config || item.configs.includes(config));
+    return (inConfig.length ? inConfig : details).map((item) => item.name);
+  }, [config, options?.model_options]);
+  const modelNames = availableModels.length ? availableModels : (options?.model_select ?? FALLBACK_MODELS);
+  const taskNames = options?.domains?.length ? options.domains : FALLBACK_TASKS;
+  const visibleTasks = taskNames.filter((task) => task.toLowerCase().includes(search.trim().toLowerCase()));
+  const modelDetail = options?.model_options?.find((item) => item.name === model);
+  const detectedGpus = options?.gpu_options ?? [];
+  const resolvedGpus = gpuIds.length ? gpuIds.join(",") : gpuText.trim();
+
+  useEffect(() => {
+    if (modelNames.length && !modelNames.includes(model)) setModel(modelNames[0]);
+  }, [model, modelNames]);
+
+  const toggleTask = (task: string) => {
+    setTasks((current) => current.includes(task) ? current.filter((item) => item !== task) : [...current, task]);
   };
 
-  const onStart = async () => {
-    let payload: Record<string, unknown>;
-    try {
-      payload = JSON.parse(text || "{}") as Record<string, unknown>;
-      setParseError(null);
-      setStartError(null);
-    } catch (err) {
-      setParseError(`JSON 解析失败：${String(err)}`);
-      return;
-    }
+  const toggleGpu = (id: string) => {
+    setGpuIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+    setGpuText("");
+  };
+
+  const payload = {
+    config,
+    models: model ? [model] : [],
+    tasks,
+    gpus: resolvedGpus,
+    parallel: Math.max(1, Number(parallel) || 1),
+    max_retries: Math.max(0, Number(maxRetries) || 0),
+    no_server: false,
+    scoreboard: true,
+    rerun,
+    dry_run: dryRun,
+  };
+
+  const start = async () => {
+    if (!connected || !model || !tasks.length || !resolvedGpus) return;
     setStarting(true);
+    setStartError(null);
     try {
       onStatus(await api.adminStart(payload));
-    } catch (err) {
-      setStartError(err instanceof Error ? err.message : String(err));
+    } catch (error: unknown) {
+      setStartError(error instanceof Error ? error.message : String(error));
     } finally {
       setStarting(false);
     }
   };
 
   return (
-    <section className="card">
-      <div className="card-title">评测配置 · 启动真实 Helicopter 批处理</div>
+    <section className="task-composer">
+      <header>
+        <strong>新建评测任务</strong>
+        <span>一个任务只部署一个权重，避免不同参数量模型共享 GPU 池。</span>
+      </header>
 
-      <p className="admin-help">配置会转成 <code>helicopter eval batch</code> 参数；任务在服务端独立进程中运行，日志和最终报告会保存到 results/admin。</p>
-
-      {options ? (
-        <div className="controls" style={{ marginBottom: 14 }}>
-          <QuickSelect label="配置文件" options={options.configs} onPick={(value) => patch("config", value)} />
-          <QuickSelect label="模型（设为单选）" options={options.model_select} onPick={(value) => patch("models", [value])} />
-          <QuickSelect label="任务（设为单选）" options={options.domains} onPick={(value) => patch("tasks", [value])} />
-          <QuickSelect label="运行模式" options={options.run_mode} onPick={(value) => patch("rerun", value === "rerun")} />
+      <div className="task-step">
+        <b>01 配置与模型权重</b>
+        <div className="task-form-grid">
+          <label>
+            <span>评测配置</span>
+            <select value={config} onChange={(event) => setConfig(event.target.value)}>
+              {(configs.length ? configs : ["configs/example.toml"]).map((item) => <option key={item}>{item}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>模型</span>
+            <select value={model} onChange={(event) => setModel(event.target.value)}>
+              {modelNames.map((item) => <option key={item}>{item}</option>)}
+            </select>
+          </label>
         </div>
-      ) : null}
-
-      <textarea className="config-editor" value={text} spellCheck={false} onChange={(event) => setText(event.target.value)} />
-
-      {parseError ? <div className="error-bar" style={{ marginTop: 10 }}>{parseError}</div> : null}
-      {startError ? <div className="error-bar" style={{ marginTop: 10 }}>{startError}</div> : null}
-
-      <div style={{ marginTop: 12, display: "flex", gap: 10, alignItems: "center" }}>
-        <button className="btn btn-primary" type="button" disabled={disabled || starting} onClick={() => void onStart()}>
-          {starting ? "启动中..." : "启动评测"}
-        </button>
-        {disabled ? <span className="muted mono-sm">已有任务在运行，无法启动新任务。</span> : null}
-        {!disabled ? <span className="muted mono-sm">可先设置 <code>dry_run: true</code> 验证计划。</span> : null}
+        <dl className="model-deploy-summary">
+          <dt>runtime</dt><dd>local vllm-rwkv</dd>
+          <dt>weight</dt><dd title={modelDetail?.weight_path ?? ""}>{modelDetail?.weight_path || "从所选 TOML 的 models 配置读取"}</dd>
+          <dt>served name</dt><dd>{modelDetail?.served_model_name || model}</dd>
+        </dl>
       </div>
+
+      <div className="task-step">
+        <b>02 模型权重 → GPU</b>
+        {detectedGpus.length ? (
+          <div className="gpu-picker">
+            {detectedGpus.map((gpu) => (
+              <button
+                type="button"
+                className={gpuIds.includes(gpu.id) ? "selected" : ""}
+                key={gpu.id}
+                onClick={() => toggleGpu(gpu.id)}
+              >
+                <strong>GPU {gpu.id}</strong>
+                <span>{gpu.name}</span>
+                <small>{gpu.memory_used_mib} / {gpu.memory_total_mib} MiB</small>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <label className="gpu-manual">
+            <span>GPU 编号（nvidia-smi 未返回设备时手动指定）</span>
+            <input value={gpuText} onChange={(event) => { setGpuText(event.target.value); setGpuIds([]); }} placeholder="例如 0 或 0,1" />
+          </label>
+        )}
+        <div className="binding-line">
+          <span>{model || "未选模型"}</span><b>→</b><span>{resolvedGpus ? `GPU ${resolvedGpus}` : "未指定 GPU"}</span>
+        </div>
+      </div>
+
+      <div className="task-step">
+        <b>03 Benchmark（可多选）</b>
+        <div className="benchmark-tools">
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索 benchmark" />
+          <button type="button" onClick={() => setTasks(visibleTasks)}>选择当前结果</button>
+          <button type="button" onClick={() => setTasks([])}>清空</button>
+          <span>已选 {tasks.length}</span>
+        </div>
+        <div className="benchmark-picker">
+          {visibleTasks.map((task) => (
+            <label className={tasks.includes(task) ? "selected" : ""} key={task}>
+              <input type="checkbox" checked={tasks.includes(task)} onChange={() => toggleTask(task)} />
+              <span>{task}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="task-step">
+        <b>04 运行参数</b>
+        <div className="runtime-fields">
+          <label><span>并行 slot</span><input type="number" min={1} value={parallel} onChange={(event) => setParallel(event.target.value)} /></label>
+          <label><span>失败重试</span><input type="number" min={0} value={maxRetries} onChange={(event) => setMaxRetries(event.target.value)} /></label>
+          <label className="task-check"><input type="checkbox" checked={rerun} onChange={(event) => setRerun(event.target.checked)} />覆盖已完成结果</label>
+          <label className="task-check"><input type="checkbox" checked={dryRun} onChange={(event) => setDryRun(event.target.checked)} />仅验证计划（dry-run）</label>
+        </div>
+      </div>
+
+      <div className="task-payload">
+        <span>{model || "model"} @ GPU {resolvedGpus || "?"}</span>
+        <span>{tasks.length} benchmarks</span>
+        <span>{dryRun ? "dry-run" : "真实运行"}</span>
+      </div>
+      {startError ? <div className="error-bar">{startError}</div> : null}
+      <button
+        className="task-start"
+        type="button"
+        disabled={!connected || disabled || starting || !model || !tasks.length || !resolvedGpus}
+        onClick={() => void start()}
+      >
+        {starting ? "正在启动…" : disabled ? "已有任务运行中" : connected ? "启动评测任务" : "等待管理后端连接"}
+      </button>
     </section>
   );
 }
 
-function QuickSelect({ label, options, onPick }: { label: string; options: string[]; onPick: (value: string) => void }) {
+function RunMonitor({
+  status,
+  onStatus,
+}: {
+  status: AdminEvalStatusResponse | null;
+  onStatus: (status: AdminEvalStatusResponse) => void;
+}) {
+  const [actionError, setActionError] = useState<string | null>(null);
+  if (!status) {
+    return <aside className="run-monitor"><strong>运行状态</strong><div className="muted">等待管理后端…</div></aside>;
+  }
+  const active = !TERMINAL.has(status.status);
+  const pct = Math.round((status.progress_percent || 0) * 100);
+  const action = async (request: () => Promise<AdminEvalStatusResponse>) => {
+    setActionError(null);
+    try {
+      onStatus(await request());
+    } catch (error: unknown) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    }
+  };
   return (
-    <div className="control-group">
-      <label>{label}</label>
-      <select
-        defaultValue=""
-        onChange={(event) => {
-          if (event.target.value) onPick(event.target.value);
-          event.target.value = "";
-        }}
-        style={{ minWidth: 160 }}
-      >
-        <option value="" disabled>
-          选择...
-        </option>
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
-    </div>
+    <aside className="run-monitor">
+      <header><strong>运行状态</strong><span className={`stat-pill ${statusClass(status.status)}`}>{status.status}</span></header>
+      <dl>
+        <dt>run_id</dt><dd>{status.run_id || "—"}</dd>
+        <dt>完成</dt><dd>{status.completed_jobs} / {status.tasks_total}</dd>
+        <dt>失败</dt><dd>{status.failed_jobs}</dd>
+        <dt>进度</dt><dd>{pct}%</dd>
+        <dt>GPU</dt><dd>{status.available_gpus.join(", ") || "—"}</dd>
+      </dl>
+      <div className="monitor-actions">
+        <button type="button" disabled={!active || status.status === "paused"} onClick={() => void action(api.adminPause)}>暂停</button>
+        <button type="button" disabled={status.status !== "paused"} onClick={() => void action(api.adminResume)}>恢复</button>
+        <button type="button" className="danger" disabled={!active} onClick={() => void action(api.adminCancel)}>取消</button>
+      </div>
+      {actionError ? <div className="error-bar">{actionError}</div> : null}
+      {status.error ? <div className="error-bar">{status.error}</div> : null}
+      <div className="queue-summary">
+        <b>运行中</b>
+        {status.active_jobs.length ? status.active_jobs.map((job) => <span key={job}>{job}</span>) : <span>无</span>}
+        <b>等待队列</b>
+        {status.queue_head.length ? status.queue_head.map((job) => <span key={job}>{job}</span>) : <span>空</span>}
+      </div>
+      {status.log_tail.length ? <pre className="admin-log">{status.log_tail.join("\n")}</pre> : null}
+    </aside>
   );
 }
 
 function TokenField({ onChange }: { onChange: () => void }) {
   const [value, setValue] = useState(getAdminToken());
   return (
-    <div className="control-group">
-      <label>Admin Token（可选）</label>
+    <label className="admin-token">
+      <span>Admin Token</span>
       <input
         type="password"
         value={value}
-        placeholder="Bearer token，可留空"
+        placeholder="未启用鉴权可留空"
         onChange={(event) => {
           const next = event.target.value.trim();
           setValue(next);
           setAdminToken(next);
-          onChange();
         }}
-        style={{ minWidth: 220 }}
+        onBlur={onChange}
       />
-    </div>
+    </label>
   );
 }
