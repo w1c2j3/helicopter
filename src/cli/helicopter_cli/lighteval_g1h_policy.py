@@ -183,6 +183,112 @@ def _metrics_for_avg(metrics: Iterable[Any]) -> list[Any]:
     return native_avg or values
 
 
+def _request_policy_from_environment() -> Mapping[str, Any]:
+    """Read the task request policy shared by prompt and score adapters."""
+
+    raw = os.environ.get("HELICOPTER_LIGHTEEVAL_TASK_REQUEST_POLICY", "")
+    try:
+        payload = json.loads(raw)
+        tasks = payload.get("tasks", {})
+        if isinstance(tasks, Mapping) and len(tasks) == 1:
+            entry = next(iter(tasks.values()))
+            if isinstance(entry, Mapping):
+                return entry
+    except (TypeError, ValueError, StopIteration):
+        pass
+    return {}
+
+
+def _normalize_doc_references(
+    doc: Doc,
+    *,
+    domain: str | None,
+    request_format: str | None,
+) -> None:
+    """Apply the same answer adapter to every reference consumed by metrics.
+
+    ``Doc.choices`` is normally the gold value for free-answer tasks. For
+    multiple-choice tasks it is the option table, so rewriting all options
+    would break LOGPROBS and native choice metrics; only single-gold choice
+    documents are adapted. Explicit reference lists used by judge/custom
+    tasks receive the same treatment.
+    """
+
+    from helicopter_cli.lighteval_answer_adapters import adapt_answer
+
+    domain_name = str(domain or "").strip().lower()
+    format_name = str(request_format or "").strip().lower()
+    choices = getattr(doc, "choices", None)
+    if isinstance(choices, list):
+        is_math = domain_name == "math" or format_name in {
+            "math",
+            "math_boxed",
+            "math_choice",
+            "formal_proof",
+        }
+        is_code = domain_name == "coding" or format_name in {
+            "code",
+            "code_completion",
+            "diff_patch",
+            "generic_code",
+            "python_function",
+            "python_program",
+            "python_snippet",
+        }
+        # Multiple-choice options are not gold answers and must remain raw.
+        if len(choices) == 1 or is_math or is_code:
+            doc.choices = [
+                adapt_answer(
+                    str(choice),
+                    domain=domain,
+                    request_format=request_format,
+                    prompt=str(getattr(doc, "query", "") or ""),
+                )
+                if isinstance(choice, (str, int, float))
+                else choice
+                for choice in choices
+            ]
+
+    specific = getattr(doc, "specific", None)
+    if not isinstance(specific, dict):
+        return
+    reference_keys = {
+        "answer",
+        "expected_answer",
+        "reference_answer",
+        "reference",
+        "reference_answers",
+        "references",
+        "solution",
+        "target",
+        "gold_answer",
+        "gold_patch",
+        "reference_plan",
+        "reference_plans",
+    }
+    for key in reference_keys:
+        value = specific.get(key)
+        if isinstance(value, (str, int, float)):
+            specific[key] = adapt_answer(
+                str(value),
+                domain=domain,
+                request_format=request_format,
+                prompt=str(getattr(doc, "query", "") or ""),
+            )
+        elif isinstance(value, list):
+            specific[key] = [
+                adapt_answer(
+                    str(item),
+                    domain=domain,
+                    request_format=request_format,
+                    prompt=str(getattr(doc, "query", "") or ""),
+                )
+                if isinstance(item, (str, int, float))
+                else item
+                for item in value
+            ]
+
+
 def _wrap_prompt(
     prompt_function: Any,
     *,
@@ -197,39 +303,19 @@ def _wrap_prompt(
             return None
 
         def prepare(doc: Doc) -> Doc:
-            # Do not rewrite Doc.choices or mark generated MCQs: those fields
-            # belong to the benchmark's native scorer and sampling method.
             if not os.environ.get("HELICOPTER_PROMPT_TEMPLATE"):
                 doc.query = format_query(doc.query, canonical_name=canonical_name, policy=policy)
-            request_format = os.environ.get("HELICOPTER_LIGHTEEVAL_TASK_REQUEST_POLICY", "")
-            try:
-                request_format = json.loads(request_format).get("tasks", {})
-                request_format = next(iter(request_format.values())).get("format")
-            except (AttributeError, StopIteration, TypeError, ValueError):
-                request_format = None
-            if str(request_format or "").strip().lower() in {
-                "math",
-                "math_boxed",
-                "math_free_response",
-                "math_open_qa",
-            }:
-                # All math benchmarks share one answer type even when their
-                # native metrics differ (avg, pass@k, maj@n, ...). Normalize
-                # the reference through the same adapter used for the model
-                # continuation so `$\\boxed{36}$`, `\\boxed{36}`, and `36`
-                # are one value for every math benchmark.
-                from helicopter_cli.lighteval_answer_adapters import adapt_answer
-
-                choices = getattr(doc, "choices", None)
-                if isinstance(choices, (list, tuple)):
-                    doc.choices = [
-                        adapt_answer(
-                            str(choice),
-                            domain="math",
-                            request_format=str(request_format),
-                        )
-                        for choice in choices
-                    ]
+            request_policy = _request_policy_from_environment()
+            request_format = (
+                str(request_policy.get("format")).strip().lower()
+                if request_policy.get("format")
+                else None
+            )
+            _normalize_doc_references(
+                doc,
+                domain=policy.get("domain") or request_policy.get("domain"),
+                request_format=request_format,
+            )
             return doc
 
         if isinstance(formatted, list):

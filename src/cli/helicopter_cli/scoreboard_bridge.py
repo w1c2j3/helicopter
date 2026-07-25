@@ -57,7 +57,7 @@ def _compact_lighteval_doc(value: Any) -> dict[str, Any]:
     if isinstance(specific, Mapping):
         kept = {
             key: specific[key]
-            for key in ("sample_id", "references")
+            for key in ("sample_id", "references", "reference", "reference_answer", "reference_answers")
             if specific.get(key) is not None
         }
         if kept:
@@ -461,11 +461,22 @@ def write_lighteval_tracker(tracker: Any) -> list[str]:
                         "task_id": doc.get("id"),
                     }
                 )
+                reference = adapt_answer(
+                    _reference(doc),
+                    domain=configured_task_policy.get("domain"),
+                    request_format=configured_task_policy.get("format"),
+                    prompt=str(prompt),
+                    stops=(
+                        configured_task_policy.get("stop")
+                        if isinstance(configured_task_policy.get("stop"), list)
+                        else []
+                    ),
+                )
                 evals.append(
                     {
                         **key,
                         "answer": answer,
-                        "ref_answer": _reference(doc),
+                        "ref_answer": reference,
                         "raw_record": doc,
                         "is_passed": passed,
                         "fail_reason": ""

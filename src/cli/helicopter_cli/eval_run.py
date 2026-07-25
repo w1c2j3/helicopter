@@ -231,7 +231,19 @@ def _lighteval_detail_payloads(
     except ImportError:
         return [], []
 
-    from .scoreboard_bridge import _compact_lighteval_doc
+    from .lighteval_answer_adapters import adapt_answer
+    from .scoreboard_bridge import _compact_lighteval_doc, _reference
+
+    request_policy: Mapping[str, Any] = {}
+    try:
+        payload = json.loads(os.environ.get("HELICOPTER_LIGHTEEVAL_TASK_REQUEST_POLICY", ""))
+        tasks = payload.get("tasks", {})
+        if isinstance(tasks, Mapping) and len(tasks) == 1:
+            entry = next(iter(tasks.values()))
+            if isinstance(entry, Mapping):
+                request_policy = entry
+    except (TypeError, ValueError, StopIteration):
+        pass
 
     completion_payloads: list[dict[str, Any]] = []
     eval_payloads: list[dict[str, Any]] = []
@@ -249,8 +261,20 @@ def _lighteval_detail_payloads(
             metrics = row.get("metric") if isinstance(row.get("metric"), Mapping) else {}
             response = row.get("model_response") if isinstance(row.get("model_response"), Mapping) else {}
             sample_index = len(completion_payloads)
-            answer = _lighteval_answer(response)
-            reference = _lighteval_reference(doc)
+            answer = adapt_answer(
+                _lighteval_answer(response),
+                domain=request_policy.get("domain"),
+                request_format=request_policy.get("format"),
+                prompt=str(response.get("input") or doc.get("query") or ""),
+                stops=(request_policy.get("stop") if isinstance(request_policy.get("stop"), list) else []),
+            )
+            reference = adapt_answer(
+                _reference(doc),
+                domain=request_policy.get("domain"),
+                request_format=request_policy.get("format"),
+                prompt=str(response.get("input") or doc.get("query") or ""),
+                stops=(request_policy.get("stop") if isinstance(request_policy.get("stop"), list) else []),
+            )
             passed = _lighteval_passed(metrics)
             key = {"sample_index": sample_index, "repeat_index": 0, "pass_index": 0}
             completion_payloads.append(

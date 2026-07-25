@@ -3,12 +3,19 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+from lighteval.metrics.avg_at_n import GenerativeChoice
+from lighteval.metrics.metrics import Metrics
+from lighteval.metrics.metrics_sample import AvgAtN
+from lighteval.models.model_output import ModelResponse
+from lighteval.tasks.requests import Doc
+
 from helicopter_cli.lighteval_answer_adapters import (
     adapt_answer,
     extract_choice_answer,
     extract_code_completion,
     extract_math_answer,
 )
+from helicopter_cli.lighteval_g1h_policy import _normalize_doc_references
 
 
 def test_choice_adapter_matches_rwkv_direct_letter_and_cot_answer() -> None:
@@ -41,7 +48,69 @@ def test_math_adapter_falls_back_to_boxed_value_before_closing_think() -> None:
 
 def test_code_adapter_keeps_the_last_program_block() -> None:
     text = "explanation\n```text\nnot code\n```\n```python\ndef f():\n    return 1\n```"
-    assert extract_code_completion(text) == "```python\ndef f():\n    return 1\n```"
+    assert extract_code_completion(text) == "```\ndef f():\n    return 1\n```"
+
+
+def test_choice_adapter_is_symmetric_for_model_and_reference_text() -> None:
+    prompt = "Question\nA. first\nB. second"
+    assert adapt_answer("Final answer: B", domain="knowledge", request_format="choice", prompt=prompt) == " B"
+    assert adapt_answer("B", domain="knowledge", request_format="choice", prompt=prompt) == " B"
+
+
+def test_math_adapter_is_symmetric_for_latex_wrappers() -> None:
+    values = [r"$\boxed{4000}$", r"\boxed{4000}", r"$4000$", "4000"]
+    assert {adapt_answer(value, domain="math", request_format="math_boxed") for value in values} == {"$4000$"}
+    assert adapt_answer(r"$1/2$", domain="math", request_format="math_boxed") == r"$\frac{1}{2}$"
+    assert adapt_answer(r"\frac{1}{2}", domain="math", request_format="math_boxed") == r"$\frac{1}{2}$"
+
+
+def test_code_adapter_is_symmetric_for_fenced_and_plain_reference() -> None:
+    expected = "```\ndef f():\n    return 1\n```"
+    assert adapt_answer("def f():\n    return 1", domain="coding", request_format="python_program") == expected
+    assert adapt_answer("```python\ndef f():\n    return 1\n```", domain="coding", request_format="python_program") == expected
+
+
+def test_official_avg_at_n_scores_adapted_math_choice_and_code_rollouts() -> None:
+    math_doc = Doc(query="q", choices=[r"\boxed{4000}"], gold_index=0)
+    _normalize_doc_references(math_doc, domain="math", request_format="math_boxed")
+    math_response = ModelResponse(
+        text=[r"$4000$", r"\boxed{4000}"],
+        text_post_processed=[
+            adapt_answer(value, domain="math", request_format="math_boxed")
+            for value in (r"$4000$", r"\boxed{4000}")
+        ],
+    )
+    math_avg = AvgAtN(
+        n=2,
+        sample_scoring_function=Metrics.exact_match.value.sample_level_fn,
+    )
+    assert math_avg.compute(math_doc, math_response) == 1.0
+
+    choice_doc = Doc(query="A. first\nB. second", choices=["first", "second"], gold_index=1)
+    choice_response = ModelResponse(
+        text=["B", "Final answer: B"],
+        text_post_processed=[
+            adapt_answer(value, domain="knowledge", request_format="choice", prompt=choice_doc.query)
+            for value in ("B", "Final answer: B")
+        ],
+    )
+    choice_avg = AvgAtN(n=2, sample_scoring_function=GenerativeChoice())
+    assert choice_avg.compute(choice_doc, choice_response) == 1.0
+
+    code_doc = Doc(query="q", choices=["def f():\n    return 1"], gold_index=0)
+    _normalize_doc_references(code_doc, domain="coding", request_format="python_program")
+    code_response = ModelResponse(
+        text=["def f():\n    return 1", "```python\ndef f():\n    return 1\n```"],
+        text_post_processed=[
+            adapt_answer(value, domain="coding", request_format="python_program")
+            for value in ("def f():\n    return 1", "```python\ndef f():\n    return 1\n```")
+        ],
+    )
+    code_avg = AvgAtN(
+        n=2,
+        sample_scoring_function=Metrics.exact_match.value.sample_level_fn,
+    )
+    assert code_avg.compute(code_doc, code_response) == 1.0
 
 
 def test_instruction_adapter_keeps_the_complete_nocot_response() -> None:

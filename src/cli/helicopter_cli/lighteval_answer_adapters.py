@@ -11,6 +11,14 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
+try:
+    # This is the checked-in LightEval source used by the project, not an
+    # external runtime dependency. Reuse its established LaTeX equivalence
+    # rules after extracting the final answer.
+    from lighteval.metrics.normalizations import math_normalizer as _official_math_normalizer
+except ImportError:  # pragma: no cover - standalone adapter tests
+    _official_math_normalizer = None
+
 
 _USER_TURN = "\nUser:"
 _EOD = "\x00"
@@ -107,7 +115,13 @@ def extract_choice_answer(text: str, *, prompt: str = "") -> str:
         match = line_pattern.match(line)
         if match and match.group(1).upper() in valid:
             return f" {match.group(1).upper()}"
-    return ""
+    # Some native judge tasks use ``choice`` as their transport format but
+    # their answer is a short textual verdict (for example ``Judgement: Yes``)
+    # rather than A/B/C/D. Returning the final answer line here keeps that
+    # task symmetric with the reference-side adapter instead of silently
+    # turning a valid response into an empty answer.
+    lines = [line.strip() for line in value.splitlines() if line.strip()]
+    return lines[-1] if lines else ""
 
 
 def _last_boxed(text: str) -> str | None:
@@ -140,12 +154,37 @@ def _normalize_math_value(value: str) -> str:
         if len(normalized) >= 2 and normalized[0] == normalized[-1] == "$":
             normalized = normalized[1:-1].strip()
             changed = True
-    return normalized.rstrip(".。 ")
+    normalized = normalized.replace("\\left", "").replace("\\right", "")
+    normalized = normalized.replace("\\!", "")
+    normalized = normalized.replace("\\dfrac", "\\frac").replace("\\tfrac", "\\frac")
+    normalized = re.sub(r"\s+", "", normalized)
+    return normalized.rstrip(".。")
 
 
 def _format_math_value(value: str) -> str:
     normalized = _normalize_math_value(value)
+    if normalized and _official_math_normalizer is not None:
+        # LightEval's normalizer expects a complete solution containing a
+        # boxed answer. Re-wrap our already extracted value to reuse its
+        # fraction/spacing equivalence rules.
+        normalized = _official_math_normalizer(f"\\boxed{{{normalized}}}") or normalized
     return f"${normalized}$" if normalized else ""
+
+
+def normalize_math_answer(value: str) -> str:
+    """Canonicalize one mathematical answer, whether it is gold or model text.
+
+    This is deliberately separate from extraction: callers can pass either a
+    raw completion or a dataset answer through the same function. In
+    particular ``$4000$``, ``\\boxed{4000}``, and ``4000`` all become the same
+    LaTeX value.
+    """
+
+    raw = str(value or "")
+    boxed = _last_boxed(raw)
+    if boxed is not None:
+        raw = boxed
+    return _format_math_value(raw)
 
 
 def extract_math_answer(text: str) -> str:
@@ -163,7 +202,7 @@ def extract_math_answer(text: str) -> str:
     # complete answer.
     boxed = _last_boxed(raw_value)
     if boxed is not None:
-        return _format_math_value(boxed)
+        return normalize_math_answer(boxed)
 
     if re.search(r"\\(?:boxed|fbox)\s*\{", raw_value, re.IGNORECASE):
         return ""
@@ -180,22 +219,33 @@ def extract_math_answer(text: str) -> str:
     else:
         lines = [line.strip() for line in value.splitlines() if line.strip()]
         candidate = lines[-1] if lines else ""
-    return _format_math_value(candidate)
+    return normalize_math_answer(candidate)
 
 
 def extract_code_completion(text: str) -> str:
-    """Return the last fenced program, or the raw NoCoT program."""
+    """Return one canonical fenced program for both prediction and gold.
+
+    LightEval's code scorers extract the body between the final two fences.
+    The adapter therefore removes language labels and always writes the same
+    fence shape, so a plain reference program and a fenced model program are
+    represented identically without changing the official code execution
+    scorer.
+    """
 
     value = answer_region(text).strip()
-    fences = list(re.finditer(r"(?m)^\s*```([^\n`]*)\s*$", value))
+    fences = list(re.finditer(r"(?m)^\s*```[^\n`]*\s*$", value))
     if len(fences) >= 2:
-        opening, closing = fences[-2], fences[-1]
-        language = opening.group(1).strip()
-        body = value[opening.end() : closing.start()].strip("\n")
-        return f"```{language}\n{body}\n```" if language else f"```\n{body}\n```"
-    if len(fences) == 1:
-        return value.rstrip() + "\n```"
-    return value
+        body = value[fences[-2].end() : fences[-1].start()].strip("\n")
+    elif len(fences) == 1:
+        fence = fences[0]
+        suffix = value[fence.end() :]
+        if suffix.strip():
+            body = suffix.strip("\n")
+        else:
+            body = value[: fence.start()].strip("\n")
+    else:
+        body = value.strip("\n")
+    return f"```\n{body}\n```" if body else ""
 
 
 def adapt_answer(

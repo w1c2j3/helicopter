@@ -26,9 +26,17 @@ def test_model_queue_expands_modes_without_cross_model_barrier() -> None:
     )
 
     assert len(benchmarks) == 60
-    assert len(jobs) == 200
+    active_benchmarks = [entry for entry in benchmarks if not entry.get("skip", False)]
+    expected_jobs = sum(
+        4 if entry["field"] in set(run["cot_fields"]) else 2
+        for entry in active_benchmarks
+    )
+    assert len(jobs) == expected_jobs
 
-    first_task = [mode for entry, mode in jobs if entry["task"] == "math_500"]
+    first_active_math = next(
+        entry["task"] for entry in active_benchmarks if entry["field"] == "math"
+    )
+    first_task = [mode for entry, mode in jobs if entry["task"] == first_active_math]
     assert first_task == ["naive_nocot", "normal_nocot", "naive_cot", "normal_cot"]
 
     coding_modes = {

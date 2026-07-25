@@ -184,6 +184,33 @@ class NativeLightEvalTaskCompatibilityTests(unittest.TestCase):
             doc = prompt({"question": "q"}, task_name="gsm8k")
         self.assertEqual(doc.choices, ["$36$"])
 
+    def test_all_reference_forms_are_normalized_before_native_scoring(self) -> None:
+        math_doc = Doc(query="q", choices=[r"$\boxed{4000}$"], gold_index=0)
+        lighteval_g1h_policy._normalize_doc_references(
+            math_doc,
+            domain="math",
+            request_format="math_boxed",
+        )
+        self.assertEqual(math_doc.choices, ["$4000$"])
+
+        judge_doc = Doc(
+            query="q",
+            choices=["Judgement: Yes"],
+            gold_index=0,
+            specific={
+                "references": ["\u003c think \u003eold\u003c/think\u003eJudgement: Yes"],
+                "reference": "\u003c think \u003eold\u003c/think\u003eJudgement: Yes",
+            },
+        )
+        lighteval_g1h_policy._normalize_doc_references(
+            judge_doc,
+            domain="instruction_following",
+            request_format="choice",
+        )
+        self.assertEqual(judge_doc.choices, ["Judgement: Yes"])
+        self.assertEqual(judge_doc.specific["references"], ["Judgement: Yes"])
+        self.assertEqual(judge_doc.specific["reference"], "Judgement: Yes")
+
     def test_math500_uses_raw_problem_and_final_answer_gold(self) -> None:
         doc = math_500_prompt(
             {
@@ -557,7 +584,7 @@ class BenchmarkSamplingPolicyTests(unittest.TestCase):
             )
         self.assertEqual(
             response.text_post_processed,
-            ["explanation\n```python\nprint(1)\n```"],
+            ["```\nprint(1)\n```"],
         )
 
     def test_invalid_large_sample_rate_is_rejected(self) -> None:
@@ -1162,6 +1189,17 @@ class RawCompletionTests(unittest.TestCase):
         self.assertEqual(scoreboard_bridge._answer(payload), " B")
         self.assertEqual(scoreboard_bridge._stop_reason(payload), "stop")
         self.assertEqual(payload["raw_text"], ["> Reasoning. Answer: B"])
+
+    def test_lighteval_rollout_index_keeps_post_processed_answer(self) -> None:
+        response = ModelResponse(
+            text=["reasoning", "reasoning 2"],
+            text_post_processed=[" A", " B"],
+            reasonings=["r1", "r2"],
+        )
+        indexed = response[1]
+        self.assertEqual(indexed.text, ["reasoning 2"])
+        self.assertEqual(indexed.text_post_processed, [" B"])
+        self.assertEqual(indexed.reasonings, ["r2"])
 
     def test_lighteval_checkpoint_session_reuses_one_db_lifecycle(self) -> None:
         store = SimpleNamespace(
