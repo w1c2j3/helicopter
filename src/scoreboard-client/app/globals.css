@@ -2187,7 +2187,14 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 /* avg@k capability interval: official average plus any-correct potential. */
 .potential-sample b {
   inset: 0 0 0 35%;
-  background: #2f6fca;
+  border-right: 1px solid #4779bb;
+  background: repeating-linear-gradient(
+    135deg,
+    #285b9d 0,
+    #285b9d 2px,
+    #17385f 2px,
+    #17385f 4px
+  );
 }
 
 .dashboard-shell .generation-table-all-params .model-score-column {
@@ -2220,7 +2227,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 }
 
 .generation-score.has-potential .score-numbers em {
-  color: #4f82cf;
+  color: #4b78b8;
   font-weight: 700;
 }
 
@@ -2229,7 +2236,14 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   inset: 0 auto 0 var(--score-width);
   width: calc(var(--potential-width) - var(--score-width));
   border-radius: 0 2px 2px 0;
-  background: #2f6fca;
+  border-right: 1px solid #4779bb;
+  background: repeating-linear-gradient(
+    135deg,
+    #285b9d 0,
+    #285b9d 2px,
+    #17385f 2px,
+    #17385f 4px
+  );
 }
 
 .generation-table-all-params .generation-score i .standard-bar {
