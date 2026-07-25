@@ -96,11 +96,28 @@ function ScoreValue({
     return <span className="generation-score missing">—</span>;
   }
   const width = Math.max(0, Math.min(100, cell.percent));
-  const style = { "--score-width": `${width}%` } as CSSProperties;
+  const potential = cell.potential_percent == null
+    ? null
+    : Math.max(width, Math.min(100, cell.potential_percent));
+  const style = {
+    "--score-width": `${width}%`,
+    "--potential-width": `${potential ?? width}%`,
+  } as CSSProperties;
+  const title = potential == null
+    ? `标准分 ${pct(cell.percent)} · ${cell.metric ?? "score"}`
+    : `标准分 ${pct(cell.percent)} · 潜力分 ${pct(potential)} · ${cell.metric ?? "score"}：k 次采样中至少一次答对`;
   return (
-    <span className={`generation-score ${tone}`} style={style}>
-      <strong>{pct(cell.percent)}</strong>
-      <i aria-hidden="true"><b /></i>
+    <span className={`generation-score ${tone} ${potential == null ? "" : "has-potential"}`} style={style} title={title}>
+      <span className="score-numbers">
+        <strong>{cell.percent.toFixed(1)}</strong>
+        {potential == null
+          ? <em>%</em>
+          : <em title={`括号内为潜力分 ${pct(potential)}`}> ({potential.toFixed(1)})%</em>}
+      </span>
+      <i aria-hidden="true">
+        {potential == null ? null : <b className="potential-bar" />}
+        <b className="standard-bar" />
+      </i>
     </span>
   );
 }
@@ -283,7 +300,8 @@ export function GenerationalBenchmarkMatrix({ matrix }: { matrix: LeaderboardMat
         <span className="generation-legend">
           <i className="current-dot" /> 当前代
           <i className="previous-dot" /> 上一代
-          <i className="progress-sample"><b /></i> 分数进度
+          <i className="progress-sample"><b /></i> 标准分
+          <i className="progress-sample potential-sample"><b /></i> 潜力分（至少一次答对）
         </span>
       </div>
 

@@ -107,6 +107,7 @@ export interface ChartPayload {
 
 export interface MatrixCell {
   percent: number | null;
+  potential_percent?: number | null;
   meta: CellMeta | null;
   metric: string | null;
   num_samples: number | null;

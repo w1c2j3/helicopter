@@ -224,9 +224,24 @@ const PARAM_SPECS = [
 const clamp = (value: number) => Math.max(1, Math.min(98, value));
 const rounded = (value: number) => Math.round(value * 10) / 10;
 
-function cell(percent: number, metric: string, samples: number): MatrixCell {
+function metricForIndex(index: number): string {
+  if (index % 6 === 0) return "avg@16";
+  if (index % 6 === 2) return "avg@8";
+  if (index % 6 === 4) return "avg@4";
+  return "avg@1";
+}
+
+function potentialScore(percent: number, metric: string, seed: number): number | null {
+  const k = Number.parseInt(metric.match(/avg@(\d+)/)?.[1] ?? "1", 10);
+  if (k <= 1) return null;
+  const instabilityGap = 2.5 + Math.log2(k) * 1.15 + (seed % 5) * 0.65;
+  return rounded(Math.min(99.5, percent + instabilityGap));
+}
+
+function cell(percent: number, metric: string, samples: number, seed = 0): MatrixCell {
   return {
     percent: rounded(percent),
+    potential_percent: potentialScore(percent, metric, seed),
     meta: null,
     metric,
     num_samples: samples,
@@ -241,7 +256,7 @@ function buildDomain(
   const columns: MatrixColumn[] = domain.benchmarks.map((benchmark, index) => ({
     key: `${domain.key}:${benchmark}`,
     label: benchmark,
-    metric: index % 4 === 0 ? "avg@16" : "avg@1",
+    metric: metricForIndex(index),
     eval_method: index % 3 === 0 ? "NoCoT" : "CoT",
     num_samples: 120 + index * 137,
   }));
@@ -269,7 +284,12 @@ function buildDomain(
         average: rounded(scores.reduce((sum, score) => sum + score, 0) / scores.length),
         coverage: scores.length,
         cells: scores.map((score, index) => ({
-          ...cell(score, columns[index].metric ?? "score", columns[index].num_samples ?? 0),
+          ...cell(
+            score,
+            columns[index].metric ?? "score",
+            columns[index].num_samples ?? 0,
+            index + paramIndex * 7 + generationIndex * 3 + domainIndex * 11,
+          ),
           created_at: createdAt,
         })),
       });
