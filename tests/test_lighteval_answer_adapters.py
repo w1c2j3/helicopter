@@ -59,6 +59,11 @@ def test_choice_adapter_is_symmetric_for_model_and_reference_text() -> None:
     assert adapt_answer("B", domain="knowledge", request_format="choice", prompt=prompt) == " B"
 
 
+def test_choice_format_overrides_broad_math_domain() -> None:
+    # AGIEval aqua-rat is classified as math but scored as a choice task.
+    assert answers_match(" C", "C", domain="math", request_format="choice") is True
+
+
 def test_math_adapter_is_symmetric_for_latex_wrappers() -> None:
     values = [r"$\boxed{4000}$", r"\boxed{4000}", r"$4000$", "4000"]
     assert {adapt_answer(value, domain="math", request_format="math_boxed") for value in values} == {"$4000$"}

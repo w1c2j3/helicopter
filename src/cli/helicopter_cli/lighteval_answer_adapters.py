@@ -413,13 +413,17 @@ def answers_match(
 
     domain_name = str(domain or "").strip().lower()
     format_name = str(request_format or "").strip().lower()
-    if domain_name == "math" or format_name in _MATH_FORMATS:
-        left = normalize_math_answer(model_answer)
-        right = normalize_math_answer(reference_answer)
-        return bool(left and right and left == right)
     if format_name in _CHOICE_FORMATS:
         left = extract_choice_answer(model_answer)
         right = extract_choice_answer(reference_answer)
+        return bool(left and right and left == right)
+    # Some AGIEval tasks belong to the math domain but are multiple-choice
+    # tasks (for example aqua-rat).  The explicit transport format is more
+    # specific than the broad domain and must win here, just as it does in
+    # adapt_answer().
+    if domain_name == "math" or format_name in _MATH_FORMATS:
+        left = normalize_math_answer(model_answer)
+        right = normalize_math_answer(reference_answer)
         return bool(left and right and left == right)
     if domain_name == "coding" or format_name in _CODE_FORMATS:
         left = extract_code_completion(model_answer)
