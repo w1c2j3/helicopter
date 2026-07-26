@@ -1,0 +1,70 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "http://127.0.0.1:19329/v1/chat/completions",
+    "headers": {
+      "Authorization": "Bearer [redacted]",
+      "Content-Type": "application/json"
+    },
+    "json": {
+      "model": "rwkv7-g1h-2.9b-20260710-ctx10240",
+      "messages": [
+        {
+          "role": "user",
+          "content": "System: You are solving a geometry question.\n\nUser: Find the area of a triangle with a base of 10 units and height of 5 units.\n\nAssistant:"
+        }
+      ],
+      "temperature": 0,
+      "max_tokens": 768
+    }
+  },
+  "started_at": "2026-07-26T14:52:16Z",
+  "status": 200,
+  "response_headers": {
+    "date": "Sun, 26 Jul 2026 14:52:16 GMT",
+    "server": "uvicorn",
+    "content-length": "2305",
+    "content-type": "application/json"
+  },
+  "response_body": {
+    "id": "chatcmpl-9a07a811ccf4d42a",
+    "object": "chat.completion",
+    "created": 1785077536,
+    "model": "rwkv7-g1h-2.9b-20260710-ctx10240",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": ">Okay, so I need to find the area of a triangle. The problem says the base is 10 units and the height is 5 units. Hmm, I remember there's a formula for the area of a triangle. Let me think... I think it's something like half the base times the height. Yeah, that sounds right. So the formula is Area = (base × height) / 2.\nAlright, so plugging in the numbers, the base is 10 and the height is 5. Let me write that down: Area = (10 × 5) / 2. First, I multiply 10 by 5. 10 times 5 is 50. Then I divide that by 2. 50 divided by 2 is 25. So the area should be 25 square units.\nWait, let me double-check that. If the base is 10 and the height is 5, then the area is indeed half of 10 times 5. 10 times 5 is 50, half of that is 25. Yeah, that makes sense. I don't think I made any mistakes here. The formula is straightforward, and the numbers are simple, so I'm confident the answer is 25.\nI guess another way to think about it is that the area of a triangle is like half of a rectangle with the same base and height. So if I imagine a rectangle with a base of 10 and height of 5, its area would be 50 square units. Since a triangle is half of that, it's 25 square units. That reinforces my answer.\nI don't see any other factors or complexities in this problem. It's a basic triangle with given base and height, so the formula should apply directly. No need to worry about angles or anything else. Just straightforward multiplication and division.\nSo, putting it all together, the area of the triangle is 25 square units. I think that's the correct answer.</think>\nThe area of the triangle is 25 square units.",
+          "refusal": null,
+          "annotations": null,
+          "audio": null,
+          "function_call": null,
+          "reasoning": null
+        },
+        "logprobs": null,
+        "finish_reason": "stop",
+        "stop_reason": null,
+        "token_ids": null,
+        "routed_experts": null
+      }
+    ],
+    "service_tier": null,
+    "system_fingerprint": "vllm-0.23.1rc1.dev1227+gf476ab83f-nohash",
+    "usage": {
+      "prompt_tokens": 42,
+      "total_tokens": 438,
+      "completion_tokens": 396,
+      "prompt_tokens_details": null
+    },
+    "prompt_logprobs": null,
+    "prompt_token_ids": null,
+    "prompt_text": null,
+    "kv_transfer_params": null,
+    "ec_transfer_params": null,
+    "metrics": null
+  },
+  "error": null,
+  "duration_ms": 2674.32
+}

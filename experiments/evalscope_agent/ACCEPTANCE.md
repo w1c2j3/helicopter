@@ -36,6 +36,9 @@ This audit is tied to commit `04c5c9d` and the fixed experiment configuration:
   official tool-call metrics all zero, raw response ended at the generation cap.
 - `results/evalscope/live-gaia-v3/20260726_223929/`: one GAIA level-1 sample,
   two AgentLoop requests, target `17`, official `acc=0`, and no native tool call.
+- `post-audit/naive-chat-20260726.json`: latest direct naive-Chat probe returned
+  HTTP 200 with prose and no `function_call`; `post-audit/native-tools-20260726.json`
+  returned the unchanged HTTP 400 parser configuration error.
 - `uv lock --check`: passed.
 - `uv run --no-default-groups --no-sync pytest -q tests/test_naive_chat.py tests/test_evalscope_agent.py tests/test_evalscope_agent_results.py`: **16 passed**.
 
@@ -46,4 +49,3 @@ must not be labeled a formal passing Agent benchmark release until the endpoint
 either emits valid OpenAI `tool_calls` or the model/server configuration changes
 externally. The current adapter intentionally does not fabricate calls, append
 answers, or repair truncated output.
-
