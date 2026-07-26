@@ -23,6 +23,7 @@ from .eval_run import (
     wait_for_server,
 )
 from .naive_chat_proxy import NaiveChatProxy
+from .evalscope_agent_results import write_trace_report
 from .paths import resolve_path
 from .runner import run_command
 
@@ -341,6 +342,7 @@ def run_evalscope(args: Any, *, root: Path, env: dict[str, str], config: dict[st
     server_process: subprocess.Popen[bytes] | None = None
     server_log: Path | None = None
     proxy: NaiveChatProxy | None = None
+    run_exit_code: int | None = None
     if infer_plan is not None:
         if server_is_healthy(base_url):
             print(f"evalscope: reusing healthy server at {base_url}")
@@ -384,10 +386,14 @@ def run_evalscope(args: Any, *, root: Path, env: dict[str, str], config: dict[st
                 api_url=proxy.base_url,
             )
             print(f"evalscope: naive Chat proxy listening at {proxy.base_url}; upstream {base_url}")
-        return run_command(plan.command, cwd=plan.cwd, env=plan.env, shown_env=plan.shown_env, dry_run=False)
+        run_exit_code = run_command(plan.command, cwd=plan.cwd, env=plan.env, shown_env=plan.shown_env, dry_run=False)
+        return run_exit_code
     finally:
         if proxy is not None:
             proxy.close()
+            trace_report = output_dir / "raw" / "trace_report.json"
+            write_trace_report(proxy.trace_path, trace_report, exit_code=run_exit_code)
+            print(f"evalscope: raw request/response trace report written to {trace_report}")
         if server_process is not None and not getattr(args, "keep_server", False):
             print("evalscope: stopping vLLM server")
             stop_server(server_process)
