@@ -1,0 +1,250 @@
+2026-07-26 22:39:29 - evalscope - INFO: Running with native backend
+2026-07-26 22:39:29 - evalscope - INFO: Dump task config to /home/chase/GitHub/helicopter/results/evalscope/live-gaia-v3/20260726_223929/configs/task_config.yaml
+2026-07-26 22:39:29 - evalscope - INFO: {
+    "model_id": "rwkv7-g1h-2.9b-20260710-ctx10240",
+    "model_args": {},
+    "model_task": "text_generation",
+    "chat_template": null,
+    "datasets": [
+        "gaia"
+    ],
+    "dataset_args": {
+        "gaia": {
+            "name": "gaia",
+            "dataset_id": "gaia-benchmark/GAIA",
+            "output_types": [
+                "generation"
+            ],
+            "subset_list": [
+                "2023_level1"
+            ],
+            "default_subset": "2023_level1",
+            "few_shot_num": 0,
+            "few_shot_random": false,
+            "train_split": null,
+            "eval_split": "validation",
+            "prompt_template": "{question}",
+            "few_shot_prompt_template": null,
+            "system_prompt": null,
+            "query_template": null,
+            "pretty_name": "GAIA",
+            "description": "\n## Overview\n\nGAIA (General AI Assistants) is a benchmark of 450+ questions targeting next-generation LLMs with tool use, web browsing and multi-step reasoning. Each question has an unambiguous short answer and is bucketed into one of three difficulty levels.\n\n## Task Description\n\n- **Task Type**: Tool-use Agent (multi-turn)\n- **Input**: Natural-language question, optionally with one referenced attachment file (PDF / xlsx / image / audio / ...)\n- **Output**: A short final answer (number / short phrase / comma-separated list)\n- **Splits**: ``validation`` (answers public) and ``test`` (answers private — evaluation skipped)\n\n## Key Features\n\n- ReAct agent loop with a single ``bash`` tool inside a Docker sandbox (default image ``python:3.11``, includes ``curl`` / ``wget`` / ``git``).\n- Attachment files are mounted read-only at ``/shared_files`` inside the sandbox.\n- Rule-based scorer ported verbatim from the official GAIA leaderboard (no LLM judge).\n- Dataset downloaded from ModelScope (``gaia-benchmark/GAIA``) by default; set ``dataset_hub='huggingface'`` to load from Hugging Face instead.\n\n## Evaluation Notes\n\n- Requires Docker daemon running locally (or a remote sandbox engine via the ms_enclave configuration).\n- The agent loop defaults to 50 steps. Use ``NativeAgentConfig.max_steps`` to override it.\n- Network is enabled by default because many questions require browsing. Override the image, network, CPU or memory\n  settings through ``TaskConfig.sandbox.default_config``.\n- Use ``subset_list`` to restrict to specific difficulty levels, e.g. ``['2023_level1']``, ``['2023_level1', '2023_level2']`` or ``['2023_all']`` (default).\n- [Usage Documentation](https://evalscope.readthedocs.io/en/latest/third_party/gaia.html)\n",
+            "paper_url": null,
+            "data_statistics": null,
+            "sample_example": null,
+            "tags": [
+                "Agent",
+                "Reasoning",
+                "MultiTurn"
+            ],
+            "filters": null,
+            "metric_list": [
+                "acc"
+            ],
+            "aggregation": "mean",
+            "shuffle": false,
+            "shuffle_choices": false,
+            "force_redownload": false,
+            "review_timeout": null,
+            "extra_params": {},
+            "sandbox_config": {},
+            "max_image_bytes": null
+        }
+    },
+    "dataset_dir": "/home/chase/.cache/modelscope/hub/datasets",
+    "dataset_hub": "modelscope",
+    "repeats": 1,
+    "eval_type": "openai_api",
+    "eval_backend": "Native",
+    "eval_config": null,
+    "limit": 1,
+    "eval_batch_size": 1,
+    "use_cache": null,
+    "rerun_review": false,
+    "work_dir": "/home/chase/GitHub/helicopter/results/evalscope/live-gaia-v3/20260726_223929",
+    "no_timestamp": false,
+    "enable_progress_tracker": false,
+    "ignore_errors": false,
+    "debug": false,
+    "seed": 42,
+    "api_url": "http://127.0.0.1:33915/v1",
+    "api_key": "**********",
+    "timeout": null,
+    "stream": null,
+    "judge_strategy": "auto",
+    "judge_worker_num": 1,
+    "judge_model_args": {},
+    "analysis_report": false,
+    "collect_perf": true,
+    "sandbox": {
+        "enabled": false,
+        "engine": "docker",
+        "default_config": {},
+        "manager_config": {},
+        "pool_size": null
+    },
+    "use_sandbox": false,
+    "sandbox_type": "docker",
+    "sandbox_manager_config": {},
+    "agent_config": {
+        "environment": "local",
+        "environment_extra": {},
+        "kwargs": {},
+        "skills_dir": null,
+        "skill_prompt_nudge": true,
+        "mode": "native",
+        "strategy": "function_calling",
+        "tools": [
+            "bash"
+        ],
+        "max_steps": 2,
+        "command_timeout": null,
+        "mcp_servers": []
+    },
+    "evalscope_version": "1.9.1",
+    "model": "rwkv7-g1h-2.9b-20260710-ctx10240",
+    "generation_config": {
+        "batch_size": 1,
+        "max_tokens": 1024,
+        "temperature": 0.0
+    }
+}
+2026-07-26 22:39:29 - evalscope - INFO: Start loading benchmark dataset: gaia
+2026-07-26 22:39:29 - evalscope - INFO: Downloading GAIA snapshot from ModelScope (split=validation)...
+2026-07-26 22:39:31 - evalscope - WARNING: gaia: 1 samples to evaluate (1 subset, --limit=1 per subset). Remove `--limit` for a formal evaluation.
+2026-07-26 22:39:31 - evalscope - INFO: Subsets of gaia: ['2023_level1']
+2026-07-26 22:39:31 - evalscope - INFO: Loading model for prediction...
+2026-07-26 22:39:31 - evalscope - INFO: Creating model rwkv7-g1h-2.9b-20260710-ctx10240 with eval_type=openai_api base_url=http://127.0.0.1:33915/v1, config={'retries': 5, 'retry_interval': 10, 'batch_size': 1, 'max_tokens': 1024, 'temperature': 0.0, 'anthropic_cache_strategy': 'evaluation'}, model_args={}
+2026-07-26 22:39:31 - evalscope - INFO: Model loaded successfully.
+2026-07-26 22:39:45 - evalscope - INFO: AgentLoop reached max_steps=2 for sample 0; terminating.
+2026-07-26 22:39:45 - evalscope - WARNING: String >We need to answer the question: "If Eliud Kipchoge could maintain his record-making marathon pace indefinitely how many thousand hours would it take him to run the distance between the Earth and the Moon its closest approach? Please use the minimum perigee value on the Wikipedia page for the Moon when carrying out your calculation. Round your result to the nearest 1000 hours and do not use any comma separators if necessary."
+We need to compute distance between Earth and Moon at perigee then convert to km then compute time in hours then convert to thousand hours (i.e. divide by 1000). Round to nearest 1000.
+We need to use the minimum perigee value on the Wikipedia page for the Moon. So we need to fetch the page.
+We need to compute speed: marathon pace = 26.2 miles per hour.
+Thus time = distance (km) / speed (km/h). Then convert to thousand hours: (time / 1000). Round to nearest 1000.
+We need to ensure we use the minimum perigee value. So we need to find the perigee distance from Wikipedia.
+Let's fetch the page.
+We'll use the bash command to fetch the page.
+We need to parse the page to get the distance.
+We need to convert to km to miles.
+We need to compute time.
+We need to round to nearest 1000.
+Let's fetch the page.
+We'll use the bash command to fetch the page.
+We need to parse the page.
+We need to find the perigee distance.
+We need to convert to km to miles.
+We need to compute time.
+We need to round to nearest 1000.
+Let's fetch the page.
+We'll use the bash command to fetch the page.
+We need to parse the page.
+We need to find the perigee distance.
+We need to convert to km to miles.
+We need to compute time.
+We need to round to nearest 1000.
+Let's fetch the page.
+We'll use the bash command to fetch the page.
+We need to parse the page.
+We need to find the perigee distance.
+We need to convert to km to miles.
+We need to compute time.
+We need to round to nearest 1000.
+Let's fetch the page.
+We'll use the bash command to fetch the page.
+We need to parse the page.
+We need to find the perigee distance.
+We need to convert to km to miles.
+We need to compute time.
+We need to round to nearest 1000.
+Let's fetch the page.
+We'll use the bash command to fetch the page.
+We need to parse the page.
+We need to find the perigee distance.
+We need to convert to km to miles.
+We need to compute time.
+We need to round to nearest 1000.
+Let's fetch the page.
+We'll use the bash command to fetch the page.
+We need to parse the page.
+We need to find the perigee distance.
+We need to convert to km to miles.
+We need to compute time.
+We need to round to nearest 1000.
+Let's fetch the page.
+We'll use the bash command to fetch the page.
+We need to parse the page.
+We need to find the perigee distance.
+We need to convert to km to miles.
+We need to compute time.
+We need to round to nearest 1000.
+Let's fetch the page.
+We'll use the bash command to fetch the page.
+We need to parse the page.
+We need to find the perigee distance.
+We need to convert to km to miles.
+We need to compute time.
+We need to round to nearest 1000.
+Let's fetch the page.
+We'll use the bash command to fetch the page.
+We need to parse the page.
+We need to find the perigee distance.
+We need to convert to km to miles.
+We need to compute time.
+We need to round to nearest 1000.
+Let's fetch the page.
+We'll use the bash command to fetch the page.
+We need to parse the page.
+We need to find the perigee distance.
+We need to convert to km to miles.
+We need to compute time.
+We need to round to nearest 1000.
+Let's fetch the page.
+We'll use the bash command to fetch the page.
+We need to parse the page.
+We need to find the perigee distance.
+We need to convert to km to miles.
+We need to compute time.
+We need to round to nearest 1000.
+Let's fetch the page.
+We'll use cannot be normalized to number str.
+2026-07-26 22:39:45 - evalscope - INFO: Evaluating[gaia] 100%| 1/1 [Elapsed: 00:13 < Remaining: 00:00, 13.80s/it]
+2026-07-26 22:39:45 - evalscope - INFO: gaia: predictions complete, aggregating scores...
+2026-07-26 22:39:45 - evalscope - INFO: Aggregating scores for subset: 2023_level1
+2026-07-26 22:39:45 - evalscope - INFO: Generating report...
+2026-07-26 22:39:45 - evalscope - INFO: 
+gaia report table:
+┌──────────────────────────────────┬───────────┬──────────┬─────────────┬───────┬─────────┬─────────┐
+│ Model                            │ Dataset   │ Metric   │ Subset      │   Num │   Score │ Cat.0   │
+├──────────────────────────────────┼───────────┼──────────┼─────────────┼───────┼─────────┼─────────┤
+│ rwkv7-g1h-2.9b-20260710-ctx10240 │ gaia      │ mean_acc │ 2023_level1 │     1 │       0 │ default │
+└──────────────────────────────────┴───────────┴──────────┴─────────────┴───────┴─────────┴─────────┘ 
+
+2026-07-26 22:39:45 - evalscope - INFO: Skipping report analysis (`analysis_report=False`).
+2026-07-26 22:39:45 - evalscope - INFO: Dump report to: /home/chase/GitHub/helicopter/results/evalscope/live-gaia-v3/20260726_223929/reports/rwkv7-g1h-2.9b-20260710-ctx10240/gaia.json 
+
+2026-07-26 22:39:45 - evalscope - INFO: 
+gaia perf table:
+Model                             Dataset      Num    Avg Lat  Avg TTFT    Avg TPOT      Avg Thpt    Avg In    Avg Out
+                                                          (s)  (ms)        (ms)           (tok/s)       Tok        Tok
+--------------------------------  ---------  -----  ---------  ----------  ----------  ----------  --------  ---------
+rwkv7-g1h-2.9b-20260710-ctx10240  gaia           2      6.817  -           -               150.21     930.5       1024
+
+2026-07-26 22:39:45 - evalscope - INFO: Benchmark gaia evaluation finished.
+2026-07-26 22:39:45 - evalscope - INFO: Running[eval] 100%| 1/1 [Elapsed: 00:16 < Remaining: 00:00, 16.02s/benchmark]
+2026-07-26 22:39:45 - evalscope - INFO: Overall report table: 
+┌──────────────────────────────────┬───────────┬──────────┬─────────────┬───────┬─────────┬─────────┐
+│ Model                            │ Dataset   │ Metric   │ Subset      │   Num │   Score │ Cat.0   │
+├──────────────────────────────────┼───────────┼──────────┼─────────────┼───────┼─────────┼─────────┤
+│ rwkv7-g1h-2.9b-20260710-ctx10240 │ gaia      │ mean_acc │ 2023_level1 │     1 │       0 │ default │
+└──────────────────────────────────┴───────────┴──────────┴─────────────┴───────┴─────────┴─────────┘ 
+
+2026-07-26 22:39:45 - evalscope - INFO: Overall perf table: 
+Model                             Dataset      Num    Avg Lat  Avg TTFT    Avg TPOT      Avg Thpt    Avg In    Avg Out
+                                                          (s)  (ms)        (ms)           (tok/s)       Tok        Tok
+--------------------------------  ---------  -----  ---------  ----------  ----------  ----------  --------  ---------
+rwkv7-g1h-2.9b-20260710-ctx10240  gaia           2      6.817  -           -               150.21     930.5       1024 
+
+2026-07-26 22:39:45 - evalscope - INFO: HTML report generated: /home/chase/GitHub/helicopter/results/evalscope/live-gaia-v3/20260726_223929/reports/report.html
+2026-07-26 22:39:45 - evalscope - INFO: Finished evaluation for rwkv7-g1h-2.9b-20260710-ctx10240 on ['gaia']
+2026-07-26 22:39:45 - evalscope - INFO: Output directory: /home/chase/GitHub/helicopter/results/evalscope/live-gaia-v3/20260726_223929

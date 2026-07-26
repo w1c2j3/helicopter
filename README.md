@@ -403,6 +403,9 @@ uv run --no-default-groups --no-sync helicopter eval evalscope \
   --report-only --work-dir results/evalscope/live-gaia-v2
 ```
 
+When EvalScope creates a timestamped child work directory, the command locates
+the newest completed child automatically.
+
 This is diagnostic evidence, not a second scorer: missing `tool_calls`,
 truncated generations, HTTP failures, extraction failures, and strict model
 errors remain distinct instead of being repaired into a passing answer.

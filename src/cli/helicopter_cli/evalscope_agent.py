@@ -90,6 +90,21 @@ def _output_dir(config: dict[str, Any], *, root: Path, env: dict[str, str], args
     return resolve_path(str(value), root=root, env=env)
 
 
+def _latest_evalscope_work_dir(output_dir: Path) -> Path:
+    """Resolve EvalScope's timestamped child directory when it creates one."""
+
+    if any((output_dir / name).is_dir() for name in ("predictions", "reviews", "reports")):
+        return output_dir
+    candidates: list[Path] = []
+    if output_dir.is_dir():
+        for candidate in output_dir.iterdir():
+            if candidate.is_dir() and any((candidate / name).is_dir() for name in ("predictions", "reviews", "reports")):
+                candidates.append(candidate)
+    if not candidates:
+        return output_dir
+    return max(candidates, key=lambda path: path.stat().st_mtime_ns)
+
+
 def _json_mapping(value: Any, *, root: Path, name: str) -> dict[str, Any]:
     if value is None or value == "":
         return {}
@@ -319,7 +334,13 @@ def _infer_plan(args: Any, *, root: Path, env: dict[str, str], config: dict[str,
 def run_evalscope(args: Any, *, root: Path, env: dict[str, str], config: dict[str, Any]) -> int:
     if getattr(args, "report_only", False):
         output_dir = _output_dir(config, root=root, env=env, args=args)
-        report = write_acceptance_report(output_dir, exit_code=0)
+        work_dir = _latest_evalscope_work_dir(output_dir)
+        outer_trace = output_dir / "raw" / "trace_report.json"
+        report = write_acceptance_report(
+            work_dir,
+            exit_code=0,
+            trace_report_path=outer_trace if outer_trace.is_file() else None,
+        )
         print(f"evalscope: acceptance report written to {report}")
         return 0
     if getattr(args, "list_datasets", False):
@@ -348,6 +369,7 @@ def run_evalscope(args: Any, *, root: Path, env: dict[str, str], config: dict[st
     server_log: Path | None = None
     proxy: NaiveChatProxy | None = None
     run_exit_code: int | None = None
+    trace_report_path: Path | None = None
     if infer_plan is not None:
         if server_is_healthy(base_url):
             print(f"evalscope: reusing healthy server at {base_url}")
@@ -401,7 +423,18 @@ def run_evalscope(args: Any, *, root: Path, env: dict[str, str], config: dict[st
             trace_report = output_dir / "raw" / "trace_report.json"
             write_trace_report(proxy.trace_path, trace_report, exit_code=run_exit_code)
             print(f"evalscope: raw request/response trace report written to {trace_report}")
-        acceptance_report = write_acceptance_report(output_dir, exit_code=run_exit_code)
+            work_dir = _latest_evalscope_work_dir(output_dir)
+            trace_report_path = work_dir / "raw" / "trace_report.json"
+            if trace_report_path != trace_report:
+                write_trace_report(proxy.trace_path, trace_report_path, exit_code=run_exit_code)
+                print(f"evalscope: run trace report written to {trace_report_path}")
+        else:
+            work_dir = _latest_evalscope_work_dir(output_dir)
+        acceptance_report = write_acceptance_report(
+            work_dir,
+            exit_code=run_exit_code,
+            trace_report_path=trace_report_path,
+        )
         print(f"evalscope: acceptance report written to {acceptance_report}")
         if server_process is not None and not getattr(args, "keep_server", False):
             print("evalscope: stopping vLLM server")

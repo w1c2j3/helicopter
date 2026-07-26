@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
@@ -10,6 +11,7 @@ from helicopter_cli.evalscope_agent import (
     build_evalscope_plan,
     format_agent_catalog,
     load_agent_catalog,
+    _latest_evalscope_work_dir,
 )
 
 
@@ -117,6 +119,15 @@ class EvalScopeAgentTests(unittest.TestCase):
         self.assertEqual(agent_config["environment"], "docker")
         self.assertEqual(agent_config["timeout"], 1800)
         self.assertEqual(plan.command[plan.command.index("--api-url") + 1], "https://example.test/v1")
+
+    def test_latest_work_dir_resolves_timestamped_evalscope_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            older = root / "20260726_120000" / "predictions"
+            newer = root / "20260726_120001" / "predictions"
+            older.mkdir(parents=True)
+            newer.mkdir(parents=True)
+            self.assertEqual(_latest_evalscope_work_dir(root), newer.parent)
 
 
 if __name__ == "__main__":

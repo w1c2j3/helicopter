@@ -20,6 +20,12 @@ endpoint was `http://127.0.0.1:19329/v1`, model
   after every EvalScope run and can rebuild it with `uv run
   --no-default-groups --no-sync helicopter eval evalscope --report-only
   --work-dir <run-dir>`.
+- `ca1a35d` / `evalscope/direct-answer-contract`: direct one-line answers are
+  accepted only for datasets whose output contract is single-line; multiline
+  reasoning is never truncated into an answer.
+- The timestamped-workdir fix is validated by the v3 reruns below: the inner
+  EvalScope work directory now contains the acceptance report and a copy of
+  the raw trace summary, while the outer directory retains the proxy JSONL.
 
 ## Baseline and transport probes
 
@@ -41,6 +47,8 @@ model response. See `naive-proxy-trace.jsonl`.
 | `results/evalscope/live-general-fc` | `general_fc`, 1 | default, total reached 10240 | all scores 0 | raw output ended with `finish_reason=length`; old run had no diagnostic report |
 | `results/evalscope/live-general-fc-v2` | `general_fc`, 1 | `max_tokens=1024`, `temperature=0` | `tool_call_f1=0`, schema/tool-call counts 0 | `acceptance_report.json` records missing native `tool_calls` as `format_invalid` and retains the separate context-limit trace |
 | `results/evalscope/live-gaia-v2` | `gaia/2023_level1`, 1 | `max_tokens=1024`, `max_steps=2` | `mean_acc=0` | `acceptance_report.json` joins target `17`, official `acc=0`, two raw requests, and no-tool-call/truncation diagnostics |
+| `results/evalscope/live-general-fc-v3/<timestamp>` | `general_fc`, 1 | `max_tokens=1024`, `temperature=0` | `tool_call_f1=0`, schema/tool-call counts 0 | post-extractor rerun; timestamped workdir, official report, predictions/reviews, raw proxy trace, and acceptance report all present |
+| `results/evalscope/live-gaia-v3/<timestamp>` | `gaia/2023_level1`, 1 | `max_tokens=1024`, `max_steps=2` | `mean_acc=0` | post-extractor rerun; target `17`, official `acc=0`, two requests, and timestamped acceptance/trace reports all present |
 
 The second run proves the complete path: ModelScope dataset loading, proxy
 serialization, local model call, unchanged response, EvalScope report, and
