@@ -11,7 +11,8 @@ endpoint was `http://127.0.0.1:19329/v1`, model
 - `4a68cb0` / `baseline/pre-evalscope`: original pre-integration code.
 - `24ab52c` / `baseline/wsl-actual`: corrected WSL preflight evidence.
 - `adc2500`: naive Chat transport adapter and EvalScope command wiring.
-- Next checkpoint: strict extraction, discrimination, and trace reporting.
+- `52582e5` / `evalscope/strict-diagnostics`: strict extraction, discrimination,
+  trace reporting, and the first live run artifacts.
 
 ## Baseline and transport probes
 
@@ -32,6 +33,7 @@ model response. See `naive-proxy-trace.jsonl`.
 | --- | --- | --- | --- | --- |
 | `results/evalscope/live-general-fc` | `general_fc`, 1 | default, total reached 10240 | all scores 0 | raw output ended with `finish_reason=length`; old run had no diagnostic report |
 | `results/evalscope/live-general-fc-v2` | `general_fc`, 1 | `max_tokens=1024`, `temperature=0` | `tool_call_f1=0`, schema/tool-call counts 0 | `context_truncated=1`; raw response and converted request are retained |
+| `results/evalscope/live-gaia-v2` | `gaia/2023_level1`, 1 | `max_tokens=1024`, `max_steps=2` | `mean_acc=0` | AgentLoop made 2 requests; both were `context_truncated`, with no tool call |
 
 The second run proves the complete path: ModelScope dataset loading, proxy
 serialization, local model call, unchanged response, EvalScope report, and
@@ -39,12 +41,21 @@ Helicopter `raw/trace_report.json`. The score remains zero because this model
 response contains prose and no OpenAI `tool_calls`; it is not an extractor or
 discriminator success case.
 
+The GAIA run additionally proved EvalScope's native AgentLoop path and was
+rerun after installing `evalscope[sandbox]` with `uv pip`. Its fixed subset is
+recorded in `gaia-level1.json`. The model repeatedly described the intended
+bash action instead of emitting a tool call and reached the 1024-token cap;
+the official score is therefore zero and the raw two-request trace is kept.
+
 ## Failure classification
 
 - Chat format: fixed for the local endpoint by the naive Chat proxy; verified
   with a real HTTP 200 response.
 - Interface error: reproduced as the original HTTP 400 tool-call request.
 - Model/format failure: `general_fc` response did not contain a tool call.
+- Agent runtime: the first GAIA run exposed the missing `ms_enclave` extra;
+  installing `evalscope[sandbox]` with `uv pip` removed that import blocker for
+  the fixed-subset rerun.
 - Context truncation: reproduced at the 10240 total-token boundary and then
   retained as an explicit `context_truncated` diagnostic.
 - Extraction failure: strict answer extractors return a failure status rather
@@ -58,4 +69,6 @@ discriminator success case.
 the optional `swebench` package; its extra installation exceeded the bounded
 experiment window. Native function-calling datasets require a serving process
 with an actual tool-call parser, which the current 19329 tunnel does not have.
-These are recorded blockers, not silently converted to passing results.
+GAIA can now enter the AgentLoop after the sandbox extra is installed, but the
+model still fails its required tool-call format. These are recorded blockers,
+not silently converted to passing results.

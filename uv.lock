@@ -998,6 +998,20 @@ wheels = [
 ]
 
 [[package]]
+name = "docker"
+version = "7.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
+    { name = "requests" },
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/88/7f/731ff914b0255d3d065f45fd4e626d4b8c95dbcbaada049f337a6ac16410/docker-7.2.0.tar.gz", hash = "sha256:cebb93773d334f778e023a7ee352a8d6e13ab1bd3b863a4d4a59dec897df43ac", size = 118731, upload-time = "2026-07-09T14:53:46.39Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/75/23/529140fe1aab80fc6992f93a706deec709140a6397439139a054e1515c45/docker-7.2.0-py3-none-any.whl", hash = "sha256:a3f45fdeb9165e2d25d9a1d02ddf3bc70fb572cf5ebbf9b58558c22caf29b71f", size = 148775, upload-time = "2026-07-09T14:53:45.224Z" },
+]
+
+[[package]]
 name = "docstring-parser"
 version = "0.18.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1116,6 +1130,9 @@ wheels = [
 mcp = [
     { name = "mcp" },
     { name = "mcp-server-fetch" },
+]
+sandbox = [
+    { name = "ms-enclave", extra = ["docker"] },
 ]
 
 [[package]]
@@ -1490,7 +1507,7 @@ dependencies = [
 
 [package.dev-dependencies]
 agent = [
-    { name = "evalscope", extra = ["mcp"] },
+    { name = "evalscope", extra = ["mcp", "sandbox"] },
 ]
 eval = [
     { name = "language-data" },
@@ -1613,7 +1630,7 @@ rwkv = [
 requires-dist = [{ name = "helicopter-scoreboard-server", editable = "src/scoreboard-server" }]
 
 [package.metadata.requires-dev]
-agent = [{ name = "evalscope", extras = ["mcp"], specifier = ">=1.9.1,<2.0.0" }]
+agent = [{ name = "evalscope", extras = ["mcp", "sandbox"], specifier = ">=1.9.1,<2.0.0" }]
 eval = [
     { name = "language-data" },
     { name = "lighteval", extras = ["extended-tasks", "litellm", "multilingual"], editable = "src/eval/lighteval" },
@@ -2891,6 +2908,31 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e0/47/dd32fa426cc72114383ac549964eecb20ecfd886d1e5ccf5340b55b02f57/mpmath-1.3.0.tar.gz", hash = "sha256:7a28eb2a9774d00c7bc92411c19a89209d5da7c4c9a9e227be8330a23a25b91f", size = 508106, upload-time = "2023-03-07T16:47:11.061Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/43/e3/7d92a15f894aa0c9c4b49b8ee9ac9850d6e63b03c9c32c0367a13ae62209/mpmath-1.3.0-py3-none-any.whl", hash = "sha256:a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c", size = 536198, upload-time = "2023-03-07T16:47:09.197Z" },
+]
+
+[[package]]
+name = "ms-enclave"
+version = "0.0.7"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "docstring-parser" },
+    { name = "fastapi" },
+    { name = "openai" },
+    { name = "pydantic" },
+    { name = "requests" },
+    { name = "shortuuid" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0c/d2/0e35f62578920e02ef41f370af8e5090747f593e6f011bbfb308c2bbcb4d/ms_enclave-0.0.7.tar.gz", hash = "sha256:98e14eb9300dfd72f65bf959aa316e68d5bab9451b8cbd115b837ce642b5e52b", size = 75731, upload-time = "2026-07-09T09:08:40.79Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/13/af/ce25e190b588e8b9ba02fe7d68d20d73488263ca93f1906b2de40aa2fb17/ms_enclave-0.0.7-py3-none-any.whl", hash = "sha256:eb3f4de279ca0d26e24e3c7f6f83c782f02997b33d03ca2b734ef7f92bc68ebb", size = 79292, upload-time = "2026-07-09T09:08:39.656Z" },
+]
+
+[package.optional-dependencies]
+docker = [
+    { name = "docker" },
+    { name = "websocket-client" },
 ]
 
 [[package]]
@@ -6041,6 +6083,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/0b/02/ae6ceac1baeda530866a85075641cec12989bd8d31af6d5ab4a3e8c92f47/webencodings-0.5.1.tar.gz", hash = "sha256:b36a1c245f2d304965eb4e0a82848379241dc04b865afcc4aab16748587e1923", size = 9721, upload-time = "2017-04-05T20:21:34.189Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f4/24/2a3e3df732393fed8b3ebf2ec078f05546de641fe1b667ee316ec1dcf3b7/webencodings-0.5.1-py2.py3-none-any.whl", hash = "sha256:a0af1213f3c2226497a97e2b3aa01a7e4bee4f403f95be16fc9acd2947514a78", size = 11774, upload-time = "2017-04-05T20:21:32.581Z" },
+]
+
+[[package]]
+name = "websocket-client"
+version = "1.9.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/2c/41/aa4bf9664e4cda14c3b39865b12251e8e7d239f4cd0e3cc1b6c2ccde25c1/websocket_client-1.9.0.tar.gz", hash = "sha256:9e813624b6eb619999a97dc7958469217c3176312b3a16a4bd1bc7e08a46ec98", size = 70576, upload-time = "2025-10-07T21:16:36.495Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/34/db/b10e48aa8fff7407e67470363eac595018441cf32d5e1001567a7aeba5d2/websocket_client-1.9.0-py3-none-any.whl", hash = "sha256:af248a825037ef591efbf6ed20cc5faa03d3b47b9e5a2230a529eeee1c1fc3ef", size = 82616, upload-time = "2025-10-07T21:16:34.951Z" },
 ]
 
 [[package]]

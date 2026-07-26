@@ -23,7 +23,7 @@ eval = [
 ]
 
 agent = [
-  "evalscope[mcp]>=1.9.1,<2.0.0",
+  "evalscope[mcp,sandbox]>=1.9.1,<2.0.0",
 ]
 
 rwkv = [

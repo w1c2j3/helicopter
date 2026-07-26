@@ -1,0 +1,262 @@
+2026-07-26 22:06:08 - evalscope - INFO: Running with native backend
+2026-07-26 22:06:08 - evalscope - INFO: Dump task config to /home/chase/GitHub/helicopter/results/evalscope/live-gaia/configs/task_config.yaml
+2026-07-26 22:06:08 - evalscope - INFO: {
+    "model_id": "rwkv7-g1h-2.9b-20260710-ctx10240",
+    "model_args": {},
+    "model_task": "text_generation",
+    "chat_template": null,
+    "datasets": [
+        "gaia"
+    ],
+    "dataset_args": {
+        "gaia": {
+            "name": "gaia",
+            "dataset_id": "gaia-benchmark/GAIA",
+            "output_types": [
+                "generation"
+            ],
+            "subset_list": [
+                "2023_level1",
+                "2023_level2",
+                "2023_level3"
+            ],
+            "default_subset": "2023_level1",
+            "few_shot_num": 0,
+            "few_shot_random": false,
+            "train_split": null,
+            "eval_split": "validation",
+            "prompt_template": "{question}",
+            "few_shot_prompt_template": null,
+            "system_prompt": null,
+            "query_template": null,
+            "pretty_name": "GAIA",
+            "description": "\n## Overview\n\nGAIA (General AI Assistants) is a benchmark of 450+ questions targeting next-generation LLMs with tool use, web browsing and multi-step reasoning. Each question has an unambiguous short answer and is bucketed into one of three difficulty levels.\n\n## Task Description\n\n- **Task Type**: Tool-use Agent (multi-turn)\n- **Input**: Natural-language question, optionally with one referenced attachment file (PDF / xlsx / image / audio / ...)\n- **Output**: A short final answer (number / short phrase / comma-separated list)\n- **Splits**: ``validation`` (answers public) and ``test`` (answers private — evaluation skipped)\n\n## Key Features\n\n- ReAct agent loop with a single ``bash`` tool inside a Docker sandbox (default image ``python:3.11``, includes ``curl`` / ``wget`` / ``git``).\n- Attachment files are mounted read-only at ``/shared_files`` inside the sandbox.\n- Rule-based scorer ported verbatim from the official GAIA leaderboard (no LLM judge).\n- Dataset downloaded from ModelScope (``gaia-benchmark/GAIA``) by default; set ``dataset_hub='huggingface'`` to load from Hugging Face instead.\n\n## Evaluation Notes\n\n- Requires Docker daemon running locally (or a remote sandbox engine via the ms_enclave configuration).\n- The agent loop defaults to 50 steps. Use ``NativeAgentConfig.max_steps`` to override it.\n- Network is enabled by default because many questions require browsing. Override the image, network, CPU or memory\n  settings through ``TaskConfig.sandbox.default_config``.\n- Use ``subset_list`` to restrict to specific difficulty levels, e.g. ``['2023_level1']``, ``['2023_level1', '2023_level2']`` or ``['2023_all']`` (default).\n- [Usage Documentation](https://evalscope.readthedocs.io/en/latest/third_party/gaia.html)\n",
+            "paper_url": null,
+            "data_statistics": null,
+            "sample_example": null,
+            "tags": [
+                "Agent",
+                "Reasoning",
+                "MultiTurn"
+            ],
+            "filters": null,
+            "metric_list": [
+                "acc"
+            ],
+            "aggregation": "mean",
+            "shuffle": false,
+            "shuffle_choices": false,
+            "force_redownload": false,
+            "review_timeout": null,
+            "extra_params": {},
+            "sandbox_config": {},
+            "max_image_bytes": null
+        }
+    },
+    "dataset_dir": "/home/chase/.cache/modelscope/hub/datasets",
+    "dataset_hub": "modelscope",
+    "repeats": 1,
+    "eval_type": "openai_api",
+    "eval_backend": "Native",
+    "eval_config": null,
+    "limit": 1,
+    "eval_batch_size": 1,
+    "use_cache": null,
+    "rerun_review": false,
+    "work_dir": "/home/chase/GitHub/helicopter/results/evalscope/live-gaia",
+    "no_timestamp": true,
+    "enable_progress_tracker": false,
+    "ignore_errors": true,
+    "debug": false,
+    "seed": 42,
+    "api_url": "http://127.0.0.1:40935/v1",
+    "api_key": "**********",
+    "timeout": null,
+    "stream": null,
+    "judge_strategy": "auto",
+    "judge_worker_num": 1,
+    "judge_model_args": {},
+    "analysis_report": false,
+    "collect_perf": true,
+    "sandbox": {
+        "enabled": false,
+        "engine": "docker",
+        "default_config": {},
+        "manager_config": {},
+        "pool_size": null
+    },
+    "use_sandbox": false,
+    "sandbox_type": "docker",
+    "sandbox_manager_config": {},
+    "agent_config": {
+        "environment": "local",
+        "environment_extra": {},
+        "kwargs": {},
+        "skills_dir": null,
+        "skill_prompt_nudge": true,
+        "mode": "native",
+        "strategy": "function_calling",
+        "tools": [
+            "python_exec"
+        ],
+        "max_steps": 2,
+        "command_timeout": null,
+        "mcp_servers": []
+    },
+    "evalscope_version": "1.9.1",
+    "model": "rwkv7-g1h-2.9b-20260710-ctx10240",
+    "generation_config": {
+        "batch_size": 1,
+        "max_tokens": 1024,
+        "temperature": 0.0
+    }
+}
+2026-07-26 22:06:08 - evalscope - INFO: Start loading benchmark dataset: gaia
+2026-07-26 22:06:08 - evalscope - INFO: Loading dataset gaia-benchmark/GAIA from modelscope > subset: 2023_level1 > split: validation ...
+2026-07-26 22:06:24 - evalscope - INFO: Loading dataset gaia-benchmark/GAIA from modelscope > subset: 2023_level2 > split: validation ...
+2026-07-26 22:06:38 - evalscope - INFO: Loading dataset gaia-benchmark/GAIA from modelscope > subset: 2023_level3 > split: validation ...
+2026-07-26 22:07:14 - evalscope - INFO: Downloading GAIA snapshot from ModelScope (split=validation)...
+2026-07-26 22:07:21 - evalscope - WARNING: gaia: 3 samples to evaluate (3 subsets, --limit=1 per subset). Remove `--limit` for a formal evaluation.
+2026-07-26 22:07:21 - evalscope - INFO: Subsets of gaia: ['2023_level1', '2023_level2', '2023_level3']
+2026-07-26 22:07:21 - evalscope - WARNING: `ms_enclave` not found. Please run `pip install 'evalscope[sandbox]'` to use EnclaveAgentEnvironment.
+2026-07-26 22:07:21 - evalscope - ERROR: Processing item in subset='2023_level1' failed: `ms_enclave` not found. Please run `pip install 'evalscope[sandbox]'` to use EnclaveAgentEnvironment.
+Traceback:
+Traceback (most recent call last):
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/utils/function_utils.py", line 422, in run_in_threads_with_progress
+    result = fut.result()
+             ^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 449, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 401, in __get_result
+    raise self._exception
+  File "/usr/lib/python3.12/concurrent/futures/thread.py", line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/utils/function_utils.py", line 377, in _worker_with_loop_cleanup
+    return worker(item)
+           ^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/evaluator/evaluator.py", line 312, in worker
+    return self._process_work_item(item, context.model_prediction_dir)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/evaluator/evaluator.py", line 356, in _process_work_item
+    self._predict_sample(item.sample, model_prediction_dir) if item.needs_predict else item.task_state
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/evaluator/evaluator.py", line 474, in _predict_sample
+    task_state = self.benchmark.run_inference(model=self.model, sample=sample, output_dir=model_prediction_dir)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/api/benchmark/adapters/default_data_adapter.py", line 546, in run_inference
+    result = self._on_inference(model, sample)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/api/benchmark/adapters/agent_adapter.py", line 243, in _on_inference
+    environment = self.build_environment(sample)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/benchmarks/gaia/gaia_adapter.py", line 223, in build_environment
+    return EnclaveAgentEnvironment(
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/agent/environments/enclave.py", line 149, in __init__
+    check_import('ms_enclave', extra='sandbox', raise_error=True, feature_name='EnclaveAgentEnvironment')
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/utils/import_utils.py", line 90, in check_import
+    raise ImportError(error_msg)
+ImportError: `ms_enclave` not found. Please run `pip install 'evalscope[sandbox]'` to use EnclaveAgentEnvironment.
+
+2026-07-26 22:07:21 - evalscope - WARNING: Error ignored, continuing with next sample.
+2026-07-26 22:07:21 - evalscope - WARNING: `ms_enclave` not found. Please run `pip install 'evalscope[sandbox]'` to use EnclaveAgentEnvironment.
+2026-07-26 22:07:21 - evalscope - ERROR: Processing item in subset='2023_level2' failed: `ms_enclave` not found. Please run `pip install 'evalscope[sandbox]'` to use EnclaveAgentEnvironment.
+Traceback:
+Traceback (most recent call last):
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/utils/function_utils.py", line 422, in run_in_threads_with_progress
+    result = fut.result()
+             ^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 449, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 401, in __get_result
+    raise self._exception
+  File "/usr/lib/python3.12/concurrent/futures/thread.py", line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/utils/function_utils.py", line 377, in _worker_with_loop_cleanup
+    return worker(item)
+           ^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/evaluator/evaluator.py", line 312, in worker
+    return self._process_work_item(item, context.model_prediction_dir)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/evaluator/evaluator.py", line 356, in _process_work_item
+    self._predict_sample(item.sample, model_prediction_dir) if item.needs_predict else item.task_state
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/evaluator/evaluator.py", line 474, in _predict_sample
+    task_state = self.benchmark.run_inference(model=self.model, sample=sample, output_dir=model_prediction_dir)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/api/benchmark/adapters/default_data_adapter.py", line 546, in run_inference
+    result = self._on_inference(model, sample)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/api/benchmark/adapters/agent_adapter.py", line 243, in _on_inference
+    environment = self.build_environment(sample)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/benchmarks/gaia/gaia_adapter.py", line 223, in build_environment
+    return EnclaveAgentEnvironment(
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/agent/environments/enclave.py", line 149, in __init__
+    check_import('ms_enclave', extra='sandbox', raise_error=True, feature_name='EnclaveAgentEnvironment')
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/utils/import_utils.py", line 90, in check_import
+    raise ImportError(error_msg)
+ImportError: `ms_enclave` not found. Please run `pip install 'evalscope[sandbox]'` to use EnclaveAgentEnvironment.
+
+2026-07-26 22:07:21 - evalscope - WARNING: Error ignored, continuing with next sample.
+2026-07-26 22:07:21 - evalscope - WARNING: `ms_enclave` not found. Please run `pip install 'evalscope[sandbox]'` to use EnclaveAgentEnvironment.
+2026-07-26 22:07:21 - evalscope - ERROR: Processing item in subset='2023_level3' failed: `ms_enclave` not found. Please run `pip install 'evalscope[sandbox]'` to use EnclaveAgentEnvironment.
+Traceback:
+Traceback (most recent call last):
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/utils/function_utils.py", line 422, in run_in_threads_with_progress
+    result = fut.result()
+             ^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 449, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 401, in __get_result
+    raise self._exception
+  File "/usr/lib/python3.12/concurrent/futures/thread.py", line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/utils/function_utils.py", line 377, in _worker_with_loop_cleanup
+    return worker(item)
+           ^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/evaluator/evaluator.py", line 312, in worker
+    return self._process_work_item(item, context.model_prediction_dir)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/evaluator/evaluator.py", line 356, in _process_work_item
+    self._predict_sample(item.sample, model_prediction_dir) if item.needs_predict else item.task_state
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/evaluator/evaluator.py", line 474, in _predict_sample
+    task_state = self.benchmark.run_inference(model=self.model, sample=sample, output_dir=model_prediction_dir)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/api/benchmark/adapters/default_data_adapter.py", line 546, in run_inference
+    result = self._on_inference(model, sample)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/api/benchmark/adapters/agent_adapter.py", line 243, in _on_inference
+    environment = self.build_environment(sample)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/benchmarks/gaia/gaia_adapter.py", line 223, in build_environment
+    return EnclaveAgentEnvironment(
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/agent/environments/enclave.py", line 149, in __init__
+    check_import('ms_enclave', extra='sandbox', raise_error=True, feature_name='EnclaveAgentEnvironment')
+  File "/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/utils/import_utils.py", line 90, in check_import
+    raise ImportError(error_msg)
+ImportError: `ms_enclave` not found. Please run `pip install 'evalscope[sandbox]'` to use EnclaveAgentEnvironment.
+
+2026-07-26 22:07:21 - evalscope - WARNING: Error ignored, continuing with next sample.
+2026-07-26 22:07:21 - evalscope - INFO: Evaluating[gaia] 100%| 3/3 [Elapsed: 00:00 < Remaining: 00:00, 318.90it/s]
+2026-07-26 22:07:21 - evalscope - INFO: gaia: predictions complete, aggregating scores...
+2026-07-26 22:07:21 - evalscope - INFO: No valid scores generated for subset: 2023_level1, skipping.
+2026-07-26 22:07:21 - evalscope - INFO: No valid scores generated for subset: 2023_level2, skipping.
+2026-07-26 22:07:21 - evalscope - INFO: No valid scores generated for subset: 2023_level3, skipping.
+2026-07-26 22:07:21 - evalscope - WARNING: No valid scores generated for gaia (all samples filtered or empty subsets). Skipping report generation.
+2026-07-26 22:07:21 - evalscope - INFO: Benchmark gaia evaluation finished.
+2026-07-26 22:07:21 - evalscope - INFO: Running[eval] 100%| 1/1 [Elapsed: 01:13 < Remaining: 00:00, 73.36s/benchmark]
+2026-07-26 22:07:21 - evalscope - ERROR: Failed to generate report table: No objects to concatenate
+2026-07-26 22:07:21 - evalscope - WARNING: No reports found under /home/chase/GitHub/helicopter/results/evalscope/live-gaia/reports. Generating an empty report.
+2026-07-26 22:07:21 - evalscope - INFO: HTML report generated: /home/chase/GitHub/helicopter/results/evalscope/live-gaia/reports/report.html
+2026-07-26 22:07:21 - evalscope - INFO: Finished evaluation for rwkv7-g1h-2.9b-20260710-ctx10240 on ['gaia']
+2026-07-26 22:07:21 - evalscope - INFO: Output directory: /home/chase/GitHub/helicopter/results/evalscope/live-gaia
