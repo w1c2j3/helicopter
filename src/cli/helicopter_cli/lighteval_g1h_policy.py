@@ -42,7 +42,7 @@ except ImportError:  # pragma: no cover - LightEval declares it for IFEval
 else:
     DetectorFactory.seed = 0
 
-from .g1h_config import alias_task_name, canonical_task_name, format_query, normalize_policy
+from .rwkv_config import alias_task_name, canonical_task_name, format_query, normalize_policy
 
 
 POLICY_ENV = "HELICOPTER_LIGHTEEVAL_G1H_POLICY"

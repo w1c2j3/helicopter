@@ -159,6 +159,83 @@ async def check_database(root: Path) -> None:
     await close_db()
 
 
+def load_scored_job_keys(
+    *,
+    env: dict[str, str],
+    root: Path,
+    model_catalog: str,
+    model: str,
+) -> set[tuple[str, str]]:
+    """Return scored (config filename, prompt mode) jobs for one model.
+
+    A successful child process is not sufficient evidence that a benchmark is
+    finished: generation may have been interrupted before eval rows or the
+    aggregate score were written.  Only a task with a score and one eval row
+    for every completion is eligible for skipping.
+    """
+
+    import tomllib
+
+    catalog_path = Path(model_catalog)
+    if not catalog_path.is_absolute():
+        catalog_path = root / catalog_path
+    catalog = tomllib.loads(catalog_path.read_text(encoding="utf-8"))
+    served_model_name = str(catalog["models"][model]["served_model_name"])
+
+    required = (
+        "SCOREBOARD_DB_HOST",
+        "SCOREBOARD_DB_PORT",
+        "SCOREBOARD_DB_USER",
+        "SCOREBOARD_DB_PASSWORD",
+        "SCOREBOARD_DB_NAME",
+    )
+    missing = [key for key in required if not env.get(key)]
+    if missing:
+        raise RuntimeError("database skip check missing environment keys: " + ", ".join(missing))
+
+    async def query() -> list[tuple[str, str]]:
+        import asyncpg
+
+        conn = await asyncpg.connect(
+            host=env["SCOREBOARD_DB_HOST"],
+            port=int(env["SCOREBOARD_DB_PORT"]),
+            user=env["SCOREBOARD_DB_USER"],
+            password=env["SCOREBOARD_DB_PASSWORD"],
+            database=env["SCOREBOARD_DB_NAME"],
+        )
+        try:
+            rows = await conn.fetch(
+                """
+                SELECT t.config_path, t.sampling_config
+                FROM task t
+                JOIN model m ON m.model_id = t.model_id
+                JOIN scores s ON s.task_id = t.task_id
+                JOIN completions c ON c.task_id = t.task_id
+                LEFT JOIN eval e ON e.completions_id = c.completions_id
+                WHERE t.status = 'Completed'
+                  AND m.model_name = $1
+                GROUP BY t.task_id, t.config_path, t.sampling_config
+                HAVING count(c.completions_id) > 0
+                   AND count(e.eval_id) = count(c.completions_id)
+                """,
+                served_model_name,
+            )
+        finally:
+            await conn.close()
+
+        keys: list[tuple[str, str]] = []
+        for row in rows:
+            sampling = row["sampling_config"]
+            if isinstance(sampling, str):
+                sampling = json.loads(sampling)
+            mode = str((sampling or {}).get("prompt_mode", ""))
+            if mode:
+                keys.append((Path(str(row["config_path"])).name, mode))
+        return keys
+
+    return set(asyncio.run(query()))
+
+
 def run_one(
     *,
     root: Path,
@@ -187,10 +264,8 @@ def run_one(
         config,
         "--model-catalog",
         model_catalog,
-        "--models",
-        model,
-        "--tasks",
-        task,
+        "--job",
+        f"{model}={task}",
         "--prompt-mode",
         mode,
             "--no-server",
@@ -266,6 +341,7 @@ def run_model_queue(
     state_dir: Path,
     start_at: int,
     max_retries: int,
+    run_policy: str,
 ) -> int:
     """Run one model's queue sequentially and persist progress per model."""
 
@@ -277,24 +353,41 @@ def run_model_queue(
         except json.JSONDecodeError:
             pass
 
+    if run_policy == "resume":
+        db_scored_jobs = load_scored_job_keys(
+            env=env,
+            root=root,
+            model_catalog=model_catalog,
+            model=model,
+        )
+    else:
+        db_scored_jobs = set()
+        successful_jobs = set()
+    print(
+        f"large-eval: policy={run_policy}; DB-complete jobs to skip "
+        f"model={model} count={len(db_scored_jobs)}",
+        flush=True,
+    )
+
     failures = 0
-    # A failed child must remain resumable.  Older state files incorrectly
-    # advanced last_completed_index for every return code, so derive the
-    # checkpoint from successful job records first.
-    successful_indices = [
-        int(item.get("index", -1))
+    # Resume by semantic job identity instead of queue index.  The suite can
+    # intentionally change its enabled modes (for example, dropping the
+    # normal wave after it has started); index-only checkpoints would then
+    # either repeat completed naive jobs or skip the wrong jobs.
+    successful_jobs = {
+        (str(item.get("field", "")), str(item.get("task", "")), str(item.get("mode", "")))
         for item in model_state.get("jobs", [])
         if int(item.get("return_code", 1)) == 0
-    ]
-    if successful_indices:
-        completed_index = max(successful_indices)
-    elif not model_state.get("jobs"):
-        completed_index = int(model_state.get("last_completed_index", -1))
-    else:
-        completed_index = -1
-    effective_start = max(start_at, completed_index + 1)
+    }
     for job_index, (entry, mode) in enumerate(jobs):
-        if job_index < effective_start:
+        job_key = (str(entry["field"]), str(entry["task"]), str(mode))
+        db_job_key = (Path(str(entry["config"])).name, str(mode))
+        if job_index < int(start_at) or db_job_key in db_scored_jobs:
+            if db_job_key in db_scored_jobs and job_key not in successful_jobs:
+                print(
+                    f"large-eval: SKIP DB-complete {model}/{entry['task']}/{mode}",
+                    flush=True,
+                )
             continue
         return_code = run_one(
             root=root,
@@ -320,6 +413,8 @@ def run_model_queue(
         if return_code == 0:
             model_state["last_completed_index"] = job_index
             model_state.pop("last_failed_index", None)
+            if run_policy == "resume":
+                successful_jobs.add(job_key)
         else:
             model_state["last_failed_index"] = job_index
         model_state_path.write_text(
@@ -338,11 +433,80 @@ def run_model_queue(
     return failures
 
 
+def select_mode_waves(
+    run: dict[str, Any], *, use_naive: bool, use_normal: bool
+) -> tuple[list[str], list[str]]:
+    """Resolve mode waves from CLI flags without changing the suite manifest.
+
+    No flag means naive-only.  When both flags are present, normal is placed
+    first so it has priority while both waves remain in the same stable queue.
+    """
+
+    families: list[str] = []
+    if not use_naive and not use_normal:
+        use_naive = True
+    if use_naive:
+        families.append("naive")
+    if use_normal:
+        families.append("normal")
+
+    configured_base = {str(item) for item in run.get("base_modes", [])}
+    configured_cot = {str(item) for item in run.get("cot_modes", [])}
+    base_modes = [f"{family}_nocot" for family in families if f"{family}_nocot" in configured_base]
+    cot_modes = [f"{family}_cot" for family in families if f"{family}_cot" in configured_cot]
+    if not base_modes:
+        raise SystemExit("no requested NoCoT modes are available in the suite manifest")
+    if not cot_modes and any(str(item) in {"math", "knowledge"} for item in run.get("cot_fields", [])):
+        raise SystemExit("no requested CoT modes are available in the suite manifest")
+    return base_modes, cot_modes
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--env-file")
     parser.add_argument("--proxy", help="HTTP proxy for dataset/judge downloads")
     parser.add_argument("--start-at", type=int, default=0)
+    parser.add_argument(
+        "--naive",
+        action="store_true",
+        help="include naive modes; default when no mode flag is supplied",
+    )
+    parser.add_argument(
+        "--normal",
+        action="store_true",
+        help="include normal modes; they run after naive when combined with --naive",
+    )
+    policy = parser.add_mutually_exclusive_group()
+    policy.add_argument(
+        "--resume",
+        action="store_true",
+        help="skip complete scored jobs and continue incomplete work (default)",
+    )
+    policy.add_argument(
+        "--rerun",
+        action="store_true",
+        help="run selected jobs again even when history already has a score",
+    )
+    parser.add_argument(
+        "--fields",
+        help="comma-separated benchmark fields to include (default: all)",
+    )
+    parser.add_argument(
+        "--tasks",
+        help="comma-separated manifest task names to include (default: all)",
+    )
+    parser.add_argument(
+        "--benchmark-start",
+        type=int,
+        default=None,
+        help="inclusive manifest benchmark index (default: 0)",
+    )
+    parser.add_argument(
+        "--benchmark-end",
+        type=int,
+        default=None,
+        help="exclusive manifest benchmark index (default: end)",
+    )
     parser.add_argument(
         "--models",
         help="comma-separated model aliases to run; defaults to all models in the manifest",
@@ -354,6 +518,7 @@ def main() -> int:
         help="directory for logs, reports, and launcher state",
     )
     args = parser.parse_args()
+    run_policy = "rerun" if args.rerun else "resume"
 
     import tomllib
 
@@ -362,6 +527,19 @@ def main() -> int:
     benchmarks = list(manifest["benchmarks"])
     if len(benchmarks) != 60:
         raise SystemExit(f"expected 60 benchmarks, found {len(benchmarks)}")
+    benchmark_start = max(0, int(args.benchmark_start or 0))
+    benchmark_end = args.benchmark_end
+    if benchmark_end is not None and benchmark_end < benchmark_start:
+        raise SystemExit("--benchmark-end must be greater than or equal to --benchmark-start")
+    benchmarks = benchmarks[benchmark_start:benchmark_end]
+    if args.fields:
+        fields = {item.strip() for item in str(args.fields).split(",") if item.strip()}
+        benchmarks = [item for item in benchmarks if str(item.get("field")) in fields]
+    if args.tasks:
+        tasks = {item.strip() for item in str(args.tasks).split(",") if item.strip()}
+        benchmarks = [item for item in benchmarks if str(item.get("task")) in tasks]
+    if not benchmarks:
+        raise SystemExit("benchmark filters selected no manifest entries")
     env = dict(os.environ)
     env_file = resolve_env_file(ROOT, args.env_file)
     load_dotenv(env_file, env)
@@ -415,12 +593,12 @@ def main() -> int:
         log_dir.mkdir(parents=True, exist_ok=True)
         state_dir.mkdir(parents=True, exist_ok=True)
 
-        base_modes = [str(item) for item in run.get("base_modes", ["normal_nocot"])]
         cot_fields = {str(item) for item in run.get("cot_fields", [])}
-        configured_cot_modes = run.get("cot_modes")
-        if configured_cot_modes is None:
-            configured_cot_modes = [run.get("cot_mode", "normal_cot")]
-        cot_modes = [str(item) for item in configured_cot_modes]
+        base_modes, cot_modes = select_mode_waves(
+            run,
+            use_naive=bool(args.naive),
+            use_normal=bool(args.normal),
+        )
         model_catalog = str(run["model_catalog"])
         jobs = build_job_queue(
             benchmarks,
@@ -429,7 +607,9 @@ def main() -> int:
             cot_modes=cot_modes,
         )
         print(
-            f"large-eval: starting independent model queues; jobs_per_model={len(jobs)}",
+            "large-eval: selected modes "
+            f"base={base_modes} cot={cot_modes}; "
+            f"starting independent model queues; jobs_per_model={len(jobs)}",
             flush=True,
         )
         failures = 0
@@ -447,6 +627,7 @@ def main() -> int:
                     state_dir=state_dir,
                     start_at=args.start_at,
                     max_retries=max(0, int(args.max_retries)),
+                    run_policy=run_policy,
                 )
                 for model in models
             ]

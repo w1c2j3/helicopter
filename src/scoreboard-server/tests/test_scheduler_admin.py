@@ -68,3 +68,16 @@ def test_scheduler_admin_rejects_conflicting_task_sources() -> None:
     controller = SchedulerAdminController()
     with pytest.raises(SchedulerAdminError, match="不能同时设置"):
         controller._normalize({"tasks": ["gsm8k|0"], "tasks_from_db": True})
+
+
+def test_scheduler_admin_preserves_explicit_job_benchmark_lists() -> None:
+    controller = SchedulerAdminController()
+    request = controller._normalize({"jobs": ["g1d-0.4b=gsm8k|0,mmlu|0"]})
+
+    assert request["jobs"] == ["g1d-0.4b=gsm8k|0,mmlu|0"]
+    assert request["models"] == []
+    assert request["tasks"] == []
+    command = controller._command(request, scheduler_admin.Path("/tmp/report.json"))
+    assert command[command.index("--job") + 1] == "g1d-0.4b=gsm8k|0,mmlu|0"
+    assert "--models" not in command
+    assert "--tasks" not in command

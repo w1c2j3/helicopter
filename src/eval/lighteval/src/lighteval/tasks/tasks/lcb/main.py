@@ -43,12 +43,15 @@ from lighteval.tasks.tasks.lcb.codegen_metrics import (
 
 
 def prepare_prompt(line: dict[str, Any]) -> str:
-    query = str(line["question_content"]).strip()
-    starter_code = str(line.get("starter_code") or "").strip()
-    if starter_code:
-        query += f"\n\n{starter_code}"
+    query = "You will be given a question (problem specification) and will generate a correct Python program that matches the specification and passes all tests.\n\n"
+    query += f"Question: {line['question_content']}\n\n"
+    if starter_code := line.get("starter_code", None):
+        query += "You will use the following starter code to write the solution to the problem and enclose your code within delimiters.\n"
+        query += f"```python\n{starter_code}\n```\n\n"
+    else:
+        query += "Read the inputs from stdin solve the problem and write the answer to stdout (do not directly test on the sample inputs). Enclose your code within delimiters as follows. Ensure that when the python program runs, it reads the inputs, runs the algorithm and writes output to STDOUT.\n"
+        query += "```python\n# YOUR CODE HERE\n```\n\n"
     return query
-
 
 
 def lcb_codegeneration_prompt_fn(line, task_name: str = "lcb:codegeneration") -> Doc:
@@ -74,28 +77,6 @@ def lcb_codegeneration_prompt_fn(line, task_name: str = "lcb:codegeneration") ->
 
 
 class CodegenMetric(SampleLevelComputation):
-    def score_one(self, doc: Doc, prediction: str) -> float:
-        """Return the pass/fail score for one generated completion.
-
-        ``compute`` keeps the historical multi-sample Pass@1 behavior.  The
-        avg@k branch uses this scalar scorer once per completion and lets
-        LightEval's official ``AvgAtN`` perform the aggregation.
-        """
-        assert doc.specific is not None, "Doc specific field is required for codegen_metric"
-
-        evaluation_sample = {
-            "inputs": doc.specific["inputs"],
-            "outputs": doc.specific["outputs"],
-            "fn_name": doc.specific["fn_name"],
-        }
-        metrics, _ = codegen_metrics(
-            [{"input_output": json.dumps(evaluation_sample)}],
-            [[extract_code(prediction)]],
-            k_list=[1],
-            num_process_evaluate=8,
-        )
-        return float(metrics["pass@1"])
-
     def compute(self, model_response: ModelResponse, doc: Doc, **kwargs) -> dict:
         """Estimates the Pass@1 metric for the code generation task.
         Extract the code from each prediction, Runs it for each sample and generations,
@@ -176,7 +157,7 @@ for subset in configs:
         generation_size=32768,
         metrics=[Metrics.lcb_codegen_metric],
         stop_sequence=[],  # no stop sequence, will use EOS token
-        version=1,
+        version=0,
     )
     tasks.append(task)
 

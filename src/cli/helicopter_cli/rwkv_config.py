@@ -1,10 +1,10 @@
-"""Small, dependency-free helpers for the TOML-driven G1h policy.
+"""RWKV evaluation run configuration.
 
-The LightEval registry deliberately rejects custom tasks whose names collide
-with built-in tasks.  The launcher therefore keeps the catalog names as the
-public identity and uses a private ``g1h__`` alias only inside a configured
-run.  This module contains the shared parsing and selection rules used by the
-launcher and by the spawned custom-task module.
+TOML policy parsing and task selection for RWKV-family models (currently the
+G1h checkpoints; the alias prefix keeps LightEval's registry from rejecting
+catalog task names).  The prompt wrapper itself lives in
+``prompt_protocols.py`` and is selected by the run argument, never by a
+benchmark TOML.
 """
 
 from __future__ import annotations
@@ -13,9 +13,16 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from .prompt_protocols import (
+    NORMAL_CHAT_TEMPLATES,
+    PROMPT_MODES,
+    PROMPT_TEMPLATES,
+    normal_chat_template_for_mode,
+    prompt_template_for_mode,
+)
+
 
 G1H_TASK_PREFIX = "g1h__"
-PROMPT_MODES = ("naive_cot", "naive_nocot", "normal_cot", "normal_nocot")
 _FEWSHOT_SUFFIX_RE = re.compile(r"\|\d+$")
 
 
@@ -109,10 +116,6 @@ def normalize_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
     if result["variant_selection"] not in {"all", "avg_then_gpass"}:
         raise ValueError("[lighteval.g1h].variant_selection must be 'all' or 'avg_then_gpass'")
 
-    result.setdefault("naive_cot_template", "User: {query}\n\nAssistant: <think")
-    result.setdefault("naive_nocot_template", "User: {query}\n\nAssistant: <think></think")
-    result.setdefault("normal_cot_template", "User✿{query}✿\nBot✿<think")
-    result.setdefault("normal_nocot_template", "User✿{query}✿\nBot✿<think></think")
     return result
 
 
@@ -213,32 +216,28 @@ def format_query(query: str, *, canonical_name: str, policy: Mapping[str, Any]) 
     normalized = normalize_policy(policy)
     cot = task_uses_cot(canonical_name, normalized)
     mode = normalized["prompt_mode"]
-    style = mode.split("_", 1)[0]
     if mode.endswith("_nocot"):
         cot = False
-    key = (
-        "normal_cot_template"
-        if style == "normal" and cot
-        else "normal_nocot_template"
-        if style == "normal"
-        else "naive_cot_template"
-        if cot
-        else "naive_nocot_template"
-    )
-    template = str(normalized[key])
+    selected_mode = mode.split("_", 1)[0] + ("_cot" if cot else "_nocot")
+    template = prompt_template_for_mode(selected_mode)
     try:
         return template.format(query=str(query))
     except (KeyError, ValueError) as error:
-        raise ValueError(f"invalid prompt template {key}: {error}") from error
+        raise ValueError(f"invalid prompt template {selected_mode}: {error}") from error
 
 
 __all__ = [
     "G1H_TASK_PREFIX",
+    "PROMPT_MODES",
+    "PROMPT_TEMPLATES",
+    "NORMAL_CHAT_TEMPLATES",
     "alias_task_name",
     "alias_task_specs",
     "canonical_task_name",
     "format_query",
     "normalize_policy",
+    "normal_chat_template_for_mode",
+    "prompt_template_for_mode",
     "select_task_specs",
     "task_name_from_spec",
 ]

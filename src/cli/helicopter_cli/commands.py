@@ -10,7 +10,13 @@ from urllib.parse import urlsplit
 
 from .config import default_config_path, dataset_root, resolve_model_entry, resolve_model_path, table
 from .env import env_value, pick
-from .g1h_config import PROMPT_MODES, alias_task_specs, normalize_policy, select_task_specs
+from .rwkv_config import (
+    PROMPT_MODES,
+    alias_task_specs,
+    normalize_policy,
+    prompt_template_for_mode as rwkv_prompt_template,
+    select_task_specs,
+)
 from .paths import resolve_path
 
 
@@ -78,8 +84,7 @@ def resolve_prompt_mode(args: Any, *, env: dict[str, str], prompt: dict[str, Any
     mode = pick(
         getattr(args, "prompt_mode", None),
         env_value(env, "HELICOPTER_PROMPT_MODE"),
-        prompt.get("mode"),
-        "normal_nocot",
+        "naive_cot",
     )
     mode = str(mode).strip().lower()
     if mode not in PROMPT_MODES:
@@ -89,18 +94,10 @@ def resolve_prompt_mode(args: Any, *, env: dict[str, str], prompt: dict[str, Any
 
 
 def prompt_template_for_mode(prompt: dict[str, Any], mode: str | None = None) -> str:
-    """Return the benchmark-owned template selected by an explicit mode."""
+    """Return the process-wide RWKV wrapper selected by the run argument."""
 
-    mode = str(mode or prompt.get("mode", "")).strip().lower()
-    templates = prompt.get("templates", {})
-    if isinstance(templates, dict) and mode in templates:
-        value = templates[mode]
-    else:
-        value = prompt.get("template")
-    template = str(value or "")
-    if mode.startswith("naive"):
-        template = template.replace("User: {query}\nAssistant:", "User: {query}\n\nAssistant:")
-    return template
+    selected = str(mode or "naive_cot").strip().lower()
+    return rwkv_prompt_template(selected)
 
 
 def prepend_venv_path(env: dict[str, str], root: Path, config: dict[str, Any]) -> None:
@@ -460,7 +457,7 @@ def resolve_lighteval_g1h_policy(
         prompt = table(config, "prompt")
         if not isinstance(evaluation, dict) or not isinstance(benchmark, dict):
             return None
-        prompt_mode = str(prompt_mode or prompt.get("mode", "normal_nocot")).strip().lower()
+        prompt_mode = str(prompt_mode or "naive_cot").strip().lower()
         policy = {
             "metric": str(evaluation.get("metric", "avg")),
             "prompt_style": "normal" if prompt_mode.startswith("normal") else "naive",
@@ -602,7 +599,7 @@ def resolve_lighteval_task_request_policy(
     benchmark_specs = config.get("_benchmark_specs", {})
     if not isinstance(benchmark_specs, dict):
         raise SystemExit("internal benchmark specification map must be a table")
-    prompt_mode = str(prompt_mode or prompt.get("mode", "normal_nocot")).strip().lower()
+    prompt_mode = str(prompt_mode or "naive_cot").strip().lower()
     if prompt_mode not in PROMPT_MODES:
         allowed = ", ".join(PROMPT_MODES)
         raise SystemExit(f"prompt mode must be one of: {allowed}; got {prompt_mode!r}")
@@ -737,10 +734,9 @@ def resolve_lighteval_task_request_policy(
         format_prompt = prompt_formats.get(request_format, {}) if request_format else {}
         if not isinstance(format_prompt, dict):
             raise SystemExit(f"[prompt.formats.{request_format}] must be a TOML table")
-        prompt_template = format_prompt.get(
-            "template",
-            domain_prompt.get("template", prompt_template_for_mode(prompt, prompt_mode)),
-        )
+        # The model protocol wrapper is code-owned; benchmark TOMLs cannot
+        # override the selected naive/normal format.
+        prompt_template = prompt_template_for_mode(prompt, prompt_mode)
         if not prompt_template:
             # Model-agnostic example configs may intentionally leave prompt
             # assembly to LightEval. Only benchmark-owned configs need the

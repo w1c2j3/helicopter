@@ -13,6 +13,10 @@ import requests
 from tqdm import tqdm
 
 from helicopter_cli.lighteval_vllm_sampling import load_sampling_overrides
+from helicopter_cli.prompt_protocols import (
+    normal_chat_template_for_mode,
+    prompt_template_for_mode as rwkv_prompt_template,
+)
 from lighteval.data import GenerativeTaskDataset
 from lighteval.models.endpoints.litellm_model import LiteLLMClient
 from lighteval.models.model_output import ModelResponse
@@ -23,6 +27,10 @@ from lighteval.utils.cache_management import cached
 _TEMPLATE_ENV = "HELICOPTER_PROMPT_TEMPLATE"
 _OFFICIAL_USER_STOP = "\nUser:"
 _TASK_REQUEST_POLICY_ENV = "HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"
+
+
+class _NonRetryableRequestError(RuntimeError):
+    """An endpoint configuration error that retrying cannot repair."""
 
 
 def _strip_prefill_continuation(text: str, template: str | None = None) -> str:
@@ -151,7 +159,15 @@ def _effective_context_budget(task_name: str | None, default: int | None) -> int
 
 
 def _configured_prompt_template(task_name: str | None, default: str) -> str:
-    value = _task_request_policy(task_name).get("prompt_template", default)
+    policy = _task_request_policy(task_name)
+    mode = str(
+        policy.get("prompt_mode")
+        or os.environ.get("HELICOPTER_PROMPT_MODE")
+        or ""
+    ).strip().lower()
+    if mode:
+        return rwkv_prompt_template(mode)
+    value = policy.get("prompt_template", default)
     if not isinstance(value, str) or "{query}" not in value:
         raise RuntimeError("task prompt_template must be a string containing {query}")
     return value
@@ -162,29 +178,23 @@ def _render_prompt(template: str, query: str, *, task_name: str | None = None) -
     return template.format(query=str(query))
 
 
-def _validate_raw_question_contract(task_name: str | None, prompt: str) -> None:
-    policy = _task_request_policy(task_name)
-    if not policy.get("benchmark_config_path"):
-        return
-    lowered = prompt.casefold()
-    forbidden_cues = (
-        "answer the following multiple choice question",
-        "the following are multiple choice questions",
-        "think step by step before answering",
-        "let's think step by step",
-        "solve the problem using one clean solution path",
-    )
-    found = next((cue for cue in forbidden_cues if cue in lowered), None)
-    if found is not None:
-        raise RuntimeError(
-            f"benchmark {_canonical_task_name(task_name)!r} violates the raw-question "
-            f"contract with an added cue: {found!r}"
-        )
-    if re.search(r"\nanswer:\s*\n+assistant:", prompt, flags=re.IGNORECASE):
-        raise RuntimeError(
-            f"benchmark {_canonical_task_name(task_name)!r} violates the raw-question "
-            "contract with an added trailing Answer: cue"
-        )
+def _official_query(doc: Any) -> str:
+    """Materialize LightEval's ``Doc.instruction`` before the RWKV wrapper.
+
+    LightEval's PromptManager removes a duplicated instruction prefix from
+    ``Doc.query`` and then prepends the instruction exactly once.  The raw
+    completion bridge must do the same because it owns the final
+    ``User/Assistant`` text wrapper.
+    """
+
+    query = str(getattr(doc, "query", "") or "")
+    instruction = getattr(doc, "instruction", None)
+    if instruction is None:
+        return query
+    instruction = str(instruction)
+    if query.startswith(instruction):
+        query = query[len(instruction) :].strip()
+    return instruction + query
 
 
 def _configured_multi_turn_template(task_name: str | None) -> str | None:
@@ -212,11 +222,11 @@ def _multi_turn_queries(doc: Any) -> list[str]:
     return queries
 
 
-def _completion_url(base_url: str | None) -> str:
+def _chat_completions_url(base_url: str | None) -> str:
     if not base_url:
-        raise RuntimeError("raw completion mode requires a base_url")
+        raise RuntimeError("chat mode requires a base_url")
     base = base_url.rstrip("/")
-    return f"{base}/completions" if base.endswith("/v1") else f"{base}/v1/completions"
+    return f"{base}/chat/completions" if base.endswith("/v1") else f"{base}/v1/chat/completions"
 
 
 def _tokenize_url(base_url: str | None) -> str:
@@ -333,6 +343,7 @@ def _request(
     force_stops: bool = False,
     truncate_prompt_tokens: int | None = None,
     task_name: str | None = None,
+    problem: str | None = None,
 ) -> ModelResponse:
     overrides = load_sampling_overrides()
     configured_stop = overrides.pop("stop", None)
@@ -345,9 +356,16 @@ def _request(
     effective_stop = task_policy_stop if task_policy else (
         configured_stop if configured_stop is not None else stops
     )
+    mode = str(
+        task_policy.get("prompt_mode")
+        or os.environ.get("HELICOPTER_PROMPT_MODE")
+        or "naive_cot"
+    ).strip().lower()
+    if mode not in {"naive_cot", "naive_nocot", "normal_cot", "normal_nocot"}:
+        raise RuntimeError(f"unsupported prompt mode {mode!r}")
     payload: dict[str, Any] = {
         "model": _served_model(self.model),
-        "prompt": prompt,
+        "messages": [{"role": "user", "content": problem if problem is not None else prompt}],
         "max_tokens": max_tokens if force_max_tokens else _effective_max_tokens(task_name, max_tokens),
         "n": int(num_samples),
         "stop": stops if force_stops else effective_stop,
@@ -355,13 +373,19 @@ def _request(
         "truncation_side": "left" if truncate_prompt_tokens is not None else None,
         **overrides,
     }
+    if mode.startswith("normal"):
+        payload["chat_template"] = normal_chat_template_for_mode(mode)
+    else:
+        payload["chat_template_kwargs"] = {
+            "rwkv_generation_prompt": "fake_think" if mode.endswith("nocot") else "open_think",
+        }
     payload = {key: value for key, value in payload.items() if value is not None}
     headers = _api_headers(self)
     last_error: Exception | None = None
     for attempt in range(self.API_MAX_RETRY):
         try:
             response = requests.post(
-                _completion_url(self.base_url),
+                _chat_completions_url(self.base_url),
                 headers=headers,
                 json=payload,
                 timeout=self.timeout or 180,
@@ -372,18 +396,31 @@ def _request(
                 response_body = response.text.strip()
                 if len(response_body) > 2_000:
                     response_body = f"{response_body[:2_000]}..."
+                if response.status_code == 400 and "trust-request-chat-template" in response_body:
+                    raise _NonRetryableRequestError(
+                        "normal User✿/Bot✿ prompts require the vLLM server "
+                        "to be started with --trust-request-chat-template; the current "
+                        "endpoint rejected the request-level template"
+                    ) from error
                 raise RuntimeError(
-                    f"completion endpoint returned HTTP {response.status_code}: "
+                    f"chat endpoint returned HTTP {response.status_code}: "
                     f"{response_body or '<empty response body>'}"
                 ) from error
             body = response.json()
             choices = sorted(body.get("choices") or [], key=lambda item: item.get("index", 0))
             if not choices:
                 raise RuntimeError(f"completion response has no choices: {body!r}")
-            raw_texts = [
-                _truncate_official_stops(str(choice.get("text") or ""))
-                for choice in choices
-            ]
+            raw_texts = []
+            for choice in choices:
+                message = choice.get("message") or {}
+                content = message.get("content")
+                if content is None:
+                    content = message.get("reasoning_content")
+                if content is None:
+                    # Keep fixtures produced by the old completion bridge
+                    # readable while all live requests use chat responses.
+                    content = choice.get("text")
+                raw_texts.append(_truncate_official_stops(str(content or "")))
             finish_reasons = [choice.get("finish_reason") for choice in choices]
             configured_fence_stop = "\n```" in (payload.get("stop") or [])
             texts = [
@@ -399,6 +436,8 @@ def _request(
             result.finish_reason = finish_reasons[0] if len(finish_reasons) == 1 else finish_reasons
             result.usage = body.get("usage")
             return result
+        except _NonRetryableRequestError:
+            raise
         except Exception as error:  # noqa: BLE001
             last_error = error
             time.sleep(min(64, self.API_RETRY_SLEEP * (self.API_RETRY_MULTIPLIER**attempt)))
@@ -729,7 +768,7 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
             disable=self.disable_tqdm,
         ):
             split_docs = list(split)
-            contexts = [str(getattr(doc, "query", "")) for doc in split_docs]
+            contexts = [_official_query(doc) for doc in split_docs]
             task_names = [str(getattr(doc, "task_name", "") or dataset_name) for doc in split_docs]
             templates = [
                 _configured_prompt_template(task_name, default_template)
@@ -739,8 +778,6 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                 _render_prompt(template, context, task_name=task_name)
                 for template, context, task_name in zip(templates, contexts, task_names)
             ]
-            for task_name, prompt_text in zip(task_names, prompts):
-                _validate_raw_question_contract(task_name, prompt_text)
             max_tokens = split[0].generation_size
             rollout_n = int(split[0].num_samples)
             stops = split[0].stop_sequences
@@ -818,6 +855,7 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                     force_max_tokens=True,
                     truncate_prompt_tokens=context_fit.truncate_prompt_tokens,
                     task_name=task_names[position],
+                    problem=contexts[position],
                 )
                 return response
 

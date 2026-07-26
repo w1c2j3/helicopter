@@ -42,7 +42,7 @@ large_benchmark_generation_threshold = 20000
 large_benchmark_sample_rate = 0.2
 
 [sampling]
-max_tokens = { naive_cot = 5120, normal_cot = 5120, naive_nocot = 512, normal_nocot = 512 }
+max_tokens = { naive_cot = 2048, normal_cot = 2048, naive_nocot = 1500, normal_nocot = 1500 }
 context_budget = 8192
 temperature = 0.96
 top_p = 0.76

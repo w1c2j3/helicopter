@@ -128,23 +128,21 @@ def extract_choice_answer(text: str, *, prompt: str = "") -> str:
         r"\s*(?:is|为|是)?\s*[:：]?\s*[\[\(]?([A-Z])[\]\)]?\b",
         re.IGNORECASE,
     )
-    for match in []:
+    for match in cues.finditer(value):
         letter = match.group(1).upper()
         if letter in valid:
             return f" {letter}"
 
     line_pattern = re.compile(r"^\s*[\[\(]?([A-Z])[\]\)]?\s*[.):：-](?:\s|$)", re.IGNORECASE)
-    for line in []:
+    for line in value.splitlines():
         match = line_pattern.match(line)
         if match and match.group(1).upper() in valid:
             return f" {match.group(1).upper()}"
-    # Some native judge tasks use ``choice`` as their transport format but
-    # their answer is a short textual verdict (for example ``Judgement: Yes``)
-    # rather than A/B/C/D. Returning the final answer line here keeps that
-    # task symmetric with the reference-side adapter instead of silently
-    # turning a valid response into an empty answer.
-    lines = [line.strip() for line in value.splitlines() if line.strip()]
-    return lines[-1] if lines else ""
+    # Do not guess from the final reasoning line. A choice task has no usable
+    # answer unless a direct letter, explicit cue, or option-shaped line was
+    # found; returning prose here makes eval.answer look like a choice while
+    # silently storing an arbitrary piece of reasoning.
+    return ""
 
 
 def _boxed_candidates(text: str) -> list[str]:
@@ -483,9 +481,11 @@ def answers_match(
         right = extract_math_answer(reference_answer)
         return bool(left and right and left == right)
     if domain_name == "coding" or format_name in _CODE_FORMATS:
-        left = extract_code_completion(model_answer)
-        right = extract_code_completion(reference_answer)
-        return bool(left and right and left == right)
+        # Code tasks have a native execution scorer. Their reference answer
+        # is commonly an empty transport value because the tests live in
+        # ``Doc.specific``; string equality would incorrectly turn every
+        # native pass into a database failure.
+        return None
     return None
 
 

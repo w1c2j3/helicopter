@@ -246,17 +246,17 @@ with `helicopter infer` or point `--base-url` at an existing service.
 
 ### Run Batched Evaluations
 
-Use `eval batch` to sweep multiple models across LightEval and native
-function-calling benchmarks. Managed runs assign one vLLM server per GPU slot,
-using `--port-base + slot_index`, and write a JSON report with slots, retries,
-exit codes, elapsed time, and skipped/completed units:
+Use `eval batch` when one command should run a selected set of model/benchmark
+pairs. Each `--job` is one logical model selection; separate jobs can select
+different benchmarks, so the command does not silently create a full
+model-by-benchmark matrix:
 
 ```bash
 helicopter eval batch \
   --config configs/example.toml \
-  --models g1d-0.4b,g1g-1.5b \
-  --tasks "gsm8k|0,mmlu|0" \
-  --fc-tasks bfcl_v3 \
+  --job 'g1d-0.4b=gsm8k|0,mmlu|0' \
+  --job 'g1g-1.5b=gsm8k|0' \
+  --job 'g1d-0.4b=fc:bfcl_v3' \
   --gpus 0,1 \
   --parallel 2 \
   --scoreboard \
@@ -265,6 +265,10 @@ helicopter eval batch \
   --max-num-seqs 128 \
   --max-num-batched-tokens 32768
 ```
+
+Use `fc:TASK` inside `--job` for a native function-calling benchmark. The
+older `--models`/`--tasks`/`--fc-tasks` options remain supported for config
+driven matrix runs.
 
 When `--scoreboard` is set, batch mode skips benchmarks that already have a
 score unless `--rerun` is passed. Use `--batch-output path/to/report.json` to

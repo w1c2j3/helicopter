@@ -21,7 +21,7 @@ from lighteval.tasks.lighteval_task import LightevalTask
 from lighteval.tasks.requests import Doc
 from lighteval.tasks.tasks import bigbench as bigbench_tasks
 from lighteval.tasks.tasks.coqa import coqa_first_question as coqa_task
-from lighteval.tasks.tasks.glue import super_glue_rte_prompt
+from lighteval.tasks.tasks.glue import rte_prompt as super_glue_rte_prompt
 from lighteval.tasks.tasks.ifbench import instructions as ifbench_instructions
 from lighteval.tasks.tasks.math_500 import math_500 as math_500_task, math_500_prompt
 from lighteval.tasks.tasks.mmlu_pro import mmlu_pro as mmlu_pro_task, mmlu_pro_prompt_function
@@ -41,7 +41,7 @@ from helicopter_cli import (
     eval_batch,
     eval_run,
     function_calling,
-    g1h_config,
+    rwkv_config,
     lighteval_g1h_policy,
     lighteval_answer_adapters,
     lighteval_db_pipeline,
@@ -211,7 +211,7 @@ class NativeLightEvalTaskCompatibilityTests(unittest.TestCase):
         self.assertEqual(judge_doc.specific["references"], ["Judgement: Yes"])
         self.assertEqual(judge_doc.specific["reference"], "Judgement: Yes")
 
-    def test_math500_uses_raw_problem_and_final_answer_gold(self) -> None:
+    def test_math500_restores_official_prompt_and_solution_gold(self) -> None:
         doc = math_500_prompt(
             {
                 "problem": "  Solve $x+1=2$.\r\n",
@@ -221,12 +221,14 @@ class NativeLightEvalTaskCompatibilityTests(unittest.TestCase):
             task_name="math_500",
         )
 
-        self.assertEqual(doc.query, "Solve $x+1=2$.")
-        self.assertEqual(doc.choices, [r"$\boxed{1}$"])
+        self.assertIn("Solve the following problem.", doc.query)
+        self.assertIn("Solve $x+1=2$.", doc.query)
+        self.assertIn("Think step by step before answering.", doc.query)
+        self.assertEqual(doc.choices, ["ANSWER: A worked solution ending in a distractor 2."])
         self.assertEqual(doc.gold_index, 0)
-        self.assertEqual(math_500_task.version, 3)
+        self.assertEqual(math_500_task.version, 2)
 
-    def test_mmlu_pro_native_task_keeps_only_raw_question_and_choices(self) -> None:
+    def test_mmlu_pro_restores_official_prompt_and_instruction(self) -> None:
         doc = mmlu_pro_prompt_function(
             {
                 "question": "Which option is correct?",
@@ -238,16 +240,17 @@ class NativeLightEvalTaskCompatibilityTests(unittest.TestCase):
 
         self.assertIsNotNone(doc)
         assert doc is not None
-        self.assertEqual(
-            doc.query,
-            "Which option is correct?\nA. First\nB. Second\nC. Third",
-        )
-        self.assertEqual(doc.choices, ["A", "B", "C"])
+        self.assertIn("Answer the following multiple choice question.", doc.query)
+        self.assertIn("Which option is correct?", doc.query)
+        self.assertIn("A: First", doc.query)
+        self.assertIn("B: Second", doc.query)
+        self.assertIn("C: Third", doc.query)
+        self.assertEqual(doc.choices[:3], "ABC")
         self.assertEqual(doc.gold_index, 1)
-        self.assertIsNone(doc.instruction)
-        self.assertNotIn("Think step by step", doc.query)
-        self.assertNotIn("Answer:", doc.query)
-        self.assertEqual(mmlu_pro_task.version, 1)
+        self.assertEqual(doc.instruction, doc.query)
+        self.assertIn("Think step by step", doc.query)
+        self.assertIn("Answer:", doc.query)
+        self.assertEqual(mmlu_pro_task.version, 0)
 
     def test_truthfulqa_generation_prompt_does_not_require_mc_fields(self) -> None:
         doc = truthful_qa_generative_prompt(
@@ -358,30 +361,30 @@ class G1hConfigTests(unittest.TestCase):
     }
     def test_avg_k_must_be_declared_in_toml_policy(self) -> None:
         with self.assertRaisesRegex(ValueError, "avg_k must be set"):
-            g1h_config.normalize_policy({"metric": "avg", "prompt_style": "naive"})
+            rwkv_config.normalize_policy({"metric": "avg", "prompt_style": "naive"})
 
 
     def test_variant_selection_prefers_avg_then_gpass(self) -> None:
-        selected = g1h_config.select_task_specs(
+        selected = rwkv_config.select_task_specs(
             ["aime24", "aime24_avg", "aime24_gpassk", "math_500"],
             self.POLICY,
         )
         self.assertEqual(selected, [("aime24_avg", "0"), ("math_500", "0")])
 
     def test_variant_selection_falls_back_to_gpass(self) -> None:
-        selected = g1h_config.select_task_specs(["toy", "toy_gpassk"], self.POLICY)
+        selected = rwkv_config.select_task_specs(["toy", "toy_gpassk"], self.POLICY)
         self.assertEqual(selected, [("toy_gpassk", "0")])
 
     def test_prompt_profiles_are_configurable(self) -> None:
-        naive = g1h_config.format_query("Q", canonical_name="math_500", policy=self.POLICY)
+        naive = rwkv_config.format_query("Q", canonical_name="math_500", policy=self.POLICY)
         normal_policy = {**self.POLICY, "prompt_style": "normal"}
-        normal = g1h_config.format_query("Q", canonical_name="math_500", policy=normal_policy)
+        normal = rwkv_config.format_query("Q", canonical_name="math_500", policy=normal_policy)
         self.assertEqual(naive, "User: Q\n\nAssistant: <think")
         self.assertEqual(normal, "User✿Q✿\nBot✿<think")
 
 
     def test_alias_specs_make_zero_shot_explicit(self) -> None:
-        specs = g1h_config.alias_task_specs([("math_500", "5")], self.POLICY)
+        specs = rwkv_config.alias_task_specs([("math_500", "5")], self.POLICY)
         self.assertEqual(specs, ["g1h__math_500|0"])
 
 
@@ -589,7 +592,7 @@ class BenchmarkSamplingPolicyTests(unittest.TestCase):
 
     def test_invalid_large_sample_rate_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "large_benchmark_sample_rate"):
-            g1h_config.normalize_policy(
+            rwkv_config.normalize_policy(
                 {
                     **G1hConfigTests.POLICY,
                     "large_benchmark_sample_rate": 1.5,
@@ -780,35 +783,29 @@ def build_takeoff_plan(
 
 class RawCompletionTests(unittest.TestCase):
 
-    def test_famous120_raw_question_guard_rejects_added_cues(self) -> None:
-        policy = {
-            "tasks": {
-                "mmlu_pro": {
-                    "benchmark_config_path": "configs/benchmarks/famous120/knowledge/01_mmlu_pro.toml"
-                }
-            }
-        }
-        with mock.patch.dict(
-            os.environ,
-            {
-                "HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY": json.dumps(policy),
-            },
-            clear=False,
-        ):
-            with self.assertRaisesRegex(RuntimeError, "added cue"):
-                lighteval_raw_completion._validate_raw_question_contract(
-                    "g1h__mmlu_pro|0",
-                    "User: Answer the following multiple choice question.\nAssistant: <think",
-                )
-            with self.assertRaisesRegex(RuntimeError, "trailing Answer"):
-                lighteval_raw_completion._validate_raw_question_contract(
-                    "g1h__mmlu_pro|0",
-                    "User: Raw question\nA. one\nB. two\nAnswer:\n\nAssistant: <think",
-                )
-            lighteval_raw_completion._validate_raw_question_contract(
-                "g1h__mmlu_pro|0",
-                "User: Raw question\nA. one\nB. two\nAssistant: <think",
-            )
+    def test_official_doc_instruction_is_preserved_once(self) -> None:
+        instruction = "You are answering a multiple choice question.\n"
+        with_instruction = Doc(
+            query="Question: Raw question\nAnswer:",
+            choices=[" A", " B"],
+            gold_index=0,
+            instruction=instruction,
+        )
+        self.assertEqual(
+            lighteval_raw_completion._official_query(with_instruction),
+            instruction + "Question: Raw question\nAnswer:",
+        )
+
+        duplicated = Doc(
+            query=instruction + "Question: Raw question\nAnswer:",
+            choices=[" A", " B"],
+            gold_index=0,
+            instruction=instruction,
+        )
+        self.assertEqual(
+            lighteval_raw_completion._official_query(duplicated),
+            instruction + "Question: Raw question\nAnswer:",
+        )
 
     def test_structured_code_prefill_is_restored_for_official_extractors(self) -> None:
         self.assertEqual(
@@ -862,10 +859,13 @@ class RawCompletionTests(unittest.TestCase):
                 "arc:challenge",
             )
 
-        self.assertEqual(converted.query, "Which gas do plants absorb?")
+        self.assertEqual(
+            converted.query,
+            "Question: Which gas do plants absorb?\nAnswer:",
+        )
         self.assertEqual(
             converted.choices,
-            ["carbon dioxide", "oxygen", "nitrogen", "helium"],
+            [" carbon dioxide", " oxygen", " nitrogen", " helium"],
         )
         self.assertNotIn("helicopter_generated_mcq", converted.specific or {})
         self.assertEqual(configured.metrics[0].category, lighteval_g1h_policy.SamplingMethod.GENERATIVE)
@@ -1006,7 +1006,11 @@ class RawCompletionTests(unittest.TestCase):
         response = mock.Mock()
         response.raise_for_status.return_value = None
         response.json.return_value = {
-            "choices": [{"index": 0, "text": "answer", "finish_reason": "stop"}],
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "answer"},
+                "finish_reason": "stop",
+            }],
             "usage": {},
         }
         client = SimpleNamespace(
@@ -1026,10 +1030,107 @@ class RawCompletionTests(unittest.TestCase):
             with mock.patch.object(lighteval_raw_completion.requests, "post", return_value=response) as post:
                 lighteval_raw_completion._request(client, prompt, 32, 1, None)
 
-        sent_prompt = post.call_args.kwargs["json"]["prompt"]
+        sent_prompt = post.call_args.kwargs["json"]["messages"][0]["content"]
         self.assertEqual(sent_prompt, "User: raw question\nAssistant: <think></think")
         self.assertIn(b"\x0a", sent_prompt.encode("utf-8"))
         self.assertNotIn(b"\\n", sent_prompt.encode("utf-8"))
+
+    def test_chat_request_uses_official_problem_and_fake_think_mode(self) -> None:
+        response = mock.Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": ">answer"},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 10},
+        }
+        client = SimpleNamespace(
+            model="openai/model",
+            base_url="http://127.0.0.1:19315/v1",
+            api_key="key",
+            timeout=10,
+            API_MAX_RETRY=1,
+            API_RETRY_SLEEP=0,
+            API_RETRY_MULTIPLIER=1,
+        )
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HELICOPTER_PROMPT_MODE": "naive_nocot",
+                "HELICOPTER_PROMPT_TEMPLATE": "User: {query}\n\nAssistant: <think></think",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(lighteval_raw_completion, "load_sampling_overrides", return_value={}):
+                with mock.patch.object(lighteval_raw_completion.requests, "post", return_value=response) as post:
+                    result = lighteval_raw_completion._request(
+                        client,
+                        "User: ignored wrapper",
+                        32,
+                        1,
+                        ["\nUser:"],
+                        problem="official instruction plus question",
+                    )
+
+        self.assertEqual(result.text, ["answer"])
+        self.assertEqual(
+            post.call_args.args[0],
+            "http://127.0.0.1:19315/v1/chat/completions",
+        )
+        payload = post.call_args.kwargs["json"]
+        self.assertNotIn("prompt", payload)
+        self.assertEqual(
+            payload["messages"],
+            [{"role": "user", "content": "official instruction plus question"}],
+        )
+        self.assertEqual(
+            payload["chat_template_kwargs"],
+            {"rwkv_generation_prompt": "fake_think"},
+        )
+
+    def test_chat_request_uses_request_template_for_normal_mode(self) -> None:
+        response = mock.Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "answer"},
+                "finish_reason": "stop",
+            }],
+            "usage": {},
+        }
+        client = SimpleNamespace(
+            model="openai/model",
+            base_url="http://127.0.0.1:19315/v1",
+            api_key="key",
+            timeout=10,
+            API_MAX_RETRY=1,
+            API_RETRY_SLEEP=0,
+            API_RETRY_MULTIPLIER=1,
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"HELICOPTER_PROMPT_MODE": "normal_cot"},
+            clear=False,
+        ):
+            with mock.patch.object(lighteval_raw_completion, "load_sampling_overrides", return_value={}):
+                with mock.patch.object(lighteval_raw_completion.requests, "post", return_value=response) as post:
+                    lighteval_raw_completion._request(
+                        client,
+                        "ignored wrapper",
+                        32,
+                        1,
+                        ["\nUser:"],
+                        problem="official instruction plus question",
+                    )
+
+        payload = post.call_args.kwargs["json"]
+        self.assertNotIn("chat_template_kwargs", payload)
+        self.assertIn("chat_template", payload)
+        self.assertIn("User✿{{ message['content'] }}✿", payload["chat_template"])
+        self.assertIn("Bot✿<think", payload["chat_template"])
 
     def test_raw_request_forwards_every_configured_vllm_sampling_field(self) -> None:
         response = mock.Mock()
@@ -1712,6 +1813,16 @@ class RawCompletionTests(unittest.TestCase):
         self.assertEqual(scoreboard_bridge._stop_reason(rollout), "length")
         self.assertEqual(rollout["raw_text"], ">second")
         self.assertEqual(rollout["usage"], {"total_tokens": 4})
+
+    def test_scoreboard_recovers_completion_from_durable_stages(self) -> None:
+        response = {
+            "text": "",
+            "text_post_processed": "",
+            "stages": [
+                {"prompt": "p", "completion": "raw completion", "stop_reason": "stop"},
+            ],
+        }
+        self.assertEqual(scoreboard_bridge._completion_answer(response), "raw completion")
 
         self.assertEqual(scoreboard_bridge._dataset("g1h__human_eval|0"), "human_eval")
 
@@ -6079,6 +6190,33 @@ def batch_args(**overrides: object) -> Namespace:
 
 
 class EvalBatchTests(unittest.TestCase):
+    def test_resolve_batch_plan_accepts_explicit_model_benchmark_jobs(self) -> None:
+        loaded = load_example_config()
+        units = eval_batch.resolve_batch_plan(
+            batch_args(
+                jobs=[
+                    "g1d-0.4b=gsm8k|0,mmlu|0",
+                    "g1g-1.5b=fc:bfcl_v3",
+                ]
+            ),
+            loaded,
+        )
+        self.assertEqual(
+            [(unit.model, unit.kind, unit.tasks) for unit in units],
+            [
+                ("g1d-0.4b", "lighteval", ["gsm8k|0"]),
+                ("g1d-0.4b", "lighteval", ["mmlu|0"]),
+                ("g1g-1.5b", "fc", ["bfcl_v3"]),
+            ],
+        )
+
+    def test_explicit_jobs_cannot_be_mixed_with_matrix_selection(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "cannot be combined"):
+            eval_batch.resolve_batch_plan(
+                batch_args(jobs=["g1d-0.4b=gsm8k|0"], models=["g1d-0.4b"]),
+                load_example_config(),
+            )
+
     def test_resolve_batch_plan_from_args_and_config(self) -> None:
         loaded = load_example_config()
         loaded["eval"] = {"batch": {"models": ["g1d-0.4b"], "tasks": ["gsm8k|0"], "fc_tasks": ["bfcl_v3"]}}

@@ -27,12 +27,19 @@ from lighteval.tasks.requests import Doc
 
 
 def hellaswag_prompt(line, task_name: str = None):
-    query = f"{str(line['activity_label']).strip()}: {str(line['ctx_a']).strip()} {str(line['ctx_b']).strip()}"
-    query += "".join(f"\n{key}. {str(choice).strip()}" for key, choice in zip(ascii_uppercase, line["endings"]))
+    query = "The following are multiple choice questions (with answers) about common sense.\n\n"
+    query += f"Question: {line['activity_label']}: {line['ctx_a']} {line['ctx_b'].capitalize()}\n"
+    query += "".join([f"{key}. {choice}\n" for key, choice in zip(ascii_uppercase, line["endings"])])
+    query += "Answer:"
+
     gold_ix = int(line["label"]) if line["label"] != "" else -1
-    return Doc(task_name=task_name, query=query,
-               choices=[" " + label for label in ascii_uppercase[: len(line["endings"])]],
-               gold_index=gold_ix, instruction=None)
+    return Doc(
+        task_name=task_name,
+        query=query,
+        choices=[" " + i for i in ascii_uppercase[: len(line["endings"])]],
+        gold_index=gold_ix,
+        instruction="The following are multiple choice questions (with answers) about common sense.\n\n",
+    )
 
 
 hellaswag = LightevalTaskConfig(
@@ -49,7 +56,7 @@ hellaswag = LightevalTaskConfig(
         Metrics.exact_match,
     ],
     stop_sequence=["\n"],
-    version=1,
+    version=0,
 )
 
 TASKS_TABLE = [

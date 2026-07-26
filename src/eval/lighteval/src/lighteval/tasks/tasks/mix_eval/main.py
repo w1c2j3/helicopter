@@ -51,23 +51,36 @@ logger = logging.getLogger(__name__)
 
 
 def mixeval_freeform_prompt(line, task_name: str = ""):
-    context = str(line.get("context") or "").strip()
-    query = "\n".join(part for part in (context, str(line["prompt"]).strip()) if part)
-    return Doc(task_name=task_name, query=query, choices=line["target"],
-               gold_index=list(range(len(line["target"]))), instruction=None,
-               specific={"problem-type": line["problem_type"], "benchmark-name": line["benchmark_name"],
-                         "question": line["prompt"]})
+    prompt = construct_prompt_freeform(line)
+    return Doc(
+        task_name=task_name,
+        query=prompt,
+        choices=line["target"],
+        gold_index=list(range(len(line["target"]))),
+        instruction="",
+        specific={
+            "problem-type": line["problem_type"],
+            "benchmark-name": line["benchmark_name"],
+            "question": line["prompt"],
+        },
+    )
 
 
 # Very specific task where there are no precise outputs but instead we test if the format obeys rules
 def mixeval_multichoice_prompt(line, task_name: str = ""):
-    context = str(line.get("context") or "").strip()
-    query = "\n".join(part for part in (context, str(line["prompt"]).strip()) if part)
-    return Doc(task_name=task_name, query=query,
-               choices=[str(option).strip() for option in line["options"]],
-               gold_index=[int(target) for target in line["target"]], instruction=None,
-               specific={"problem-type": line["problem_type"], "benchmark-name": line["benchmark_name"],
-                         "question": line["prompt"]})
+    prompt = construct_prompt_multichoice(line)
+    return Doc(
+        task_name=task_name,
+        query=prompt,
+        choices=line["options"],
+        gold_index=[int(target) for target in line["target"]],
+        instruction="",
+        specific={
+            "problem-type": line["problem_type"],
+            "benchmark-name": line["benchmark_name"],
+            "question": line["prompt"],
+        },
+    )
 
 
 def record_to_sample_freeform(record):
@@ -196,7 +209,7 @@ mixeval_freeform_easy = LightevalTaskConfig(
     few_shots_select="random_sampling",
     generation_size=100,
     stop_sequence=[],  # no stop sequence, will use eot token
-    version="1.1",
+    version="0.1",
     sample_fields=record_to_sample_freeform,
     solver=[generate(cache=True)],
     scorer=model_graded_fact(),
@@ -215,7 +228,7 @@ mixeval_multichoice_easy = LightevalTaskConfig(
     few_shots_select="random_sampling",
     generation_size=100,
     stop_sequence=[],  # no stop sequence, will use eot token
-    version="1.1",
+    version="0.1",
     sample_fields=record_to_sample_multichoice,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),
@@ -233,7 +246,7 @@ mixeval_freeform_hard = LightevalTaskConfig(
     few_shots_select="random_sampling",
     generation_size=100,
     stop_sequence=[],  # no stop sequence, will use eot token
-    version="1.1",
+    version="0.1",
     sample_fields=record_to_sample_freeform,
     solver=[generate(cache=True)],
     scorer=model_graded_fact(),
@@ -252,7 +265,7 @@ mixeval_multichoice_hard = LightevalTaskConfig(
     few_shots_select="random_sampling",
     generation_size=100,
     stop_sequence=[],  # no stop sequence, will use eot token
-    version="1.1",
+    version="0.1",
     sample_fields=record_to_sample_multichoice,
     solver=[multiple_choice(cache=True)],
     scorer=choice(),

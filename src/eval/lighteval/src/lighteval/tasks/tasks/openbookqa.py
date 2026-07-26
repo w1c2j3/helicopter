@@ -30,12 +30,19 @@ from lighteval.tasks.requests import Doc
 
 
 def openbookqa_prompt(line, task_name: str = None):
-    choices = [str(choice).strip() for choice in line["choices"]["text"]]
-    query = str(line["question_stem"]).strip()
-    query += "".join(f"\n{key}. {choice}" for key, choice in zip(ascii_uppercase, choices))
+    query = "The following are multiple choice questions (with answers) about common sense.\n"
+    query += f"Question: {line['question_stem']}\n"
+    query += "".join([f"{key}. {choice}\n" for key, choice in zip(ascii_uppercase, line["choices"]["text"])])
+    query += "Answer: "
+
     gold_ix = ["A", "B", "C", "D", "E"].index(line["answerKey"].strip())
-    return Doc(task_name=task_name, query=query, choices=list(ascii_uppercase[: len(choices)]),
-               gold_index=gold_ix, instruction=None)
+    return Doc(
+        task_name=task_name,
+        query=query,
+        choices=list(ascii_uppercase[: len(line["choices"]["text"])]),
+        gold_index=gold_ix,
+        instruction="The following are multiple choice questions (with answers) about common sense.\n",
+    )
 
 
 openbookqa = LightevalTaskConfig(
@@ -52,7 +59,7 @@ openbookqa = LightevalTaskConfig(
         Metrics.exact_match,
     ],
     stop_sequence=["\n"],
-    version=1,
+    version=0,
 )
 
 TASKS_TABLE = [

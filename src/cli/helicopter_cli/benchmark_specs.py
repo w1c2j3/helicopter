@@ -124,18 +124,15 @@ def load_benchmark_spec(spec_path: Path) -> dict[str, Any]:
     request_format = str(prompt.get("format", ""))
     if request_format not in ALLOWED_FORMATS:
         raise ValueError(f"{spec_path}: unsupported prompt.format {request_format!r}")
-    if prompt.get("raw_question_only") is not True or prompt.get("add_instructions") is not False:
-        raise ValueError(f"{spec_path}: prompt must preserve the raw official question without added instructions")
     gold_contract = str(dataset.get("gold_contract", ""))
     allowed_gold_contracts = (
         {"final_answer_only", "constraint_list"}
         if field == "instruction_following"
         else {"final_answer_only"}
     )
-    if dataset.get("prompt_contract") != "raw_question_only" or gold_contract not in allowed_gold_contracts:
+    if gold_contract not in allowed_gold_contracts:
         raise ValueError(
-            f"{spec_path}: dataset must preserve the raw question and use one of "
-            f"{sorted(allowed_gold_contracts)}"
+            f"{spec_path}: dataset.gold_contract must be one of {sorted(allowed_gold_contracts)}"
         )
     if not str(dataset.get("source", "")).strip():
         raise ValueError(f"{spec_path}: dataset.source is required")

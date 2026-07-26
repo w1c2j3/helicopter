@@ -42,7 +42,7 @@ large_benchmark_sample_rate = 0.2
 pass_k = 1
 pass_n = 4
 [sampling]
-max_tokens = { naive_cot = 8192, normal_cot = 8192, naive_nocot = 2048, normal_nocot = 2048 }
+max_tokens = { naive_cot = 2048, normal_cot = 2048, naive_nocot = 1500, normal_nocot = 1500 }
 context_budget = 10240
 temperature = 0.8
 top_p = 0.28

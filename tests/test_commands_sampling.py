@@ -13,8 +13,8 @@ def test_mode_specific_max_tokens_are_resolved_before_model_args() -> None:
     config_path = "configs/benchmarks/g1h/math/051_math_algebra.toml"
     loaded, _ = config.load_config(ROOT, config_path)
     expected = {
-        "naive_nocot": 2048,
-        "normal_nocot": 2048,
+        "naive_nocot": 8192,
+        "normal_nocot": 8192,
         "naive_cot": 8192,
         "normal_cot": 8192,
     }

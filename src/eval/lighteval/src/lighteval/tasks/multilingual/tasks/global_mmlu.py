@@ -112,7 +112,6 @@ TASKS_TABLE = [
                 "gold_idx": ascii_uppercase.index(line["answer"]),
             },
             formulation=formulation,
-            raw_question=True,
         ),
         hf_repo="CohereForAI/Global-MMLU",
         hf_subset=standardize_tag(language.value),
@@ -130,7 +129,6 @@ TASKS_TABLE = [
             subset,
             sensitivity_label,
         ),
-        version=1,
         metrics=get_metrics_for_formulation(
             formulation,
             [

@@ -42,48 +42,59 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dry-run", action="store_true", help="print the command without executing it")
 
 
-def add_lighteval_run_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--backend", choices=LIGHTEVAL_BACKENDS, default="endpoint-litellm")
-    parser.add_argument("--model-args", help="raw LightEval model args string or YAML config path")
-    parser.add_argument("--lighteval-model-name", help="model name passed to LightEval/LiteLLM")
-    parser.add_argument("--base-url", help="OpenAI-compatible endpoint base URL")
-    parser.add_argument("--provider", help="LiteLLM provider prefix; defaults to openai")
-    parser.add_argument("--api-key", help="API key passed through OPENAI_API_KEY")
-    parser.add_argument(
+def add_lighteval_run_options(
+    parser: argparse.ArgumentParser, *, compact: bool = False
+) -> None:
+    """Add LightEval options, optionally hiding low-frequency help text."""
+
+    def add_option(*args: str, compact_help: bool = False, **kwargs: object) -> None:
+        if compact and not compact_help:
+            kwargs["help"] = argparse.SUPPRESS
+        parser.add_argument(*args, **kwargs)
+
+    add_option("--backend", choices=LIGHTEVAL_BACKENDS, default="endpoint-litellm")
+    add_option("--model-args", help="raw LightEval model args string or YAML config path")
+    add_option("--lighteval-model-name", help="model name passed to LightEval/LiteLLM", compact_help=True)
+    add_option("--base-url", help="OpenAI-compatible endpoint base URL", compact_help=True)
+    add_option("--provider", help="LiteLLM provider prefix; defaults to openai")
+    add_option("--api-key", help="API key passed through OPENAI_API_KEY", compact_help=True)
+    add_option(
         "--prompt-mode",
         choices=("naive_cot", "naive_nocot", "normal_cot", "normal_nocot"),
         help="one isolated RWKV prompt profile for this evaluation process",
+        compact_help=True,
     )
-    parser.add_argument("--concurrent-requests", type=int)
-    parser.add_argument(
+    add_option("--concurrent-requests", type=int, compact_help=True)
+    add_option(
         "--request-timeout",
         type=float,
         help="per-request inference timeout in seconds",
     )
-    parser.add_argument("--max-model-length", type=int)
-    parser.add_argument(
+    add_option("--max-model-length", type=int)
+    add_option(
         "--max-tokens",
         "--max-new-tokens",
         dest="max_tokens",
         type=int,
         help="vLLM max output tokens; --max-new-tokens is a legacy alias",
+        compact_help=True,
     )
-    parser.add_argument("--max-samples", type=int)
-    parser.add_argument("--output-dir")
-    parser.add_argument("--dataset-loading-processes", type=int)
-    parser.add_argument("--num-fewshot-seeds", type=int)
-    parser.add_argument("--custom-tasks", help="custom LightEval task Python file")
-    parser.add_argument("--load-tasks-multilingual", action="store_true", default=None)
-    parser.add_argument("--save-details", dest="save_details", action="store_true", default=None)
-    parser.add_argument("--no-save-details", dest="save_details", action="store_false")
-    parser.add_argument("--push-to-hub", action="store_true", default=None)
-    parser.add_argument("--public-run", action="store_true", default=None)
-    parser.add_argument("--results-org")
-    parser.add_argument("--job-id", type=int)
-    parser.add_argument("--extra", action="append", help="extra argument passed to LightEval")
-    parser.add_argument("--performance-output", help="write run performance metrics JSON here")
-    parser.add_argument("--metrics-url", help="Prometheus metrics URL for token throughput; defaults to <base-url without /v1>/metrics")
-    parser.add_argument("--scoreboard-task-id", help="merge performance metrics into this scoreboard task score")
+    add_option("--max-samples", type=int, compact_help=True)
+    add_option("--output-dir", compact_help=True)
+    add_option("--dataset-loading-processes", type=int)
+    add_option("--num-fewshot-seeds", type=int)
+    add_option("--custom-tasks", help="custom LightEval task Python file")
+    add_option("--load-tasks-multilingual", action="store_true", default=None)
+    add_option("--save-details", dest="save_details", action="store_true", default=None)
+    add_option("--no-save-details", dest="save_details", action="store_false")
+    add_option("--push-to-hub", action="store_true", default=None)
+    add_option("--public-run", action="store_true", default=None)
+    add_option("--results-org")
+    add_option("--job-id", type=int)
+    add_option("--extra", action="append", help="extra argument passed to LightEval")
+    add_option("--performance-output", help="write run performance metrics JSON here")
+    add_option("--metrics-url", help="Prometheus metrics URL for token throughput; defaults to <base-url without /v1>/metrics")
+    add_option("--scoreboard-task-id", help="merge performance metrics into this scoreboard task score")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -191,17 +202,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     eval_batch = eval_subparsers.add_parser(
         "batch",
-        help="batch scheduler: sweep models x benchmarks across idle GPUs",
+        help="run explicitly selected model/benchmark jobs",
     )
     add_common_options(eval_batch)
-    add_lighteval_run_options(eval_batch)
-    eval_batch.add_argument("--models", action="append", help="model alias (repeat or comma-separate); defaults to [eval.batch].models")
-    eval_batch.add_argument("--tasks", action="append", help="LightEval task string (repeat or comma-separate); defaults to [eval.batch].tasks")
-    eval_batch.add_argument("--tasks-from-db", action="store_true", help="load LightEval tasks from the scoreboard benchmark_catalog table")
-    eval_batch.add_argument("--benchmark-scope", help="benchmark_catalog scope used with --tasks-from-db")
-    eval_batch.add_argument("--benchmark-fields", action="append", help="benchmark_catalog field filter used with --tasks-from-db")
-    eval_batch.add_argument("--benchmark-limit", type=int, help="maximum number of DB benchmark tasks to load")
-    eval_batch.add_argument("--fc-tasks", action="append", help="native function-calling task id (repeat or comma-separate); defaults to [eval.batch].fc_tasks")
+    add_lighteval_run_options(eval_batch, compact=True)
+    eval_batch.add_argument(
+        "--job",
+        "--run",
+        dest="jobs",
+        action="append",
+        metavar="MODEL=BENCHMARK[,BENCHMARK...]",
+        help="select a model and its benchmarks; repeat for different models (fc:TASK for function calling)",
+    )
+    eval_batch.add_argument("--models", action="append", help=argparse.SUPPRESS)
+    eval_batch.add_argument("--tasks", action="append", help=argparse.SUPPRESS)
+    eval_batch.add_argument("--tasks-from-db", action="store_true", help=argparse.SUPPRESS)
+    eval_batch.add_argument("--benchmark-scope", help=argparse.SUPPRESS)
+    eval_batch.add_argument("--benchmark-fields", action="append", help=argparse.SUPPRESS)
+    eval_batch.add_argument("--benchmark-limit", type=int, help=argparse.SUPPRESS)
+    eval_batch.add_argument("--fc-tasks", action="append", help=argparse.SUPPRESS)
     eval_batch.add_argument("--gpus", help="comma-separated GPU indexes; defaults to idle-GPU auto-detection")
     eval_batch.add_argument("--gpu-idle-max-mem", type=float, help="MiB of used memory below which a GPU counts as idle")
     eval_batch.add_argument(

@@ -3,7 +3,9 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-from lighteval.metrics.avg_at_n import GenerativeChoice
+from lighteval.metrics.avg_at_n import GenerativeChoice, build_avg_at_n_metric
+from lighteval.metrics.metrics_sample import SampleLevelComputation
+from lighteval.metrics.utils.metric_utils import SampleLevelMetric, SamplingMethod
 from lighteval.metrics.metrics import Metrics
 from lighteval.metrics.metrics_sample import AvgAtN
 from lighteval.models.model_output import ModelResponse
@@ -38,6 +40,10 @@ def test_choice_adapter_does_not_read_answer_choices_header_as_answer() -> None:
     value = "Answer Choices: (A) 7.5 (B) 8.9 (C) 9.9 (D) 11.5 (E) 11.7"
     assert extract_choice_answer(value) != " A"
     assert extract_choice_answer(" E") == " E"
+
+
+def test_choice_adapter_does_not_use_an_arbitrary_reasoning_tail() -> None:
+    assert extract_choice_answer("reasoning without a final option") == ""
 
 
 def test_choice_adapter_does_not_treat_roman_numerals_as_option_labels() -> None:
@@ -140,6 +146,15 @@ def test_code_adapter_is_symmetric_for_fenced_and_plain_reference() -> None:
     assert adapt_answer("```python\ndef f():\n    return 1\n```", domain="coding", request_format="python_program") == expected
 
 
+def test_code_answers_defer_to_native_execution_scorer() -> None:
+    assert answers_match(
+        "def f():\n    return 1",
+        "",
+        domain="coding",
+        request_format="python_program",
+    ) is None
+
+
 def test_official_avg_at_n_scores_adapted_math_choice_and_code_rollouts() -> None:
     math_doc = Doc(query="q", choices=[r"\boxed{4000}"], gold_index=0)
     _normalize_doc_references(math_doc, domain="math", request_format="math_boxed")
@@ -181,6 +196,26 @@ def test_official_avg_at_n_scores_adapted_math_choice_and_code_rollouts() -> Non
         sample_scoring_function=Metrics.exact_match.value.sample_level_fn,
     )
     assert code_avg.compute(code_doc, code_response) == 1.0
+
+
+def test_avg_at_n_calls_native_sample_scorer_with_keyword_arguments() -> None:
+    class NativeScorer(SampleLevelComputation):
+        def compute(self, model_response, doc, **kwargs):
+            del kwargs
+            return float(doc.query == model_response.final_text[0])
+
+    metric = SampleLevelMetric(
+        metric_name="native",
+        category=SamplingMethod.GENERATIVE,
+        sample_level_fn=NativeScorer(),
+        corpus_level_fn=lambda values: sum(values) / len(values),
+        higher_is_better=True,
+        batched_compute=False,
+    )
+    wrapped = build_avg_at_n_metric(metric, k=2, name="avg@2")
+    doc = Doc(query="good", choices=[""], gold_index=0)
+    response = ModelResponse(text=["good", "bad"])
+    assert wrapped.sample_level_fn.compute(doc, response) == 0.5
 
 
 def test_instruction_adapter_keeps_the_complete_nocot_response() -> None:

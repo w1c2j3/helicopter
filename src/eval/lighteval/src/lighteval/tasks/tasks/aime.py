@@ -37,7 +37,15 @@ from lighteval.tasks.lighteval_task import LightevalTaskConfig
 from lighteval.tasks.requests import Doc
 
 
-MATH_PROMPT_TEMPLATE = "{prompt}"
+# Prompt template adapted from
+# - simple-evals: https://github.com/openai/simple-evals/blob/6e84f4e2aed6b60f6a0c7b8f06bbbf4bfde72e58/math_eval.py#L17
+# - Llama 3: https://huggingface.co/datasets/meta-llama/Llama-3.2-1B-Instruct-evals/viewer/Llama-3.2-1B-Instruct-evals__math__details?views%5B%5D=llama_32_1b_instruct_evals__math__details
+# Note that it is important to have the final answer in a box for math-verify to work correctly
+MATH_PROMPT_TEMPLATE = dedent("""
+Solve the following math problem efficiently and clearly.  The last line of your response should be of the following format: 'Therefore, the final answer is: $\\boxed{{ANSWER}}$. I hope it is correct' (without quotes) where ANSWER is just the final number or expression that solves the problem. Think step by step before answering.
+
+{prompt}
+""")
 
 
 def record_to_sample(record):
@@ -47,8 +55,8 @@ def record_to_sample(record):
 def aime_prompt(line, task_name: str = None):
     return Doc(
         task_name=task_name,
-        query=str(line["problem"]).strip().replace("\r\n", "\n"),
-        choices=[f"$\\boxed{{{line['answer']}}}$"],
+        query=MATH_PROMPT_TEMPLATE.format(prompt=line["problem"]),
+        choices=[line["answer"]],
         gold_index=0,
     )
 
@@ -67,7 +75,7 @@ aime24 = LightevalTaskConfig(
     few_shots_select=None,
     generation_size=None,
     metrics=[Metrics.pass_at_k_math(sample_params={"k": 1}), Metrics.avg_at_n_math(sample_params={"n": 1})],
-    version=3,
+    version=2,
 )
 
 aime24_avg = LightevalTaskConfig(
@@ -82,7 +90,7 @@ aime24_avg = LightevalTaskConfig(
     few_shots_select=None,
     generation_size=None,
     metrics=[Metrics.avg_at_n_math(sample_params={"n": 64})],
-    version=3,
+    version=2,
 )
 
 aime24_gpassk = LightevalTaskConfig(
@@ -97,7 +105,7 @@ aime24_gpassk = LightevalTaskConfig(
     few_shots_select=None,
     generation_size=None,
     metrics=[Metrics.g_pass_at_k_math(sample_params={"k": 16, "n": 48})],
-    version=3,
+    version=1,
 )
 
 aime25 = LightevalTaskConfig(
@@ -114,7 +122,7 @@ aime25 = LightevalTaskConfig(
     few_shots_select=None,
     generation_size=None,
     metrics=[Metrics.pass_at_k_math(sample_params={"k": 1, "n": 1}), Metrics.avg_at_n_math(sample_params={"n": 1})],
-    version=3,
+    version=2,
 )
 
 aime25_avg = LightevalTaskConfig(
@@ -129,7 +137,7 @@ aime25_avg = LightevalTaskConfig(
     few_shots_select=None,
     generation_size=None,
     metrics=[Metrics.avg_at_n_math(sample_params={"n": 64})],
-    version=3,
+    version=2,
 )
 
 aime25_gpassk = LightevalTaskConfig(
@@ -144,7 +152,7 @@ aime25_gpassk = LightevalTaskConfig(
     few_shots_select=None,
     generation_size=None,
     metrics=[Metrics.g_pass_at_k_math(sample_params={"k": 16, "n": 48})],
-    version=3,
+    version=1,
 )
 
 TASKS_TABLE = [

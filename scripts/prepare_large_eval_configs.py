@@ -70,11 +70,11 @@ COT_MAX_TOKENS_BY_FIELD = {
 }
 
 NOCOT_MAX_TOKENS_BY_FIELD = {
-    "math": 2048,
+    "math": 8192,
     "knowledge": 1024,
     # Code-generation outputs need more than a short multiple-choice answer.
     "coding": 4096,
-    "instruction_following": 2048,
+    "instruction_following": 8192,
 }
 
 CONTEXT_BUDGET = 10240

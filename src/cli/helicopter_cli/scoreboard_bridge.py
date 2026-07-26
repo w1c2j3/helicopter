@@ -143,9 +143,32 @@ def _answer(response: Mapping[str, Any]) -> str:
 
 
 def _completion_answer(response: Mapping[str, Any]) -> str:
-    answer = _text(response.get("text"))
-    if answer:
-        return answer
+    # Keep the completion column raw. ``text_post_processed`` is the
+    # canonical answer used by LightEval, not the model's original output;
+    # normalization belongs in ``adapt_answer`` when constructing eval rows.
+    for key in ("text",):
+        answer = _text(response.get(key))
+        if answer:
+            return answer
+
+    # Score-only replay can reconstruct a response with an empty ``text``
+    # field while the durable generation stages still contain the actual
+    # completion. Recover the last non-empty stage so eval.answer does not
+    # become empty merely because the scorer omitted ModelResponse.text.
+    stages = response.get("stages")
+    if isinstance(stages, Mapping):
+        stages = [stages]
+    if isinstance(stages, list):
+        for stage in reversed(stages):
+            if isinstance(stage, Mapping):
+                answer = _text(stage.get("completion"))
+                if answer:
+                    return answer
+
+    for key in ("raw_text", "text_post_processed"):
+        answer = _text(response.get(key))
+        if answer:
+            return answer
     logprobs = response.get("logprobs")
     if isinstance(logprobs, list) and logprobs:
         try:
@@ -486,10 +509,10 @@ def write_lighteval_tracker(tracker: Any) -> list[str]:
                     domain=configured_task_policy.get("domain"),
                     request_format=configured_task_policy.get("format"),
                 )
-                if official_passed is not None:
-                    passed = official_passed
-                elif adapted_passed is not None:
+                if adapted_passed is not None:
                     passed = adapted_passed
+                elif official_passed is not None:
+                    passed = official_passed
                 elif _aggregate_only(metric):
                     # An aggregate result cannot be copied to one rollout.
                     passed = False

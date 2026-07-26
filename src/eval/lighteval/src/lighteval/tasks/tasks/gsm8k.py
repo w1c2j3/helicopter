@@ -26,22 +26,27 @@ from lighteval.tasks.lighteval_task import LightevalTaskConfig
 from lighteval.tasks.requests import Doc
 
 
-MATH_PROMPT_TEMPLATE = "{prompt}"
+# setup for problem + instructions for providing answer
+MATH_PROMPT_TEMPLATE = """
+Solve the following math problem step by step. The last line of your
+response should be of the form "ANSWER: $ANSWER" (without quotes)
+where $ANSWER is the answer to the problem.
 
+{prompt}
 
-def gsm8k_final_answer(answer: str) -> str:
-    parts = str(answer).rsplit("####", 1)
-    if len(parts) != 2 or not parts[1].strip():
-        raise ValueError("GSM8K row has no final answer after ####")
-    return parts[1].strip()
+Remember to put your answer on its own line at the end in the form
+"ANSWER: $ANSWER" (without quotes) where $ANSWER is the answer to
+the problem, and you do not need to use a \\boxed command.
+
+Reasoning:
+""".strip()
 
 
 def record_to_sample(record):
     DELIM = "####"
     input = record["question"]
     answer = record["answer"].split(DELIM)
-    target = gsm8k_final_answer(record["answer"])
-    answer.pop()
+    target = answer.pop().strip()
     reasoning = DELIM.join(answer)
     return Sample(input=input, target=target, metadata={"reasoning": reasoning.strip()})
 
@@ -53,8 +58,8 @@ def sample_to_fewshot(sample):
 def gsm8k_prompt(line, task_name: str = None):
     return Doc(
         task_name=task_name,
-        query=str(line["question"]).strip().replace("\r\n", "\n"),
-        choices=[f"$\\boxed{{{gsm8k_final_answer(line['answer'])}}}$"],
+        query=f"Question: {line['question']}\nAnswer:",
+        choices=[f" {line['answer']}"],
         gold_index=0,
     )
 
@@ -77,7 +82,7 @@ gsm8k = LightevalTaskConfig(
         Metrics.expr_gold_metric,
     ],
     stop_sequence=["Question:"],
-    version=1,
+    version=0,
 )
 
 TASKS_TABLE = [

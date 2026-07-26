@@ -95,6 +95,12 @@ class _SinglePredictionScorer(SampleLevelComputation):
         else:
             prediction = predictions[0]
         single_response = ModelResponse(text=[prediction])
+        if isinstance(source, SampleLevelComputation):
+            # Native sample scorers are not required to put ``doc`` first in
+            # their Python signature (LCB's CodegenMetric is one example).
+            # AvgAtN invokes the per-rollout scorer through this adapter, so
+            # use the public keyword contract instead of positional arguments.
+            return float(source.compute(doc=processed_doc, model_response=single_response))
         return float(source.compute_score(doc=processed_doc, model_response=single_response))
 
 
@@ -127,7 +133,10 @@ def build_avg_at_n_metric(metric: Metric, *, k: int, name: str = "avg@k") -> Met
     elif isinstance(metric_names, (list, tuple)):
         return copy.deepcopy(metric)
     elif isinstance(sample_fn, SampleLevelComputation):
-        scorer = copy.deepcopy(sample_fn)
+        # Keep the native scorer's ``compute(doc=..., model_response=...)``
+        # call contract. Calling a copied scorer positionally breaks native
+        # scorers whose signature is ``compute(model_response, doc)``.
+        scorer = _SinglePredictionScorer(copy.deepcopy(sample_fn))
     else:
         raise ValueError(
             f"cannot create real avg@{k} for metric {getattr(metric, 'metric_name', metric)!r}"

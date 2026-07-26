@@ -41,7 +41,7 @@ large_benchmark_generation_threshold = 20000
 large_benchmark_sample_rate = 0.2
 
 [sampling]
-max_tokens = 128
+max_tokens = 2048
 context_budget = 8192
 temperature = 0.96
 top_p = 0.76

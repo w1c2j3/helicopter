@@ -44,23 +44,10 @@ def record_to_sample(record):
     return Sample(input=record["query"], target=ascii_uppercase[record["gold"][0]], choices=choices)
 
 
-RAW_MATH_AGIEVAL_TASKS = {
-    "agieval:aqua-rat",
-    "agieval:gaokao-mathqa",
-    "agieval:sat-math",
-}
-
-
 def agieval_prompt(line, task_name: str = None):
-    query = str(line["query"]).strip().replace("\r\n", "\n")
-    if task_name in RAW_MATH_AGIEVAL_TASKS:
-        lines = query.splitlines()
-        final_line = lines[-1].strip() if lines else ""
-        if final_line.startswith("A: Among ") or final_line.startswith("ç­”æ¡ˆï¼šä»Ž"):
-            query = "\n".join(lines[:-1]).rstrip()
     return Doc(
         task_name=task_name,
-        query=query,
+        query=line["query"],
         choices=[f" {c}" for c in line["choices"]],
         gold_index=line["gold"],
     )
@@ -83,7 +70,7 @@ agieval_aqua_rat = LightevalTaskConfig(
         Metrics.loglikelihood_acc,
     ],
     stop_sequence=None,
-    version=1,
+    version=0,
 )
 
 agieval_gaokao_biology = LightevalTaskConfig(
@@ -223,7 +210,7 @@ agieval_gaokao_mathqa = LightevalTaskConfig(
         Metrics.loglikelihood_acc,
     ],
     stop_sequence=None,
-    version=1,
+    version=0,
 )
 
 agieval_gaokao_physics = LightevalTaskConfig(
@@ -403,7 +390,7 @@ agieval_sat_math = LightevalTaskConfig(
         Metrics.loglikelihood_acc,
     ],
     stop_sequence=None,
-    version=1,
+    version=0,
 )
 
 TASKS_TABLE = [

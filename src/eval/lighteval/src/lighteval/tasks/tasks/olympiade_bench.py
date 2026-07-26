@@ -98,33 +98,64 @@ def get_answer_type_text(answer_type, is_chinese, multiple_answer):
     return full_answer_text
 
 
-def olympiad_final_answer(record) -> str:
-    answers = record["final_answer"]
-    if isinstance(answers, (list, tuple)):
-        values = [str(answer).strip() for answer in answers if str(answer).strip()]
-        if not values:
-            raise ValueError("OlympiadBench row has no final answer")
-        return ", ".join(values)
-    answer = str(answers).strip()
-    if not answer:
-        raise ValueError("OlympiadBench row has no final answer")
-    return answer
-
-
 def create_record_to_sample(subset: str):
-    """Create a raw-question/final-answer Inspect adapter for a subset."""
+    """Create a record_to_sample function for a specific subset."""
+    is_theorem_proving = "TP" in subset
 
     def record_to_sample(record):
+        is_math = "Math" in record["subject"]
+        subject = "Math" if is_math else "Physics"
+        is_chinese = record["language"] == "Chinese"
+        unit = record.get("unit")
+        is_multiple_answer = record["is_multiple_answer"]
+
+        if is_chinese:
+            subject_content = "数学" if is_math else "物理"
+            if is_theorem_proving:
+                instruction = f"以下是中国{subject_content}竞赛中的证明题。请根据题目的要求，运用逻辑推理及常用定理证明题目中的命题。证明过程中使用的变量和公式请使用LaTeX格式表示。"
+            else:
+                answer_type_text = get_answer_type_text(
+                    record["answer_type"], is_chinese=True, multiple_answer=is_multiple_answer
+                )
+                if is_multiple_answer:
+                    multiple_answer_text = "\\boxed{用英文逗号连接的多个答案}"
+                else:
+                    multiple_answer_text = "\\boxed{答案}"
+                unit_text = ""
+                if unit:
+                    multiple_answer_text += "(单位)"
+                    unit_text = "，注意答案的单位不要放在\\boxed{}中"
+                instruction = f'以下是中国{subject_content}竞赛中的解答题{answer_type_text}。请根据题目的要求和所提供的信息计算得出答案。解答过程和结果中使用的变量和公式请使用LaTeX格式表示。请在最后以"所以最终答案是{multiple_answer_text}。"显式给出结果{unit_text}。'
+        else:
+            if is_theorem_proving:
+                instruction = f"The following is a theorem proving problem from an International {subject} competition. Please use logical reasoning and common theorems to prove the proposition in the problem according to the given requirements. Please use LaTeX format to represent the variables and formulas used in the proof."
+            else:
+                if is_multiple_answer:
+                    multiple_answer_text = "\\boxed{multiple answers connected with commas}"
+                else:
+                    multiple_answer_text = "\\boxed{answer}"
+                unit_text = ""
+                if unit:
+                    multiple_answer_text += "(unit)"
+                    unit_text = ", note that the unit of the answer should not be included in \\boxed{}"
+
+                answer_type_text = get_answer_type_text(
+                    record["answer_type"], is_chinese=False, multiple_answer=is_multiple_answer
+                )
+
+                instruction = f'The following is an open-ended problem from an International {subject} competition. {answer_type_text}Please calculate the answer according to the given requirements and the information provided. Please use LaTeX format to represent the variables and formulas used in the solution process and results. Please end your solution with "So the final answer is {multiple_answer_text}." and give the result explicitly{unit_text}.'
+
+        query = instruction + "\n" + record["question"]
+
         return Sample(
-            input=str(record["question"]).strip(),
-            target=olympiad_final_answer(record),
+            input=query,
+            target=record["final_answer"],
             metadata={
                 "language": record["language"],
                 "subject": record["subject"],
                 "answer_type": record["answer_type"],
                 "is_multiple_answer": record["is_multiple_answer"],
                 "unit": record.get("unit"),
-                "subset": subset,
             },
         )
 
@@ -160,11 +191,57 @@ def olympiad_bench_scorer(language: Language = Language.ENGLISH):
 
 # Very specific task where there are no precise outputs but instead we test if the format obeys rules
 def olympiad_bench_prompt(line, task_name: str = None):
+    is_math = "Math" in line["subject"]
+    subject = "Math" if is_math else "Physics"
+    is_chinese = line["language"] == "Chinese"
+    is_theorem_proving = "TP" in task_name
+    unit = line["unit"]
+    is_multiple_answer = line["is_multiple_answer"]
+
+    if is_chinese:
+        subject_content = "数学" if is_math else "物理"
+        if is_theorem_proving:
+            instruction = f"以下是中国{subject_content}竞赛中的证明题。请根据题目的要求，运用逻辑推理及常用定理证明题目中的命题。证明过程中使用的变量和公式请使用LaTeX格式表示。"
+        else:
+            answer_type_text = get_answer_type_text(
+                line["answer_type"], is_chinese=True, multiple_answer=is_multiple_answer
+            )
+            if is_multiple_answer:
+                multiple_answer_text = "\\boxed{用英文逗号连接的多个答案}"
+            else:
+                multiple_answer_text = "\\boxed{答案}"
+            unit_text = ""
+            if unit:
+                multiple_answer_text += "(单位)"
+                unit_text = "，注意答案的单位不要放在\\boxed{}中"
+            instruction = f"以下是中国{subject_content}竞赛中的解答题{answer_type_text}。请根据题目的要求和所提供的信息计算得出答案。解答过程和结果中使用的变量和公式请使用LaTeXæ ¼式表示。请在最后以“所以最终答案是{multiple_answer_text}。”显式给出结果{unit_text}。"
+    else:
+        if is_theorem_proving:
+            instruction = f"The following is a theorem proving problem from an International {subject} competition. Please use logical reasoning and common theorems to prove the proposition in the problem according to the given requirements. Please use LaTeX format to represent the variables and formulas used in the proof."
+        else:
+            if is_multiple_answer:
+                multiple_answer_text = "\\boxed{multiple answers connected with commas}"
+            else:
+                multiple_answer_text = "\\boxed{answer}"
+            unit_text = ""
+            if unit:
+                multiple_answer_text += "(unit)"
+                unit_text = ", note that the unit of the answer should not be included in \\boxed{}"
+
+            answer_type_text = get_answer_type_text(
+                line["answer_type"], is_chinese=False, multiple_answer=is_multiple_answer
+            )
+
+            instruction = f'The following is an open-ended problem from an International {subject} competition. {answer_type_text}Please calculate the answer according to the given requirements and the information provided. Please use LaTeX format to represent the variables and formulas used in the solution process and results. Please end your solution with "So the final answer is {multiple_answer_text}." and give the result explicitly{unit_text}.'
+
+    choice = line["final_answer"]
+
     return Doc(
         task_name=task_name,
-        query=str(line["question"]).strip().replace("\r\n", "\n"),
-        choices=[olympiad_final_answer(line)],
+        query=instruction + "\n" + line["question"],
+        choices=[choice],
         gold_index=0,
+        instruction=instruction,
         specific={},
     )
 
@@ -242,7 +319,7 @@ for subset in olympiad_bench_subsets:
             few_shots_select="random_sampling",
             generation_size=2048,
             stop_sequence=[],  # no stop sequence, will use eot token
-            version=2,
+            version=1,
         )
     )
 

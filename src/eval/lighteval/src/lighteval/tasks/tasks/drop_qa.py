@@ -59,7 +59,7 @@ def drop_prompt(line, task_name: str = None):
 
     return Doc(
         task_name=task_name,
-        query=f"{str(line['passage']).strip()}\n{str(line['question']).strip()}",
+        query=f"Passage: {line['passage']}\nQuestion: {line['question']}\nAnswer:",
         choices=[f"{' ' if is_few_shots else ''}{', '.join(a)}" for a in answers],
         gold_index=list(range(len(answers))),
         specific={"golds_no_preprocessing": [list(a) for a in answers]},
@@ -76,7 +76,7 @@ drop_qa = LightevalTaskConfig(
     generation_size=250,
     stop_sequence=["Question:", "question:", "\n"],
     metrics=[Metrics.exact_match],
-    version=2,
+    version=1,
 )
 
 TASKS_TABLE = [

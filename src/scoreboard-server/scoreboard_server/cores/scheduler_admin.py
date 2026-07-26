@@ -41,6 +41,18 @@ def _as_list(value: Any) -> list[str]:
     raise SchedulerAdminError("models/tasks 必须是字符串或字符串数组")
 
 
+def _job_list(value: Any) -> list[str]:
+    """Keep commas inside MODEL=BENCHMARK[,BENCHMARK...] job values."""
+
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    raise SchedulerAdminError("jobs 必须是字符串或字符串数组")
+
+
 def _redacted_request(payload: dict[str, Any]) -> dict[str, Any]:
     result = dict(payload)
     for key in ("api_key", "infer_api_key"):
@@ -168,7 +180,9 @@ def admin_options(*, include_gpu: bool = True) -> dict[str, Any]:
 
 
 def admin_draft() -> dict[str, Any]:
-    options = admin_options()
+    # Starting a run only needs config defaults; avoid probing hardware on the
+    # process-launch path. The options endpoint can still expose GPU details.
+    options = admin_options(include_gpu=False)
     config = _latest_config()
     config_models: list[str] = []
     config_tasks: list[str] = []
@@ -182,6 +196,7 @@ def admin_draft() -> dict[str, Any]:
         pass
     return {
         "config": config,
+        "jobs": [],
         "models": config_models[:1] or options["model_select"][:1],
         "tasks": config_tasks[:1] or options["domains"][:1],
         "fc_tasks": [],
@@ -261,12 +276,13 @@ class SchedulerAdminController:
             except OSError as exc:
                 raise SchedulerAdminError(f"无法启动评测进程：{exc}", 503) from exc
             models = request["models"] or ["config-models"]
-            jobs = []
-            for model in models:
-                if request["tasks"] or request["tasks_from_db"]:
-                    jobs.append(f"{model}/lighteval")
-                if request["fc_tasks"]:
-                    jobs.append(f"{model}/function-calling")
+            jobs = [str(job) for job in request.get("jobs") or []]
+            if not jobs:
+                for model in models:
+                    if request["tasks"] or request["tasks_from_db"]:
+                        jobs.append(f"{model}/lighteval")
+                    if request["fc_tasks"]:
+                        jobs.append(f"{model}/function-calling")
             if not jobs:
                 jobs = ["config/batch"]
             gpus = [item.strip() for item in str(request.get("gpus") or "").split(",") if item.strip()]
@@ -437,6 +453,18 @@ class SchedulerAdminController:
     def _normalize(self, payload: dict[str, Any]) -> dict[str, Any]:
         result = dict(admin_draft())
         result.update(payload or {})
+        incoming = payload or {}
+        result["jobs"] = _job_list(result.get("jobs"))
+        if result["jobs"] and any(
+            incoming.get(key)
+            for key in ("models", "model_select", "tasks", "domains", "fc_tasks", "tasks_from_db")
+        ):
+            raise SchedulerAdminError("jobs 不能与 models/tasks/fc_tasks 同时设置")
+        if result["jobs"]:
+            result["models"] = []
+            result["tasks"] = []
+            result["fc_tasks"] = []
+            result["tasks_from_db"] = False
         result["models"] = _as_list(result.get("models") or result.get("model_select"))
         result["tasks"] = _as_list(result.get("tasks") or result.get("domains"))
         result["fc_tasks"] = _as_list(result.get("fc_tasks"))
@@ -471,6 +499,8 @@ class SchedulerAdminController:
         for key, flag in (("models", "--models"), ("tasks", "--tasks"), ("fc_tasks", "--fc-tasks"), ("benchmark_fields", "--benchmark-fields")):
             for value in request.get(key) or []:
                 command.extend([flag, str(value)])
+        for value in request.get("jobs") or []:
+            command.extend(["--job", str(value)])
         for key, flag in (("tasks_from_db", "--tasks-from-db"), ("rerun", "--rerun"), ("no_server", "--no-server"), ("scoreboard", "--scoreboard"), ("dry_run", "--dry-run")):
             if request.get(key):
                 command.append(flag)

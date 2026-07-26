@@ -30,11 +30,22 @@ from lighteval.tasks.requests import Doc
 
 
 def race_prompt(line, task_name: str = None):
-    problem = ast.literal_eval(line["problems"])[-1]
-    query = f"{str(line['article']).strip()}\n\n{str(problem['question']).strip()}"
-    return Doc(task_name=task_name, query=query,
-               choices=[str(option).strip() for option in problem["options"]],
-               gold_index=["A", "B", "C", "D", "E"].index(problem["answer"]), instruction=None)
+    line["problems"] = ast.literal_eval(line["problems"])
+    text = f"Article: {line['article']}\n\n"
+    for problem in line["problems"][:-1]:
+        index = ["A", "B", "C", "D", "E"].index(problem["answer"])
+        if problem["question"][-6:] == "  _  .":
+            text += f"{problem['question'][-5:]}{problem['options'][index]}\n"
+        else:
+            text += f"Question: {problem['question']}\n"
+            text += f"Answer: {problem['options'][index]}\n"
+    text += line["problems"][-1]["question"]
+    return Doc(
+        task_name=task_name,
+        query=text,
+        choices=[f" {o}" for o in line["problems"][-1]["options"]],
+        gold_index=["A", "B", "C", "D", "E"].index(line["problems"][-1]["answer"]),
+    )
 
 
 race_high = LightevalTaskConfig(
@@ -49,7 +60,7 @@ race_high = LightevalTaskConfig(
     generation_size=1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["\n"],
-    version=1,
+    version=0,
 )
 
 TASKS_TABLE = [

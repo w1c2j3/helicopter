@@ -41,7 +41,6 @@ squad_v2 = LightevalTaskConfig(
             "context": line["context"],
             "choices": [ans for ans in line["answers"]["text"] if len(ans) > 0],
         },
-        raw_question=True,
     ),
     hf_repo="rajpurkar/squad_v2",
     hf_subset="squad_v2",
@@ -51,7 +50,7 @@ squad_v2 = LightevalTaskConfig(
     stop_sequence=["\n", "Question:", "question:"],
     generation_size=200,
     metrics=[Metrics.exact_match],
-    version=2,
+    version=1,
 )
 
 TASKS_TABLE = [

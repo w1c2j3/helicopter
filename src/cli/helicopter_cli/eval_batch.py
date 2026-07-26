@@ -10,8 +10,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections import deque
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -94,6 +93,28 @@ class ModelConcurrency:
     source: str
 
 
+def run_scheduler(
+    units: list[BatchUnit],
+    *,
+    max_workers: int,
+    worker: Callable[[BatchUnit], None],
+) -> None:
+    """Run selected benchmark units with a small, predictable worker pool.
+
+    Resource queues inside ``worker`` still serialize work when a model has a
+    single endpoint or GPU. The scheduler itself deliberately does not infer
+    model capacity or reorder the user's selection.
+    """
+
+    if not units:
+        return
+    max_workers = max(1, min(int(max_workers), len(units)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(worker, unit) for unit in units]
+        for future in futures:
+            future.result()
+
+
 def run_model_aware_scheduler(
     units: list[BatchUnit],
     *,
@@ -101,65 +122,10 @@ def run_model_aware_scheduler(
     max_workers: int,
     worker: Callable[[BatchUnit], None],
 ) -> None:
-    """Run generation without letting waits for one model starve another.
+    """Backward-compatible name for callers of the old scheduler API."""
 
-    A global executor that submits every unit eagerly can spend all of its
-    threads waiting on replicas of one busy model. Keep model ownership in the
-    dispatcher instead, and submit a unit only while that model has capacity.
-    """
-
-    if not units:
-        return
-    max_workers = max(1, min(int(max_workers), len(units)))
-    model_order = list(dict.fromkeys(unit.model for unit in units))
-    pending: dict[str, deque[BatchUnit]] = {
-        model: deque(unit for unit in units if unit.model == model)
-        for model in model_order
-    }
-    limits = {
-        model: max(1, int(model_worker_limits.get(model, 1)))
-        for model in model_order
-    }
-    active_by_model = {model: 0 for model in model_order}
-    active: dict[Future[None], str] = {}
-    cursor = 0
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        while active or any(pending.values()):
-            while len(active) < max_workers and any(pending.values()):
-                selected_model: str | None = None
-                for offset in range(len(model_order)):
-                    position = (cursor + offset) % len(model_order)
-                    model = model_order[position]
-                    if pending[model] and active_by_model[model] < limits[model]:
-                        selected_model = model
-                        cursor = (position + 1) % len(model_order)
-                        break
-                if selected_model is None:
-                    break
-                unit = pending[selected_model].popleft()
-                future = executor.submit(worker, unit)
-                active[future] = selected_model
-                active_by_model[selected_model] += 1
-
-            if not active:
-                remaining = {
-                    model: len(queue_)
-                    for model, queue_ in pending.items()
-                    if queue_
-                }
-                raise RuntimeError(
-                    f"model-aware scheduler cannot dispatch pending units: {remaining}"
-                )
-
-            completed, _ = wait(tuple(active), return_when=FIRST_COMPLETED)
-            completed_futures: list[Future[None]] = []
-            for future in completed:
-                model = active.pop(future)
-                active_by_model[model] -= 1
-                completed_futures.append(future)
-            for future in completed_futures:
-                future.result()
+    del model_worker_limits
+    run_scheduler(units, max_workers=max_workers, worker=worker)
 
 
 def benchmark_groups(units: list[BatchUnit]) -> list[list[BatchUnit]]:
@@ -189,6 +155,56 @@ def _as_str_list(value: Any) -> list[str]:
             result.extend(_as_str_list(item))
         return result
     return [str(value)]
+
+
+def _raw_arg_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def parse_job_specs(values: Any, *, prompt_mode: str | None = None) -> list[BatchUnit]:
+    """Turn ``MODEL=BENCHMARK[,BENCHMARK...]`` arguments into run units.
+
+    A benchmark prefixed with ``fc:`` is sent to the native function-calling
+    runner. Keeping this mapping in the command line makes the selection
+    explicit and avoids silently creating a full model/benchmark cross
+    product.
+    """
+
+    units: list[BatchUnit] = []
+    raw_values = _raw_arg_list(values)
+    for raw_value in raw_values:
+        model, separator, raw_tasks = raw_value.partition("=")
+        model = model.strip()
+        if not separator or not model or not raw_tasks.strip():
+            raise SystemExit(
+                f"invalid --job value {raw_value!r}; expected MODEL=BENCHMARK[,BENCHMARK...]"
+            )
+        for raw_task in _as_str_list(raw_tasks):
+            task = raw_task.strip()
+            if not task:
+                continue
+            kind = "lighteval"
+            if task.lower().startswith("fc:"):
+                kind = "fc"
+                task = task[3:].strip()
+            if not task:
+                raise SystemExit(f"invalid --job value {raw_value!r}; benchmark cannot be empty")
+            units.append(
+                BatchUnit(
+                    model=model,
+                    kind=kind,
+                    tasks=[task],
+                    prompt_mode=prompt_mode if kind == "lighteval" else None,
+                )
+            )
+    if not units:
+        raise SystemExit("--job must contain at least one MODEL=BENCHMARK selection")
+    return units
 
 
 def resolve_model_replicas(config: dict[str, Any], model: str) -> list[ModelReplica]:
@@ -313,6 +329,22 @@ def resolve_batch_plan(
     lighteval_tasks_override: list[str] | None = None,
 ) -> list[BatchUnit]:
     batch = batch_config(config)
+    prompt_mode = str(
+        getattr(args, "prompt_mode", None)
+        or table(config, "prompt").get("mode", "normal_nocot")
+    ).strip().lower()
+
+    jobs = getattr(args, "jobs", None)
+    if jobs:
+        if any(
+            getattr(args, name, None)
+            for name in ("models", "tasks", "fc_tasks", "tasks_from_db")
+        ):
+            raise SystemExit(
+                "--job cannot be combined with --models, --tasks, --fc-tasks, or --tasks-from-db"
+            )
+        return parse_job_specs(jobs, prompt_mode=prompt_mode)
+
     models = _as_str_list(pick(getattr(args, "models", None), batch.get("models")))
     lighteval_tasks = list(lighteval_tasks_override or _as_str_list(getattr(args, "tasks", None)))
     fc_tasks = _as_str_list(getattr(args, "fc_tasks", None))
@@ -328,11 +360,6 @@ def resolve_batch_plan(
             "no benchmarks given: pass --tasks/--fc-tasks or set [eval.batch].tasks / "
             "[eval.batch].fc_tasks in the config"
         )
-
-    prompt_mode = str(
-        getattr(args, "prompt_mode", None)
-        or table(config, "prompt").get("mode", "normal_nocot")
-    ).strip().lower()
 
     # Interleave models by benchmark so one slow model cannot monopolize the
     # head of the queue. Every pair remains an independent persistence unit.
@@ -1101,6 +1128,7 @@ def write_batch_report(
             "status_counts": _status_counts(units),
         },
         "selection": {
+            "jobs": _raw_arg_list(getattr(args, "jobs", None)),
             "models": _as_str_list(getattr(args, "models", None)),
             "tasks": _as_str_list(getattr(args, "tasks", None)),
             "fc_tasks": _as_str_list(getattr(args, "fc_tasks", None)),
@@ -1336,10 +1364,6 @@ def run_batch(
             replica_queues[unit.model].put(replica)
 
     try:
-        model_worker_limits = {
-            model: item.benchmark_workers
-            for model, item in model_concurrency.items()
-        }
         groups = benchmark_groups(runnable)
         print(
             f"eval batch: {len(groups)} benchmark barrier(s); "
@@ -1350,9 +1374,8 @@ def run_batch(
                 f"eval batch: benchmark barrier {index}/{len(groups)} "
                 f"tasks={','.join(group[0].tasks)} models={','.join(unit.model for unit in group)}"
             )
-            run_model_aware_scheduler(
+            run_scheduler(
                 group,
-                model_worker_limits=model_worker_limits,
                 max_workers=min(workers, len(group)),
                 worker=generate_and_score,
             )

@@ -26,7 +26,7 @@ from .commands import (
 )
 from .config import resolve_model_entry, table
 from .env import pick
-from .g1h_config import canonical_task_name
+from .rwkv_config import canonical_task_name
 from .performance import (
     base_url_from_lighteval_command,
     derive_metrics_url,

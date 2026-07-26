@@ -33,6 +33,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 /tmp/scoreboard-screenshots/
+NUL
+tmp/
 
 configs/local/
 

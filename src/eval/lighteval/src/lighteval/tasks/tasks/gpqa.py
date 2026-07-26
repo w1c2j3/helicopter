@@ -53,30 +53,56 @@ def sample_to_fewshot(sample):
     return f"{sample.input}\n\n" + f"ANSWER: {sample.target}"
 
 
-def _gpqa_raw_prompt(line, task_name: str | None = None):
+def gpqa_prompt(line, task_name: str = None):
+    GPQA_QUERY_TEMPLATE = """
+Answer the following multiple choice question. The last line of your response should be of the following format: 'Answer: $LETTER' (without quotes) where LETTER is one of ABCD. Think step by step before answering.
+
+{Question}
+
+A) {A}
+B) {B}
+C) {C}
+D) {D}
+""".strip()
     gold_index = random.randint(0, 3)
     choices = [line["Incorrect Answer 1"], line["Incorrect Answer 2"], line["Incorrect Answer 3"]]
     choices.insert(gold_index, line["Correct Answer"])
-    query = str(line["Question"]).strip()
-    query += "\n" + "\n".join(
-        f"{label}. {str(choice).strip()}" for label, choice in zip(ascii_uppercase, choices)
+
+    query = GPQA_QUERY_TEMPLATE.format(
+        A=choices[0], B=choices[1], C=choices[2], D=choices[3], Question=line["Question"]
     )
+
     return Doc(
         task_name=task_name,
         query=query,
-        choices=list(ascii_uppercase[: len(choices)]),
+        choices=list(ascii_uppercase)[: len(choices)],
         gold_index=gold_index,
-        instruction=None,
+        instruction=query,
     )
 
 
-def gpqa_prompt(line, task_name: str = None):
-    return _gpqa_raw_prompt(line, task_name)
-
-
 def gpqa_instruct_prompt(line, task_name: str = None):
-    return _gpqa_raw_prompt(line, task_name)
+    gold_index = random.randint(0, 3)
+    choices = [line["Incorrect Answer 1"], line["Incorrect Answer 2"], line["Incorrect Answer 3"]]
+    choices.insert(gold_index, line["Correct Answer"])
+    instruction = "Answer the following multiple choice question. The last line of your response should be of the following format: 'Answer: $LETTER' (without quotes) where LETTER is one of ABCD. Think step by step before answering."
+    query_template = "{Instruction}\n\n{Question}\n\nA) {A}\nB) {B}\nC) {C}\nD) {D}"
+    query = query_template.format(
+        A=choices[0].strip(),
+        B=choices[1].strip(),
+        C=choices[2].strip(),
+        D=choices[3].strip(),
+        Question=line["Question"].strip(),
+        Instruction=instruction,
+    )
 
+    return Doc(
+        task_name=task_name,
+        query=query,
+        choices=list(ascii_uppercase)[: len(choices)],
+        gold_index=gold_index,
+        instruction=instruction,
+    )
 
 
 gpqa = LightevalTaskConfig(
@@ -95,7 +121,7 @@ gpqa = LightevalTaskConfig(
     generation_size=1,
     metrics=[Metrics.loglikelihood_acc],
     stop_sequence=["\n"],
-    version=2,
+    version=0,
 )
 
 gpqa_diamond_instruct = LightevalTaskConfig(
@@ -133,7 +159,7 @@ gpqa_extended_instruct = LightevalTaskConfig(
     generation_size=32768,  # needed for reasoning models like R1
     metrics=[Metrics.gpqa_instruct_metric],
     stop_sequence=[],  # no stop sequence, will use eos token
-    version=1,
+    version=0,
 )
 
 gpqa_main_instruct = LightevalTaskConfig(
@@ -152,7 +178,7 @@ gpqa_main_instruct = LightevalTaskConfig(
     generation_size=32768,  # needed for reasoning models like R1
     metrics=[Metrics.gpqa_instruct_metric],
     stop_sequence=[],  # no stop sequence, will use eos token
-    version=1,
+    version=0,
 )
 
 TASKS_TABLE = [
