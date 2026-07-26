@@ -413,6 +413,9 @@ For datasets whose official contract is a single-line answer (such as GAIA),
 the extractor accepts only a non-empty single-line raw response; a reasoning
 transcript is never truncated to manufacture a final answer.
 
+The requirement-by-requirement go/no-go matrix is maintained in
+[`experiments/evalscope_agent/ACCEPTANCE.md`](experiments/evalscope_agent/ACCEPTANCE.md).
+
 The curated directly runnable non-function-calling LightEval catalog is stored
 in the scoreboard database table `benchmark_catalog`. It keeps 30 diverse,
 recognized public benchmark rows each for math, coding/CS, instruction/task
