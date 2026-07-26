@@ -2580,6 +2580,19 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   cursor: default;
 }
 
+.compact-score.no-detail {
+  color: #a8b2c1;
+}
+
+.compact-score:not(:disabled) {
+  cursor: pointer;
+}
+
+.compact-score:not(:disabled):hover {
+  border-color: #526a8e;
+  background: #172236;
+}
+
 .compact-score small {
   color: #4f82c7;
   font-size: 7px;
@@ -2824,8 +2837,12 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   width: 95px;
 }
 
-.answer-table th:nth-child(5),
-.answer-table th:nth-child(6) {
+.answer-table th:nth-child(3) {
+  width: 95px;
+}
+
+.answer-table th:nth-child(6),
+.answer-table th:nth-child(7) {
   width: 105px;
 }
 
@@ -2878,6 +2895,23 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   background: #111b2b;
   color: #d9e8fb;
   font: 700 9px var(--mono);
+}
+
+.answer-load-more {
+  display: block;
+  width: min(360px, 100%);
+  height: 34px;
+  margin: 10px auto 0;
+  border: 1px solid #526a8e;
+  border-radius: 6px;
+  background: #111b2b;
+  color: #d9e8fb;
+  font: 700 10px var(--mono);
+}
+
+.answer-load-more:disabled {
+  cursor: wait;
+  opacity: .6;
 }
 
 .reference-modal-backdrop {
@@ -2971,6 +3005,10 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font: 600 10px/1.6 var(--mono);
+}
+
+.context-sidebar .context-block pre {
+  max-height: 260px;
 }
 
 .context-key-values {
