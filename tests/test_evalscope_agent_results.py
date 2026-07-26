@@ -124,3 +124,27 @@ def test_acceptance_report_joins_official_target_and_raw_prediction(tmp_path) ->
     assert report["samples"][0]["extraction"]["raw_response"] == "Exact Answer: Ada Lovelace"
     assert report["samples"][0]["raw_model_output"]["choices"][0]["message"]["content"] == "Exact Answer: Ada Lovelace"
     assert report["official_reports"][0]["report"]["score"] == 0.0
+
+
+def test_acceptance_report_can_use_trace_report_from_an_outer_proxy_dir(tmp_path) -> None:
+    run_dir = tmp_path / "20260726_120000"
+    prediction_dir = run_dir / "predictions" / "model"
+    review_dir = run_dir / "reviews" / "model"
+    prediction_dir.mkdir(parents=True)
+    review_dir.mkdir(parents=True)
+    prediction = {
+        "index": 0,
+        "model_output": {"choices": [{"finish_reason": "stop", "message": {"content": "17"}}]},
+        "metadata": {},
+    }
+    review = {"index": 0, "target": "17", "sample_score": {"score": {"value": {"acc": 1.0}}}}
+    (prediction_dir / "gaia_2023_level1.jsonl").write_text(json.dumps(prediction) + "\n", encoding="utf-8")
+    (review_dir / "gaia_2023_level1.jsonl").write_text(json.dumps(review) + "\n", encoding="utf-8")
+    outer_trace = tmp_path / "raw" / "trace_report.json"
+    outer_trace.parent.mkdir(parents=True)
+    outer_trace.write_text(json.dumps({"counts": {"correct": 1}}) + "\n", encoding="utf-8")
+
+    output = write_acceptance_report(run_dir, exit_code=0, trace_report_path=outer_trace)
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["counts"] == {"correct": 1}
+    assert report["trace_report"]["counts"] == {"correct": 1}

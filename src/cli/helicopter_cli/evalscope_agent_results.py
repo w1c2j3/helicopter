@@ -356,7 +356,12 @@ def _dataset_name_from_path(path: Path) -> str:
     return stem.rsplit("_", 1)[0] if "_" in stem else stem
 
 
-def write_acceptance_report(output_dir: Path, *, exit_code: int | None = None) -> Path:
+def write_acceptance_report(
+    output_dir: Path,
+    *,
+    exit_code: int | None = None,
+    trace_report_path: Path | None = None,
+) -> Path:
     """Join EvalScope official scores with raw model and strict local diagnostics."""
 
     prediction_root = output_dir / "predictions"
@@ -404,7 +409,7 @@ def write_acceptance_report(output_dir: Path, *, exit_code: int | None = None) -
     for sample in samples:
         status = sample["decision"]["status"]
         counts[status] = counts.get(status, 0) + 1
-    trace_report_path = output_dir / "raw" / "trace_report.json"
+    trace_report_path = trace_report_path or (output_dir / "raw" / "trace_report.json")
     trace_report: dict[str, Any] | None = None
     if trace_report_path.is_file():
         try:
