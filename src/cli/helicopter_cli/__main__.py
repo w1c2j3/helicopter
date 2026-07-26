@@ -374,6 +374,11 @@ def build_parser() -> argparse.ArgumentParser:
     evalscope.add_argument("model", nargs="?", help="model alias from configs")
     evalscope.add_argument("datasets", nargs="*", help="EvalScope dataset names; defaults to [evalscope].datasets")
     evalscope.add_argument("--list-datasets", action="store_true", help="list the pinned EvalScope Agent dataset catalog")
+    evalscope.add_argument(
+        "--report-only",
+        action="store_true",
+        help="rebuild raw/acceptance_report.json from an existing EvalScope work directory",
+    )
     evalscope.add_argument("--dataset-catalog", default=DEFAULT_CATALOG, help="EvalScope Agent dataset catalog JSON")
     evalscope.add_argument("--format", choices=("text", "json", "summary"), default="text")
     evalscope.add_argument("--binary", help="EvalScope executable; defaults to [evalscope].binary")

@@ -16,6 +16,10 @@ endpoint was `http://127.0.0.1:19329/v1`, model
 - `bd3c7d6` / `evalscope/agent-only-cli`: LightEval and native FC modules are
   now imported only for their respective subcommands, so dataset listing and
   EvalScope dry-runs do not require the large LightEval dependency group.
+- The acceptance-report implementation generates `raw/acceptance_report.json`
+  after every EvalScope run and can rebuild it with `uv run
+  --no-default-groups --no-sync helicopter eval evalscope --report-only
+  --work-dir <run-dir>`.
 
 ## Baseline and transport probes
 
@@ -35,8 +39,8 @@ model response. See `naive-proxy-trace.jsonl`.
 | Run | Dataset/limit | Generation | Official result | Diagnostic result |
 | --- | --- | --- | --- | --- |
 | `results/evalscope/live-general-fc` | `general_fc`, 1 | default, total reached 10240 | all scores 0 | raw output ended with `finish_reason=length`; old run had no diagnostic report |
-| `results/evalscope/live-general-fc-v2` | `general_fc`, 1 | `max_tokens=1024`, `temperature=0` | `tool_call_f1=0`, schema/tool-call counts 0 | `context_truncated=1`; raw response and converted request are retained |
-| `results/evalscope/live-gaia-v2` | `gaia/2023_level1`, 1 | `max_tokens=1024`, `max_steps=2` | `mean_acc=0` | AgentLoop made 2 requests; both were `context_truncated`, with no tool call |
+| `results/evalscope/live-general-fc-v2` | `general_fc`, 1 | `max_tokens=1024`, `temperature=0` | `tool_call_f1=0`, schema/tool-call counts 0 | `acceptance_report.json` records missing native `tool_calls` as `format_invalid` and retains the separate context-limit trace |
+| `results/evalscope/live-gaia-v2` | `gaia/2023_level1`, 1 | `max_tokens=1024`, `max_steps=2` | `mean_acc=0` | `acceptance_report.json` joins target `17`, official `acc=0`, two raw requests, and no-tool-call/truncation diagnostics |
 
 The second run proves the complete path: ModelScope dataset loading, proxy
 serialization, local model call, unchanged response, EvalScope report, and

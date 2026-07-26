@@ -393,6 +393,20 @@ official sandbox/verifier owns the benchmark score; the local diagnostic layer
 keeps raw responses and strict extraction/discrimination results separate from
 the single-turn LightEval and native function-calling score paths.
 
+After a run, `raw/acceptance_report.json` joins each raw model response with
+the EvalScope target, official per-sample score, agent trace, and local
+extraction/discrimination status. It can also be rebuilt from an existing
+work directory without calling the model:
+
+```bash
+uv run --no-default-groups --no-sync helicopter eval evalscope \
+  --report-only --work-dir results/evalscope/live-gaia-v2
+```
+
+This is diagnostic evidence, not a second scorer: missing `tool_calls`,
+truncated generations, HTTP failures, extraction failures, and strict model
+errors remain distinct instead of being repaired into a passing answer.
+
 The curated directly runnable non-function-calling LightEval catalog is stored
 in the scoreboard database table `benchmark_catalog`. It keeps 30 diverse,
 recognized public benchmark rows each for math, coding/CS, instruction/task

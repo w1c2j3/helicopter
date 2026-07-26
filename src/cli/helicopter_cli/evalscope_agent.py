@@ -23,7 +23,7 @@ from .eval_run import (
     wait_for_server,
 )
 from .naive_chat_proxy import NaiveChatProxy
-from .evalscope_agent_results import write_trace_report
+from .evalscope_agent_results import write_acceptance_report, write_trace_report
 from .paths import resolve_path
 from .runner import run_command
 
@@ -317,6 +317,11 @@ def _infer_plan(args: Any, *, root: Path, env: dict[str, str], config: dict[str,
 
 
 def run_evalscope(args: Any, *, root: Path, env: dict[str, str], config: dict[str, Any]) -> int:
+    if getattr(args, "report_only", False):
+        output_dir = _output_dir(config, root=root, env=env, args=args)
+        report = write_acceptance_report(output_dir, exit_code=0)
+        print(f"evalscope: acceptance report written to {report}")
+        return 0
     if getattr(args, "list_datasets", False):
         rows = load_agent_catalog(root, getattr(args, "dataset_catalog", None))
         print(format_agent_catalog(rows, getattr(args, "format", "text")), end="")
@@ -366,8 +371,10 @@ def run_evalscope(args: Any, *, root: Path, env: dict[str, str], config: dict[st
             print(f"evalscope: server healthy at {base_url}")
     try:
         if use_naive_proxy:
+            model = resolve_model_entry(config, args.model)
             api_key = pick(
                 getattr(args, "api_key", None),
+                model.get("api_key"),
                 env_value(env, "HELICOPTER_EVAL_API_KEY", "OPENAI_API_KEY"),
                 settings.get("api_key"),
                 "EMPTY",
@@ -394,6 +401,8 @@ def run_evalscope(args: Any, *, root: Path, env: dict[str, str], config: dict[st
             trace_report = output_dir / "raw" / "trace_report.json"
             write_trace_report(proxy.trace_path, trace_report, exit_code=run_exit_code)
             print(f"evalscope: raw request/response trace report written to {trace_report}")
+        acceptance_report = write_acceptance_report(output_dir, exit_code=run_exit_code)
+        print(f"evalscope: acceptance report written to {acceptance_report}")
         if server_process is not None and not getattr(args, "keep_server", False):
             print("evalscope: stopping vLLM server")
             stop_server(server_process)

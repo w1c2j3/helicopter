@@ -51,14 +51,36 @@ def _failed(kind: str, raw: str, error: str, *, status: str = "extraction_failed
     return ExtractionResult(kind, raw, None, status, error)
 
 
-def extract_agent_answer(raw_response: str, *, format_kind: str) -> ExtractionResult:
+def extract_agent_answer(
+    raw_response: str,
+    *,
+    format_kind: str,
+    tool_calls: Any = None,
+) -> ExtractionResult:
     """Extract an answer only when the requested wire format is explicit."""
 
     raw = str(raw_response or "")
     kind = str(format_kind).strip().lower()
 
     if kind in {"function_calling", "tool_call", "tool_calls"}:
-        return _failed(kind, raw, "model returned text without an OpenAI tool_calls object", status="format_invalid")
+        if not isinstance(tool_calls, list) or not tool_calls:
+            return _failed(kind, raw, "model returned text without an OpenAI tool_calls object", status="format_invalid")
+        for item in tool_calls:
+            function = item.get("function") if isinstance(item, dict) else None
+            if (
+                not isinstance(item, dict)
+                or not isinstance(function, dict)
+                or not isinstance(function.get("name"), str)
+                or not function.get("name")
+                or "arguments" not in function
+            ):
+                return _failed(kind, raw, "OpenAI tool_calls contain an invalid function object", status="format_invalid")
+        return ExtractionResult(
+            kind,
+            raw,
+            json.dumps(tool_calls, ensure_ascii=False, sort_keys=True),
+            "ok",
+        )
 
     if kind == "swe_bench_backticks":
         blocks = _SWE_BENCH_BLOCK.findall(raw)
@@ -209,7 +231,11 @@ def write_trace_report(trace_path: Path, output_path: Path, *, exit_code: int | 
         message = choice.get("message", {}) if isinstance(choice, dict) else {}
         content = message.get("content", "") if isinstance(message, dict) else ""
         kind = "function_calling" if isinstance(source, dict) and source.get("tools") else "short_answer"
-        extraction = extract_agent_answer(str(content or ""), format_kind=kind)
+        extraction = extract_agent_answer(
+            str(content or ""),
+            format_kind=kind,
+            tool_calls=message.get("tool_calls") if isinstance(message, dict) else None,
+        )
         decision = discriminate_agent_result(
             extraction,
             transport_status=response.get("status") if isinstance(response, dict) else None,
@@ -237,10 +263,169 @@ def write_trace_report(trace_path: Path, output_path: Path, *, exit_code: int | 
     )
 
 
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            value = json.loads(line)
+            if isinstance(value, dict):
+                rows.append(value)
+    return rows
+
+
+def _dataset_format(dataset: str, *, prediction: dict[str, Any], review: dict[str, Any]) -> str:
+    name = dataset.casefold()
+    metadata = prediction.get("metadata")
+    if not isinstance(metadata, dict):
+        sample_score = review.get("sample_score")
+        metadata = sample_score.get("sample_metadata", {}) if isinstance(sample_score, dict) else {}
+    if any(token in name for token in ("general_fc", "bfcl", "function_call", "tau", "tool")):
+        return "function_calling"
+    if "swe" in name:
+        return "swe_bench_backticks"
+    if any(token in name for token in ("code", "terminal")):
+        return "code"
+    if any(token in name for token in ("math", "numeric")):
+        return "numeric"
+    if any(token in name for token in ("gaia", "browsecomp", "short_answer")):
+        return "short_answer"
+    if isinstance(metadata, dict) and metadata.get("tools"):
+        return "function_calling"
+    return "short_answer"
+
+
+def _model_output_parts(prediction: dict[str, Any]) -> tuple[str, list[dict[str, Any]] | None, str | None]:
+    output = prediction.get("model_output")
+    if not isinstance(output, dict):
+        return "", None, None
+    choices = output.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return "", None, output.get("error") if isinstance(output.get("error"), str) else None
+    choice = choices[0]
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        return "", None, str(choice.get("finish_reason") or output.get("error") or "missing message")
+    content = message.get("content")
+    tool_calls = message.get("tool_calls")
+    finish_reason = choice.get("finish_reason") or output.get("stop_reason")
+    return str(content or ""), tool_calls if isinstance(tool_calls, list) else None, str(finish_reason) if finish_reason else None
+
+
+def _official_reports(output_dir: Path) -> list[dict[str, Any]]:
+    reports: list[dict[str, Any]] = []
+    report_root = output_dir / "reports"
+    if not report_root.is_dir():
+        return reports
+    for path in sorted(report_root.rglob("*.json")):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(value, dict):
+            reports.append({"path": str(path), "report": value})
+    return reports
+
+
+def _dataset_name_from_path(path: Path) -> str:
+    stem = path.stem
+    known_prefixes = (
+        "automation_bench",
+        "bfcl",
+        "browsecomp",
+        "general_fc",
+        "gaia",
+        "swe_bench",
+        "tau_bench",
+        "terminal_bench",
+    )
+    for prefix in known_prefixes:
+        if stem == prefix or stem.startswith(prefix + "_"):
+            return prefix
+    return stem.rsplit("_", 1)[0] if "_" in stem else stem
+
+
+def write_acceptance_report(output_dir: Path, *, exit_code: int | None = None) -> Path:
+    """Join EvalScope official scores with raw model and strict local diagnostics."""
+
+    prediction_root = output_dir / "predictions"
+    review_root = output_dir / "reviews"
+    samples: list[dict[str, Any]] = []
+    for prediction_path in sorted(prediction_root.rglob("*.jsonl")) if prediction_root.is_dir() else []:
+        prediction_rows = _read_jsonl(prediction_path)
+        review_path = review_root / prediction_path.relative_to(prediction_root)
+        review_rows = _read_jsonl(review_path)
+        for position, prediction in enumerate(prediction_rows):
+            review = review_rows[position] if position < len(review_rows) else {}
+            dataset = _dataset_name_from_path(prediction_path)
+            format_kind = _dataset_format(dataset, prediction=prediction, review=review)
+            raw, tool_calls, finish_reason = _model_output_parts(prediction)
+            extraction = extract_agent_answer(raw, format_kind=format_kind, tool_calls=tool_calls)
+            reference = review.get("target")
+            reference_answer = str(reference) if reference not in (None, "") else None
+            transport_status = 200
+            output = prediction.get("model_output")
+            if isinstance(output, dict) and output.get("error"):
+                transport_status = 500
+            decision = discriminate_agent_result(
+                extraction,
+                reference_answer=reference_answer,
+                transport_status=transport_status,
+                finish_reason=finish_reason,
+            )
+            sample_score = review.get("sample_score")
+            samples.append({
+                "dataset": dataset,
+                "index": prediction.get("index", position),
+                "prediction_path": str(prediction_path),
+                "review_path": str(review_path) if review_path.is_file() else None,
+                "format_kind": format_kind,
+                "reference_answer": reference_answer,
+                "official_sample_score": sample_score,
+                "extraction": extraction.to_dict(),
+                "decision": decision.to_dict(),
+                "agent_trace": prediction.get("agent_trace"),
+            })
+
+    counts: dict[str, int] = {}
+    for sample in samples:
+        status = sample["decision"]["status"]
+        counts[status] = counts.get(status, 0) + 1
+    trace_report_path = output_dir / "raw" / "trace_report.json"
+    trace_report: dict[str, Any] | None = None
+    if trace_report_path.is_file():
+        try:
+            value = json.loads(trace_report_path.read_text(encoding="utf-8"))
+            trace_report = value if isinstance(value, dict) else None
+        except (OSError, json.JSONDecodeError):
+            trace_report = None
+    output_path = output_dir / "raw" / "acceptance_report.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(
+            {
+                "output_dir": str(output_dir),
+                "exit_code": exit_code,
+                "counts": counts,
+                "samples": samples,
+                "official_reports": _official_reports(output_dir),
+                "trace_report": trace_report,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return output_path
+
+
 __all__ = [
     "DiscriminationResult",
     "ExtractionResult",
     "discriminate_agent_result",
     "extract_agent_answer",
+    "write_acceptance_report",
     "write_trace_report",
 ]
