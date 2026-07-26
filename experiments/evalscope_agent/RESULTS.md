@@ -34,6 +34,8 @@ All runs use API key `rwkv-skills` and a 10240-token context limit.
 - `4cb223f` / `evalscope/native-local-gaia`: local GAIA native AgentLoop
   reports and strict multiline-answer extraction diagnostics are committed and
   pushed.
+- `5f7171d`: regression boundary and the distinction between Agent-specific
+  passes and unrelated LightEval compatibility failures are recorded.
 - The timestamped-workdir fix is validated by the v3 reruns below: the inner
   EvalScope work directory now contains the acceptance report and a copy of
   the raw trace summary, while the outer directory retains the proxy JSONL.

@@ -1,6 +1,6 @@
 # EvalScope Agent pipeline acceptance audit
 
-Status: **FINAL CANDIDATE — native local tool path verified; quality gate not met**.
+Status: **FINAL CANDIDATE (native local tool path verified; quality gate not met)**.
 
 This audit records the fixed experiment configuration, the post-audit
 vllm-rwkv source review, and a separate local native-tool run. The historical
@@ -32,7 +32,7 @@ uses the local 19316 service and never uses the SSH-forwarded model:
 | Full repository regression | CONDITIONAL | full run: 292 passed, 6 skipped, 22 failures in existing LightEval/Famous120/benchmark compatibility tests; no EvalScope Agent test failed. Excluding the two LightEval test files leaves 23 passed and one pre-existing sampling-budget failure |
 | No blocking pipeline error | PASS (local path) | local 19316 health check, native preflight, and no-proxy EvalScope run all complete |
 | Key benchmark metrics meet the project threshold | NOT MET | v3 `general_fc tool_call_f1=0` and GAIA `mean_acc=0`; the model emitted prose and no native `tool_calls` |
-| Code, logs, reports, and checkpoints uploaded | PASS | branch `updata/supported-dataset` contains commits `df4974e`, `61187fe`, and `4cb223f`; tags `evalscope/native-local-code`, `evalscope/native-local-benchmark`, and `evalscope/native-local-gaia` provide rollback points |
+| Code, logs, reports, and checkpoints uploaded | PASS | branch `updata/supported-dataset` contains commits `df4974e`, `61187fe`, `4cb223f`, and `5f7171d`; tags `evalscope/native-local-code`, `evalscope/native-local-benchmark`, and `evalscope/native-local-gaia` provide rollback points |
 | Every major phase has a rollback checkpoint | PASS | `baseline/*` and `evalscope/*` annotated tags |
 | Input-to-report pipeline is automatic | PASS | `helicopter eval evalscope ...` produces EvalScope reports, predictions, reviews, traces, and `acceptance_report.json`; `--report-only` rebuilds evidence |
 
