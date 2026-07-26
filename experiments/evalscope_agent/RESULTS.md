@@ -64,6 +64,7 @@ model response. See `naive-proxy-trace.jsonl`.
 | `results/evalscope/live-gaia-v3/<timestamp>` | `gaia/2023_level1`, 1 | `max_tokens=1024`, `max_steps=2` | `mean_acc=0` | post-extractor rerun; target `17`, official `acc=0`, two requests, and timestamped acceptance/trace reports all present |
 | `results/evalscope/local-general-fc-1p5b-20260727/20260727_065200` | `general_fc`, 1 | local 19316, native tool path, no proxy, `max_steps=3` | `tool_call_f1=0`, schema/tool-call counts 0 | full local prediction/review/report/acceptance artifacts; selected sample had `should_call_tool=false`, and the model returned prose without `tool_calls` |
 | `results/evalscope/local-general-fc-1p5b-20260727-limit5/20260727_070506` | `general_fc`, 5 | local 19316, native tool path, no proxy, `max_tokens=1024` | `tool_call_f1=0`, `count_finish_reason_tool_call=0`, `schema_accuracy=0` | all 5 responses retained; sample 2 required a tool, but all five were classified `format_invalid` because the model returned text without `tool_calls`; mean latency 4.0416s, output throughput 230.65 tok/s |
+| `results/evalscope/local-gaia-1p5b-20260727/20260727_071448` | `gaia`, 3 (one per level) | local 19316, native AgentLoop, no proxy, `max_tokens=1024` | official `mean_acc=0` | full GAIA prediction/review/report/acceptance artifacts; all 3 samples were classified `extraction_failed` because the model returned multiline reasoning where GAIA requires a single-line final answer |
 
 The second run proves the complete path: ModelScope dataset loading, proxy
 serialization, local model call, unchanged response, EvalScope report, and
@@ -100,6 +101,9 @@ the official score is therefore zero and the raw two-request trace is kept.
 - Clean Agent environment: after `uv sync --no-default-groups --group agent`,
   dataset listing and EvalScope dry-run now pass without importing LightEval;
   the unrelated legacy `tests/test_cli.py` still needs the full LightEval group.
+- GAIA extraction: reproduced a real multiline final response and correctly
+  rejected it as `extraction_failed` rather than truncating reasoning into an
+  answer; the raw response and official score remain in the local GAIA report.
 
 ## Remaining formal-evaluation limits
 

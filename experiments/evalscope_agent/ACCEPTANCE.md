@@ -23,7 +23,7 @@ uses the local 19316 service and never uses the SSH-forwarded model:
 | Existing system and business messages are preserved | PASS | serializer tests cover role/order/content; proxy only transforms the outbound request boundary |
 | vllm-rwkv native tool path is configured | PASS (local service) | `vllm-rwkv` `rwkv_tool_parser.py`, native RWKV chat template, `scripts/start_local_rwkv_tool_server.sh`, and `post-audit/vllm-rwkv-native-tools-20260727.json`; local 19316 starts with both required flags |
 | EvalScope Agent datasets are wired | PASS | `benchmarks/evalscope_agent_datasets.json`, CLI catalog listing returns 30 datasets |
-| Reproducible benchmark execution | CONDITIONAL | fixed config and local native `general_fc` run complete; GAIA/SWE-bench remain dependency- and environment-gated |
+| Reproducible benchmark execution | CONDITIONAL | fixed config and local native `general_fc` and GAIA runs complete; SWE-bench and other official harnesses remain dependency- and environment-gated |
 | Raw response and request trace are retained | PASS | v3 `raw/naive_chat.jsonl`, `raw/trace_report.json`, timestamped `raw/acceptance_report.json` |
 | Answer extraction is strict and non-repairing | PASS | `evalscope_agent_results.py`; 21 targeted regression tests |
 | Discrimination separates transport/format/extraction/model failures | PASS | `tests/test_evalscope_agent_results.py`; live reports show `format_invalid`, `context_truncated`, and official scores separately |
@@ -60,6 +60,11 @@ uses the local 19316 service and never uses the SSH-forwarded model:
   `should_call_tool=true`. The model emitted no native tool call in any sample,
   so the diagnostic count is `format_invalid=5` and the official
   `tool_call_f1=0`.
+- `results/evalscope/local-gaia-1p5b-20260727/20260727_071448/`: local native
+  GAIA run completed for one sample in each of the three levels with exit code
+  0; all three official scores are 0, and the diagnostic report records
+  `extraction_failed` for multiline model output rather than silently
+  truncating it.
 - `uv lock --check`: passed.
 - `uv run --no-default-groups --no-sync pytest -q tests/test_naive_chat.py tests/test_evalscope_agent.py tests/test_evalscope_agent_results.py`: **21 passed**.
 
