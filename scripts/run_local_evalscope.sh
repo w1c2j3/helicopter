@@ -14,7 +14,7 @@ UV_BIN="${UV_BIN:-/home/chase/.local/bin/uv}"
 test -x "$UV_BIN"
 
 exec env HELICOPTER_EVAL_API_KEY="$API_KEY" \
-  "$UV_BIN" run --no-default-groups --no-sync helicopter eval evalscope \
+  "$UV_BIN" run --no-default-groups --group agent --group eval --no-sync helicopter eval evalscope \
     "$MODEL_ALIAS" "$DATASET" \
     --config configs/example.toml \
     --model-catalog configs/models/local-g1h-single-replica.toml \
