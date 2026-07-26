@@ -34,6 +34,13 @@ All runs use API key `rwkv-skills` and a 10240-token context limit.
 - `4cb223f` / `evalscope/native-local-gaia`: local GAIA native AgentLoop
   reports and strict multiline-answer extraction diagnostics are committed and
   pushed.
+- `e58c541` / `evalscope/forwarded-external-code`: EvalScope 1.9.x external
+  discriminator compatibility, public `--mode external`, and CLI regression
+  coverage.
+- `41cc021` / forwarded 2.9B experiment: 19329 native preflight, naive proxy
+  trace, external `general_fc` run, GAIA sandbox-blocked run, and audit records.
+- `ad84822` / `evalscope/reproducible-runner`: uv dependency-group selection in
+  the local runner and the corrected 22-test acceptance count.
 - `5f7171d`: regression boundary and the distinction between Agent-specific
   passes and unrelated LightEval compatibility failures are recorded.
 - The timestamped-workdir fix is validated by the v3 reruns below: the inner
