@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,12 +12,24 @@ from scoreboard_server.db.settings import DatabaseSettings
 from scoreboard_server.routes.api import register_api_routes
 
 
-def create_app(settings: DatabaseSettings | None = None) -> FastAPI:
+def create_app(
+    settings: DatabaseSettings | None = None,
+    *,
+    generate_schemas: bool | None = None,
+) -> FastAPI:
     resolved = settings or DatabaseSettings.from_env()
+    should_generate_schemas = generate_schemas
+    if should_generate_schemas is None:
+        should_generate_schemas = os.environ.get("SCOREBOARD_GENERATE_SCHEMAS", "true").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        await init_db(resolved, generate_schemas=True)
+        await init_db(resolved, generate_schemas=should_generate_schemas)
         try:
             yield
         finally:

@@ -7,8 +7,13 @@ import type {
   TuningBenchmark,
 } from "./dtos/api/leaderboard";
 import type { MetaResponse } from "./dtos/api/meta";
+import {
+  BENCHMARK_CATALOG,
+  BENCHMARK_DOMAIN_LABELS,
+  BENCHMARK_DOMAIN_ORDER,
+} from "./benchmarkCatalog";
 
-const DOMAIN_SPECS = [
+const LEGACY_DOMAIN_SPECS = [
   {
     key: "knowledge",
     label: "Knowledge",
@@ -194,6 +199,16 @@ const DOMAIN_SPECS = [
   },
 ] as const;
 
+void LEGACY_DOMAIN_SPECS;
+
+const DOMAIN_SPECS = BENCHMARK_DOMAIN_ORDER.map((key, index) => ({
+  key,
+  label: BENCHMARK_DOMAIN_LABELS[key],
+  title: BENCHMARK_DOMAIN_LABELS[key],
+  offset: [0, -9, -6, 2][index],
+  benchmarks: BENCHMARK_CATALOG.filter((item) => item.domain === key).map((item) => item.key),
+}));
+
 const PARAM_SPECS = [
   {
     param: "13.3b",
@@ -253,13 +268,16 @@ function buildDomain(
   domain: (typeof DOMAIN_SPECS)[number],
   domainIndex: number,
 ): MatrixDomain {
-  const columns: MatrixColumn[] = domain.benchmarks.map((benchmark, index) => ({
-    key: `${domain.key}:${benchmark}`,
-    label: benchmark,
-    metric: metricForIndex(index),
-    eval_method: index % 3 === 0 ? "NoCoT" : "CoT",
-    num_samples: 120 + index * 137,
-  }));
+  const columns: MatrixColumn[] = domain.benchmarks.map((benchmark, index) => {
+    const spec = BENCHMARK_CATALOG.find((item) => item.key === benchmark);
+    return {
+      key: benchmark,
+      label: spec?.label ?? benchmark,
+      metric: metricForIndex(index),
+      eval_method: "NoCoT",
+      num_samples: spec?.samples ?? 120 + index * 137,
+    };
+  });
   const rows: MatrixRow[] = [];
 
   PARAM_SPECS.forEach((spec, paramIndex) => {
@@ -277,21 +295,38 @@ function buildDomain(
       { model: spec.current, scores: currentScores, createdAt: "2026-07-10T00:00:00" },
       { model: spec.previous, scores: previousScores, createdAt: "2026-05-23T00:00:00" },
     ].forEach(({ model, scores, createdAt }, generationIndex) => {
+      const scoredValues = scores.filter((_, index) => {
+        const benchmark = BENCHMARK_CATALOG.find((item) => item.key === columns[index].key);
+        return !benchmark?.deferred;
+      });
       rows.push({
         rank: generationIndex + 1,
         model,
         param: spec.param,
-        average: rounded(scores.reduce((sum, score) => sum + score, 0) / scores.length),
-        coverage: scores.length,
-        cells: scores.map((score, index) => ({
-          ...cell(
-            score,
-            columns[index].metric ?? "score",
-            columns[index].num_samples ?? 0,
-            index + paramIndex * 7 + generationIndex * 3 + domainIndex * 11,
-          ),
-          created_at: createdAt,
-        })),
+        average: rounded(scoredValues.reduce((sum, score) => sum + score, 0) / scoredValues.length),
+        coverage: scoredValues.length,
+        cells: scores.map((score, index) => {
+          const benchmark = BENCHMARK_CATALOG.find((item) => item.key === columns[index].key);
+          if (benchmark?.deferred) {
+            return {
+              percent: null,
+              potential_percent: null,
+              meta: null,
+              metric: columns[index].metric,
+              num_samples: columns[index].num_samples,
+              created_at: null,
+            };
+          }
+          return {
+            ...cell(
+              score,
+              columns[index].metric ?? "score",
+              columns[index].num_samples ?? 0,
+              index + paramIndex * 7 + generationIndex * 3 + domainIndex * 11,
+            ),
+            created_at: createdAt,
+          };
+        }),
       });
     });
   });

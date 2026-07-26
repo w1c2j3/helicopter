@@ -3,6 +3,13 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../lib/api";
+import {
+  BENCHMARK_CATALOG,
+  BENCHMARK_DOMAIN_LABELS,
+  BENCHMARK_DOMAIN_ORDER,
+  benchmarkMatches,
+} from "../lib/benchmarkCatalog";
+import type { BenchmarkCatalogItem } from "../lib/benchmarkCatalog";
 import type { EvalContextResponse } from "../lib/dtos/api/eval_context";
 import type { EvalRecord } from "../lib/dtos/api/eval_records";
 import type {
@@ -26,8 +33,9 @@ type DisplayBenchmark = {
   key: string;
   label: string;
   column: MatrixColumn;
-  source: MatrixDomain;
+  source: MatrixDomain | null;
   cellIndex: number;
+  deferred?: string;
 };
 
 type ScoreSelection = {
@@ -144,7 +152,51 @@ function displayBenchmarks(matrix: LeaderboardMatrix, domainKey: string): Displa
   }));
 }
 
+function catalogBenchmarks(matrix: LeaderboardMatrix, domainKey: string): DisplayBenchmark[] {
+  const requested = domainKey === "all"
+    ? BENCHMARK_CATALOG
+    : BENCHMARK_CATALOG.filter((item) => item.domain === domainKey);
+  return requested.map((spec) => displayCatalogBenchmark(matrix, spec));
+}
+
+function displayCatalogBenchmark(matrix: LeaderboardMatrix, spec: BenchmarkCatalogItem): DisplayBenchmark {
+  const preferred = matrix.domains.find((item) => item.key === spec.domain) ?? null;
+  const sources = preferred
+    ? [preferred, ...matrix.domains.filter((item) => item !== preferred)]
+    : matrix.domains;
+  for (const source of sources) {
+    const cellIndex = source.columns.findIndex(
+      (column) => benchmarkMatches(spec, column.key) || benchmarkMatches(spec, column.label),
+    );
+    if (cellIndex >= 0) {
+      return {
+        key: spec.key,
+        label: spec.label,
+        column: source.columns[cellIndex],
+        source,
+        cellIndex,
+        deferred: spec.deferred,
+      };
+    }
+  }
+  return {
+    key: spec.key,
+    label: spec.label,
+    column: {
+      key: spec.key,
+      label: spec.label,
+      metric: null,
+      eval_method: "NoCoT",
+      num_samples: spec.samples,
+    },
+    source: null,
+    cellIndex: -1,
+    deferred: spec.deferred,
+  };
+}
+
 function cellForModel(benchmark: DisplayBenchmark, model: string): MatrixCell | null {
+  if (!benchmark.source || benchmark.cellIndex < 0) return null;
   return benchmark.source.rows.find((row) => row.model === model)?.cells[benchmark.cellIndex] ?? null;
 }
 
@@ -242,17 +294,31 @@ function generationLabel(generation: Generation): string {
 export function ReferenceEvaluationBoard({ matrix }: { matrix: LeaderboardMatrix }) {
   const groups = useMemo(() => groupsFromMatrix(matrix), [matrix]);
   const [experiment, setExperiment] = useState<(typeof EXPERIMENT_TABS)[number]>("前代 vs 当代");
-  const [domainKey, setDomainKey] = useState("overview");
-  const benchmarks = useMemo(() => displayBenchmarks(matrix, domainKey), [domainKey, matrix]);
+  const [domainKey, setDomainKey] = useState("all");
+  const benchmarks = useMemo(() => catalogBenchmarks(matrix, domainKey), [domainKey, matrix]);
+  const domainTabs = useMemo(
+    () => [
+      { key: "all", label: "全部", count: BENCHMARK_CATALOG.length },
+      ...BENCHMARK_DOMAIN_ORDER.map((key) => ({
+        key,
+        label: BENCHMARK_DOMAIN_LABELS[key],
+        count: BENCHMARK_CATALOG.filter((item) => item.domain === key).length,
+      })),
+    ],
+    [],
+  );
   const [selection, setSelection] = useState<ScoreSelection | null>(null);
 
   useEffect(() => {
     if (selection || !benchmarks.length || !groups.length) return;
     const preferredGroup = groups.find((group) => group.param.toLowerCase() === "2.9b") ?? groups[0];
-    const preferredBenchmark = benchmarks.find((item) => /aime25/i.test(item.label)) ?? benchmarks[0];
     const model = preferredGroup.previous?.model ?? preferredGroup.current.model;
-    const cell = cellForModel(preferredBenchmark, model);
-    if (cell) {
+    const orderedBenchmarks = benchmarks.slice().sort((left, right) => (
+      /aime25/i.test(left.label) ? -1 : /aime25/i.test(right.label) ? 1 : 0
+    ));
+    const preferredBenchmark = orderedBenchmarks.find((item) => cellForModel(item, model));
+    const cell = preferredBenchmark ? cellForModel(preferredBenchmark, model) : null;
+    if (preferredBenchmark && cell) {
       setSelection({
         benchmark: preferredBenchmark,
         group: preferredGroup,
@@ -285,24 +351,26 @@ export function ReferenceEvaluationBoard({ matrix }: { matrix: LeaderboardMatrix
 
       <section className="reference-card comparison-card">
         <nav className="reference-domain-tabs" aria-label="评测领域">
-          {DOMAIN_TABS.map((item) => (
+          {domainTabs.map((item) => (
             <button
               type="button"
               className={domainKey === item.key ? "active" : ""}
               key={item.key}
               onClick={() => changeDomain(item.key)}
             >
-              {item.label}
+              {item.label}（{item.count}）
             </button>
           ))}
         </nav>
 
         <div className="comparison-heading">
           <div>
+            <strong className="catalog-heading">
+              {domainTabs.find((item) => item.key === domainKey)?.label}（{benchmarks.length}） · {experiment}
+            </strong>
             <strong>{domainKey === "overview" ? "常规评估" : DOMAIN_TABS.find((item) => item.key === domainKey)?.label} · {experiment}</strong>
             <span><b>前代 → 当代</b> · 仅改变模型代际；prompt、precision、sampling 与输出边界保持一致。</span>
           </div>
-          <span className="temporary-data-badge">临时展示数据</span>
         </div>
 
         <div className="reference-table-scroll">
@@ -325,7 +393,10 @@ export function ReferenceEvaluationBoard({ matrix }: { matrix: LeaderboardMatrix
             <tbody>
               {benchmarks.map((benchmark, benchmarkIndex) => (
                 <tr className={`reference-row-tone tone-${benchmarkIndex % 4}`} key={benchmark.key}>
-                  <td className="ref-benchmark">{benchmark.label}</td>
+                  <td className="ref-benchmark">
+                    {benchmark.label}
+                    {benchmark.deferred ? <small className="benchmark-deferred">（{benchmark.deferred}）</small> : null}
+                  </td>
                   <td className="ref-samples">{benchmark.column.num_samples?.toLocaleString() ?? "—"}</td>
                   <td className="ref-metric">{benchmark.column.metric ?? "score"}</td>
                   {groups.flatMap((group) => {

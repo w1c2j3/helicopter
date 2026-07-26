@@ -2415,6 +2415,19 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   padding: 15px 0 9px;
 }
 
+.comparison-heading .catalog-heading + strong {
+  display: none;
+}
+
+.benchmark-deferred {
+  display: block;
+  margin-top: 2px;
+  color: #d6a958;
+  font-size: 7px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .comparison-heading > div {
   display: grid;
   gap: 4px;
