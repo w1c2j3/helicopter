@@ -1,0 +1,12 @@
+# Local-only model inventory. This file never points at the 19329 SSH tunnel.
+
+[models.deployed]
+alias = "g1h-1.5b"
+
+[models."g1h-1.5b"]
+served_model_name = "rwkv7-g1h-1.5b-20260710-ctx10240"
+api_key_env = "HELICOPTER_EVAL_API_KEY"
+
+[[models."g1h-1.5b".replicas]]
+name = "local-gpu0"
+base_url = "http://127.0.0.1:19316/v1"

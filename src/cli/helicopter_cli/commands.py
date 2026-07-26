@@ -1495,6 +1495,14 @@ def build_infer_plan(
     )
     if auto_tool_choice if isinstance(auto_tool_choice, bool) else str(auto_tool_choice).strip().lower() in {"1", "true", "yes", "on"}:
         command.append("--enable-auto-tool-choice")
+        tool_call_parser = pick(
+            getattr(args, "tool_call_parser", None),
+            env_value(env, "VLLM_TOOL_CALL_PARSER"),
+            infer.get("tool_call_parser"),
+            default="rwkv",
+        )
+        if str(tool_call_parser or "").strip():
+            command.extend(["--tool-call-parser", str(tool_call_parser).strip()])
 
     shown_env = {
         **config_vllm_env(infer),

@@ -12,7 +12,10 @@ from helicopter_cli.evalscope_agent import (
     format_agent_catalog,
     load_agent_catalog,
     _latest_evalscope_work_dir,
+    _infer_plan,
+    run_evalscope,
 )
+from helicopter_cli.commands import build_infer_plan
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,12 +51,104 @@ def evalscope_args(**overrides: object) -> Namespace:
         "debug": None,
         "ignore_errors": None,
         "binary": None,
+        "dry_run": False,
+        "no_server": False,
+        "enable_auto_tool_choice": None,
+        "tool_call_parser": None,
+        "naive_chat_proxy": None,
+        "report_only": False,
+        "list_datasets": False,
     }
     values.update(overrides)
     return Namespace(**values)
 
 
 class EvalScopeAgentTests(unittest.TestCase):
+    def test_managed_rwkv_server_emits_native_tool_parser_flags(self) -> None:
+        args = Namespace(
+            model="demo",
+            dry_run=True,
+            wkv_mode=None,
+            emb_device=None,
+            host=None,
+            port=None,
+            served_model_name=None,
+            tensor_parallel_size=None,
+            gpu_memory_utilization=None,
+            max_model_len=None,
+            max_num_seqs=None,
+            max_num_batched_tokens=None,
+            enable_auto_tool_choice=True,
+            tool_call_parser=None,
+            vllm_env=None,
+        )
+        config = {
+            "models": {"demo": {"path": "/tmp/rwkv-demo.pth", "served_model_name": "demo-served"}},
+            "infer": {},
+        }
+
+        plan = build_infer_plan(args, root=ROOT, env={}, config=config)
+
+        self.assertIn("--enable-auto-tool-choice", plan.command)
+        parser_index = plan.command.index("--tool-call-parser")
+        self.assertEqual(plan.command[parser_index + 1], "rwkv")
+
+    def test_managed_rwkv_server_allows_explicit_parser_override(self) -> None:
+        args = Namespace(
+            model="demo",
+            dry_run=True,
+            wkv_mode=None,
+            emb_device=None,
+            host=None,
+            port=None,
+            served_model_name=None,
+            tensor_parallel_size=None,
+            gpu_memory_utilization=None,
+            max_model_len=None,
+            max_num_seqs=None,
+            max_num_batched_tokens=None,
+            enable_auto_tool_choice=True,
+            tool_call_parser="custom",
+            vllm_env=None,
+        )
+        config = {"models": {"demo": {"path": "/tmp/rwkv-demo.pth"}}, "infer": {}}
+
+        plan = build_infer_plan(args, root=ROOT, env={}, config=config)
+
+        parser_index = plan.command.index("--tool-call-parser")
+        self.assertEqual(plan.command[parser_index + 1], "custom")
+
+    def test_native_evalscope_plan_enables_auto_tool_choice(self) -> None:
+        args = evalscope_args(dry_run=True)
+        config = {
+            "models": {"demo": {"path": "/tmp/rwkv-demo.pth", "served_model_name": "demo-served"}},
+            "evalscope": {"mode": "native"},
+            "infer": {},
+        }
+
+        plan = _infer_plan(
+            args,
+            root=ROOT,
+            env={},
+            config=config,
+            base_url="http://127.0.0.1:19329/v1",
+        )
+
+        assert plan is not None
+        self.assertIn("--enable-auto-tool-choice", plan.command)
+        parser_index = plan.command.index("--tool-call-parser")
+        self.assertEqual(plan.command[parser_index + 1], "rwkv")
+
+    def test_native_evalscope_rejects_naive_proxy(self) -> None:
+        args = evalscope_args(mode="native", naive_chat_proxy=True)
+        config = {
+            "models": {"demo": {"served_model_name": "demo-served"}},
+            "evalscope": {"mode": "native", "naive_chat_proxy": False},
+        }
+
+        with self.assertRaisesRegex(SystemExit, "requires the OpenAI tools/tool_choice"):
+            run_evalscope(args, root=ROOT, env={}, config=config)
+
     def test_catalog_matches_supported_agent_dataset_shape(self) -> None:
         rows = load_agent_catalog(ROOT, DEFAULT_CATALOG)
 

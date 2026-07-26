@@ -323,8 +323,15 @@ def build_evalscope_plan(
 def _infer_plan(args: Any, *, root: Path, env: dict[str, str], config: dict[str, Any], base_url: str) -> CommandPlan | None:
     if getattr(args, "no_server", False) or not is_local_base_url(base_url):
         return None
+    settings = table(config, "evalscope")
+    mode = str(pick(getattr(args, "mode", None), settings.get("mode"), "native")).strip().lower()
+    infer_args = infer_args_namespace(args, port=port_from_base_url(base_url))
+    if mode == "native" and getattr(args, "enable_auto_tool_choice", None) is None:
+        # EvalScope Agent sends OpenAI tools.  Let vllm-rwkv render its native
+        # RWKV tool template and expose the parser output as message.tool_calls.
+        infer_args.enable_auto_tool_choice = True
     return build_infer_plan(
-        infer_args_namespace(args, port=port_from_base_url(base_url)),
+        infer_args,
         root=root,
         env=env,
         config=config,
@@ -354,9 +361,15 @@ def run_evalscope(args: Any, *, root: Path, env: dict[str, str], config: dict[st
         pick(
             getattr(args, "naive_chat_proxy", None),
             settings.get("naive_chat_proxy"),
-            True,
+            False,
         )
     )
+    mode = str(pick(getattr(args, "mode", None), settings.get("mode"), "native")).strip().lower()
+    if mode == "native" and use_naive_proxy:
+        raise SystemExit(
+            "native EvalScope Agent mode requires the OpenAI tools/tool_choice fields to reach "
+            "vllm-rwkv; use --no-naive-chat-proxy (or set [evalscope].naive_chat_proxy = false)"
+        )
     plan = build_evalscope_plan(args, root=root, env=env, config=config)
     infer_plan = _infer_plan(args, root=root, env=env, config=config, base_url=base_url)
     if getattr(args, "dry_run", False):

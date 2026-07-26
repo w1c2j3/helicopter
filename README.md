@@ -330,44 +330,71 @@ helicopter eval evalscope --list-datasets
 ```
 
 Run a Native AgentLoop benchmark against the requested WSL-local RWKV
-endpoint. The command starts a local naive-Chat proxy by default; it records
-the original request, converted request, raw response, and a diagnostic trace
+endpoint. Native mode preserves the OpenAI `tools` and `tool_choice` fields so
+vllm-rwkv can render its native tool template and return `message.tool_calls`.
+The command records the original request, raw response, and a diagnostic trace
 report under `results/evalscope`:
 
 ```bash
 helicopter eval evalscope \
   --config configs/example.toml \
-  g1h-2.9b general_fc \
-  --model-catalog configs/models/g1h-single-replica.toml \
-  --base-url http://127.0.0.1:19329/v1 \
+  g1h-1.5b general_fc \
+  --model-catalog configs/models/local-g1h-single-replica.toml \
+  --base-url http://127.0.0.1:19316/v1 \
   --api-key rwkv-skills \
   --no-server \
+  --no-naive-chat-proxy \
   --limit 1 \
   --strategy function_calling \
   --agent-environment local
 ```
 
+For a fixed local smoke/benchmark run, use the repository script so the model
+catalog, local endpoint, native mode, and output layout stay consistent:
+
+```bash
+bash scripts/run_local_evalscope.sh general_fc 5 \
+  results/evalscope/local-general-fc-1p5b-20260727-limit5
+```
+
 For coding agents whose server does not expose OpenAI tool calls, use
-EvalScope's text strategy and install its optional SWE-bench extra separately:
+EvalScope's text strategy and install its optional SWE-bench extra separately.
+The text-only naive adapter is an explicit compatibility mode; it is not a
+native tool-call path:
 
 ```bash
 uv pip install --python .venv/bin/python 'evalscope[swe_bench]==1.9.1'
-helicopter eval evalscope g1h-2.9b swe_bench_verified_agentic \
-  --model-catalog configs/models/g1h-single-replica.toml \
-  --base-url http://127.0.0.1:19329/v1 --api-key rwkv-skills \
+helicopter eval evalscope g1h-1.5b swe_bench_verified_agentic \
+  --model-catalog configs/models/local-g1h-single-replica.toml \
+  --base-url http://127.0.0.1:19316/v1 --api-key rwkv-skills \
   --no-server --strategy swe_bench_backticks --agent-environment local --limit 1
 ```
 
 `function_calling` requires the serving process to support an OpenAI
-`tool_calls` response. The naive-Chat adapter removes unsupported tool fields
-only at the outbound transport boundary and never fabricates a tool call or
-answer. A missing tool call is recorded as `format_invalid`; HTTP failures and
-context-limit stops remain separately visible in `raw/trace_report.json`.
+`tool_calls` response. For a managed RWKV server, Helicopter now emits both
+`--enable-auto-tool-choice` and `--tool-call-parser rwkv`. For an existing
+endpoint, start vllm-rwkv with the same flags (and `--tokenizer-mode rwkv`), for
+example:
+
+```bash
+VLLM_RWKV7_WKV_MODE=fp16 vllm serve /home/chase/weights/rwkv7-g1h-1.5b-20260710-ctx10240.pth \
+  --tokenizer-mode rwkv \
+  --enable-auto-tool-choice \
+  --tool-call-parser rwkv
+```
+
+The naive-Chat adapter remains available for text-only/bridge runs; it removes
+unsupported tool fields only at the outbound transport boundary and never
+fabricates a tool call or answer. A missing tool call is recorded as
+`format_invalid`; HTTP failures and context-limit stops remain separately
+visible in `raw/trace_report.json`.
 
 For a regular Agent dataset, choose the tools explicitly:
 
 ```bash
-helicopter eval evalscope g1d-0.4b gaia \
+helicopter eval evalscope g1h-1.5b gaia \
+  --model-catalog configs/models/local-g1h-single-replica.toml \
+  --base-url http://127.0.0.1:19316/v1 \
   --mode native \
   --tools python_exec \
   --agent-environment docker \
@@ -379,7 +406,9 @@ EvalScope can also drive an external CLI such as Codex or Claude Code through
 its Agent Bridge:
 
 ```bash
-helicopter eval evalscope g1d-0.4b swe_bench_pro \
+helicopter eval evalscope g1h-1.5b swe_bench_pro \
+  --model-catalog configs/models/local-g1h-single-replica.toml \
+  --base-url http://127.0.0.1:19316/v1 \
   --mode bridge \
   --framework codex \
   --agent-environment docker \

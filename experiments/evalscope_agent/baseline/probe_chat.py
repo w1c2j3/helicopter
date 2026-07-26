@@ -6,10 +6,11 @@ import os
 from http.client import HTTPConnection
 from pathlib import Path
 from time import perf_counter, strftime, gmtime
+from urllib.parse import urlsplit
 
 
-MODEL = "rwkv7-g1h-2.9b-20260710-ctx10240"
-BASE_URL = "http://127.0.0.1:19329/v1"
+MODEL = os.environ.get("RWKV_PROBE_MODEL", "rwkv7-g1h-2.9b-20260710-ctx10240")
+BASE_URL = os.environ.get("RWKV_PROBE_BASE_URL", "http://127.0.0.1:19329/v1")
 
 
 def payload(*, naive_chat: bool = False) -> dict[str, object]:
@@ -76,14 +77,22 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path)
     parser.add_argument("--naive-chat", action="store_true")
+    parser.add_argument("--base-url", default=BASE_URL)
+    parser.add_argument("--model", default=MODEL)
     args = parser.parse_args()
 
+    base_url = args.base_url.rstrip("/")
+    parsed_url = urlsplit(base_url)
+    if parsed_url.scheme not in {"http", "https"} or not parsed_url.hostname or not parsed_url.port:
+        parser.error("--base-url must include an http(s) host and port")
+    model = args.model
     request_payload = payload(naive_chat=args.naive_chat)
+    request_payload["model"] = model
     started = perf_counter()
     record: dict[str, object] = {
         "request": {
             "method": "POST",
-            "url": f"{BASE_URL}/chat/completions",
+            "url": f"{base_url}/chat/completions",
             "headers": {"Authorization": "Bearer [redacted]", "Content-Type": "application/json"},
             "json": request_payload,
         },
@@ -94,10 +103,11 @@ def main() -> int:
         "error": None,
     }
     try:
-        connection = HTTPConnection("127.0.0.1", 19329, timeout=60)
+        connection = HTTPConnection(parsed_url.hostname, parsed_url.port, timeout=60)
+        endpoint = f"{parsed_url.path.rstrip('/')}/chat/completions"
         connection.request(
             "POST",
-            "/v1/chat/completions",
+            endpoint,
             body=json.dumps(request_payload, ensure_ascii=False),
             headers={
                 "Content-Type": "application/json",

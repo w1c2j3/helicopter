@@ -115,6 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
     infer.add_argument("--max-num-seqs", type=int)
     infer.add_argument("--max-num-batched-tokens", type=int)
     infer.add_argument("--enable-auto-tool-choice", action="store_true", default=None)
+    infer.add_argument("--tool-call-parser", help="vLLM tool-call parser; RWKV native tool calls use 'rwkv'")
     infer.add_argument("--vllm-env", action="append", help="explicit VLLM_* environment override, e.g. VLLM_WSL2_ENABLE_PIN_MEMORY=1")
     infer.set_defaults(plan_builder=build_infer_plan)
 
@@ -152,6 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
     eval_run.add_argument("--max-num-seqs", type=int)
     eval_run.add_argument("--max-num-batched-tokens", type=int)
     eval_run.add_argument("--enable-auto-tool-choice", action="store_true", default=None)
+    eval_run.add_argument("--tool-call-parser", help="vLLM tool-call parser; RWKV native tool calls use 'rwkv'")
     eval_run.add_argument(
         "--vllm-env",
         action="append",
@@ -431,6 +433,7 @@ def build_parser() -> argparse.ArgumentParser:
     evalscope.add_argument("--max-num-seqs", type=int)
     evalscope.add_argument("--max-num-batched-tokens", type=int)
     evalscope.add_argument("--enable-auto-tool-choice", action="store_true", default=None)
+    evalscope.add_argument("--tool-call-parser", help="vLLM tool-call parser; RWKV native tool calls use 'rwkv'")
     evalscope.add_argument("--vllm-env", action="append", help="explicit VLLM_* environment override for the managed server")
     evalscope.set_defaults(plan_builder=None)
 

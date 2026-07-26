@@ -126,6 +126,7 @@ def infer_args_namespace(args: Any, *, port: str | None) -> argparse.Namespace:
         max_num_seqs=getattr(args, "max_num_seqs", None),
         max_num_batched_tokens=getattr(args, "max_num_batched_tokens", None),
         enable_auto_tool_choice=getattr(args, "enable_auto_tool_choice", None),
+        tool_call_parser=getattr(args, "tool_call_parser", None),
         vllm_env=getattr(args, "vllm_env", None),
     )
 
