@@ -108,6 +108,19 @@ the official score is therefore zero and the raw two-request trace is kept.
   rejected it as `extraction_failed` rather than truncating reasoning into an
   answer; the raw response and official score remain in the local GAIA report.
 
+## Regression boundary (2026-07-27)
+
+- Agent-specific suite: **21 passed** with the Agent, naive-Chat, extraction,
+  and discrimination tests.
+- Full repository suite after `uv sync --no-default-groups --group agent
+  --group eval`: **292 passed, 6 skipped, 22 failed**. The failures are in
+  existing LightEval/Famous120/benchmark compatibility assertions; no
+  EvalScope Agent test failed.
+- Excluding `tests/test_cli.py` and
+  `tests/test_lighteval_answer_adapters.py`: **23 passed, 1 failed**. The one
+  remaining failure is the existing `commands_sampling` expectation for a
+  LightEval math token budget and is outside the EvalScope Agent path.
+
 ## Remaining formal-evaluation limits
 
 `swe_bench_verified_agentic` was not scored because EvalScope 1.9.1 requires

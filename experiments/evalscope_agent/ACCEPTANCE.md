@@ -28,6 +28,8 @@ uses the local 19316 service and never uses the SSH-forwarded model:
 | Answer extraction is strict and non-repairing | PASS | `evalscope_agent_results.py`; 21 targeted regression tests |
 | Discrimination separates transport/format/extraction/model failures | PASS | `tests/test_evalscope_agent_results.py`; live reports show `format_invalid`, `context_truncated`, and official scores separately |
 | All discovered issues have regression coverage | PASS | naive Chat, native tool-call validation, direct short answers, timestamped workdir linkage, and acceptance report tests |
+| EvalScope Agent regression suite | PASS | `tests/test_naive_chat.py`, `tests/test_evalscope_agent.py`, and `tests/test_evalscope_agent_results.py`: 21 passed |
+| Full repository regression | CONDITIONAL | full run: 292 passed, 6 skipped, 22 failures in existing LightEval/Famous120/benchmark compatibility tests; no EvalScope Agent test failed. Excluding the two LightEval test files leaves 23 passed and one pre-existing sampling-budget failure |
 | No blocking pipeline error | PASS (local path) | local 19316 health check, native preflight, and no-proxy EvalScope run all complete |
 | Key benchmark metrics meet the project threshold | NOT MET | v3 `general_fc tool_call_f1=0` and GAIA `mean_acc=0`; the model emitted prose and no native `tool_calls` |
 | Code, logs, reports, and checkpoints uploaded | PASS | branch `updata/supported-dataset` contains commits `df4974e`, `61187fe`, and `4cb223f`; tags `evalscope/native-local-code`, `evalscope/native-local-benchmark`, and `evalscope/native-local-gaia` provide rollback points |
