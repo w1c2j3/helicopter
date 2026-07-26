@@ -383,7 +383,8 @@ VLLM_RWKV7_WKV_MODE=fp16 vllm serve /home/chase/weights/rwkv7-g1h-1.5b-20260710-
   --tool-call-parser rwkv
 ```
 
-The naive-Chat adapter remains available for text-only/bridge runs; it removes
+The naive-Chat adapter remains available for text-only/external runs; the
+historical `bridge` spelling is accepted as a compatibility alias. It removes
 unsupported tool fields only at the outbound transport boundary and never
 fabricates a tool call or answer. A missing tool call is recorded as
 `format_invalid`; HTTP failures and context-limit stops remain separately
@@ -409,7 +410,7 @@ its Agent Bridge:
 helicopter eval evalscope g1h-1.5b swe_bench_pro \
   --model-catalog configs/models/local-g1h-single-replica.toml \
   --base-url http://127.0.0.1:19316/v1 \
-  --mode bridge \
+  --mode external \
   --framework codex \
   --agent-environment docker \
   --agent-timeout 1800

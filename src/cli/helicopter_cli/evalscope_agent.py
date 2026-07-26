@@ -160,8 +160,8 @@ def _tools(value: Any) -> list[str] | None:
 def _agent_config(args: Any, *, root: Path, config: dict[str, Any]) -> dict[str, Any]:
     settings = table(config, "evalscope")
     mode = str(pick(getattr(args, "mode", None), settings.get("mode"), "native")).strip().lower()
-    if mode not in {"native", "bridge"}:
-        raise SystemExit("EvalScope agent mode must be 'native' or 'bridge'")
+    if mode not in {"native", "bridge", "external"}:
+        raise SystemExit("EvalScope agent mode must be 'native', 'external', or the legacy alias 'bridge'")
 
     configured = _json_mapping(settings.get("agent_config"), root=root, name="[evalscope].agent_config")
     override = _json_mapping(getattr(args, "agent_config", None), root=root, name="--agent-config")
@@ -178,7 +178,12 @@ def _agent_config(args: Any, *, root: Path, config: dict[str, Any]) -> dict[str,
             result["max_steps"] = args.max_steps
         return result
 
-    result = {
+    # EvalScope 1.9.x calls this discriminator ``external``.  Keep accepting
+    # the project's historical ``bridge`` spelling, but emit only fields from
+    # ExternalAgentConfig; forwarding the native strategy/tools/max_steps table
+    # makes Pydantic reject the entire task before any request is sent.
+    result: dict[str, Any] = {
+        "mode": "external",
         "framework": str(
             pick(
                 getattr(args, "framework", None),
@@ -196,11 +201,18 @@ def _agent_config(args: Any, *, root: Path, config: dict[str, Any]) -> dict[str,
                 "local",
             )
         ),
-        **configured,
-        **override,
     }
-    if getattr(args, "agent_timeout", None) is not None:
-        result["timeout"] = args.agent_timeout
+    timeout = pick(
+        getattr(args, "agent_timeout", None),
+        override.get("timeout"),
+        configured.get("timeout"),
+    )
+    if timeout is not None:
+        result["timeout"] = timeout
+    for field_name in ("bridge", "environment_extra", "kwargs", "skills_dir", "skill_prompt_nudge"):
+        value = pick(override.get(field_name), configured.get(field_name))
+        if value is not None:
+            result[field_name] = value
     return result
 
 

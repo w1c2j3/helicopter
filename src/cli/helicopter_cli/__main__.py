@@ -388,7 +388,11 @@ def build_parser() -> argparse.ArgumentParser:
     evalscope.add_argument("--api-key", help="API key passed to EvalScope")
     evalscope.add_argument("--served-model-name", help="model name sent to EvalScope")
     evalscope.add_argument("--eval-type", help="EvalScope evaluation type; defaults to openai_api")
-    evalscope.add_argument("--mode", choices=("native", "bridge"), help="EvalScope AgentLoop or External Agent Bridge")
+    evalscope.add_argument(
+        "--mode",
+        choices=("native", "external", "bridge"),
+        help="EvalScope native AgentLoop or external Agent Bridge (bridge is a legacy alias)",
+    )
     evalscope.add_argument("--framework", help="External Agent Bridge framework, e.g. codex or claude-code")
     evalscope.add_argument("--agent-config", help="Agent config JSON string or JSON file")
     evalscope.add_argument("--strategy", help="Native AgentLoop strategy")

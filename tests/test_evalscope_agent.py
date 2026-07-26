@@ -15,6 +15,7 @@ from helicopter_cli.evalscope_agent import (
     _infer_plan,
     run_evalscope,
 )
+from helicopter_cli.__main__ import build_parser
 from helicopter_cli.commands import build_infer_plan
 
 
@@ -64,6 +65,10 @@ def evalscope_args(**overrides: object) -> Namespace:
 
 
 class EvalScopeAgentTests(unittest.TestCase):
+    def test_external_mode_is_a_supported_cli_choice(self) -> None:
+        args = build_parser().parse_args(["eval", "evalscope", "demo", "general_fc", "--mode", "external"])
+        self.assertEqual(args.mode, "external")
+
     def test_managed_rwkv_server_emits_native_tool_parser_flags(self) -> None:
         args = Namespace(
             model="demo",
@@ -210,6 +215,7 @@ class EvalScopeAgentTests(unittest.TestCase):
         )
 
         agent_config = json.loads(plan.command[plan.command.index("--agent-config") + 1])
+        self.assertEqual(agent_config["mode"], "external")
         self.assertEqual(agent_config["framework"], "codex")
         self.assertEqual(agent_config["environment"], "docker")
         self.assertEqual(agent_config["timeout"], 1800)

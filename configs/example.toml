@@ -53,7 +53,7 @@ output_dir = "results/evalscope"
 eval_type = "openai_api"
 eval_batch_size = 1
 # Native EvalScope Agent mode must preserve tools/tool_choice for vllm-rwkv.
-# Opt into the text-only naive adapter only for non-native/bridge runs.
+# Opt into the text-only naive adapter only for non-native/external runs.
 naive_chat_proxy = false
 generation_config = { max_tokens = 1024, temperature = 0.0 }
 # datasets = ["swe_bench_verified_agentic"]
