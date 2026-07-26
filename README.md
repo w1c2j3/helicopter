@@ -429,7 +429,7 @@ extraction/discrimination status. It can also be rebuilt from an existing
 work directory without calling the model:
 
 ```bash
-uv run --no-default-groups --no-sync helicopter eval evalscope \
+uv run --no-default-groups --group agent --group eval --no-sync helicopter eval evalscope \
   --report-only --work-dir results/evalscope/live-gaia-v2
 ```
 
