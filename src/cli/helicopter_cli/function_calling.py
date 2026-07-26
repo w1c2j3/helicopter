@@ -13,6 +13,7 @@ from typing import Any, Callable, Mapping
 from .commands import CommandPlan, build_infer_plan, is_local_base_url, local_openai_base_url
 from .config import resolve_model_entry, table
 from .env import env_value, pick
+from .fc_catalog import FC_TASKS
 from .eval_run import (
     DEFAULT_SERVER_TIMEOUT_S,
     format_plan_for_display,
@@ -57,21 +58,6 @@ from .scoreboard_bridge import (
     write_function_calling_results,
 )
 
-
-FC_TASKS = (
-    "bfcl_simple_python",
-    "bfcl_multiple",
-    "bfcl_v3",
-    "bfcl_exec_simple",
-    "bfcl_exec_multiple",
-    "bfcl_exec_parallel",
-    "bfcl_exec_parallel_multiple",
-    "apibank_level1",
-    "apibank_level2",
-    "complexfuncbench_official",
-    "toolalpaca_eval_simulated",
-    "toolalpaca_eval_real",
-)
 
 BFCL_TASK_FILES: dict[str, str | list[str]] = {
     "bfcl_simple_python": "BFCL_v3_simple.json",

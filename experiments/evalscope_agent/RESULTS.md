@@ -13,6 +13,9 @@ endpoint was `http://127.0.0.1:19329/v1`, model
 - `adc2500`: naive Chat transport adapter and EvalScope command wiring.
 - `52582e5` / `evalscope/strict-diagnostics`: strict extraction, discrimination,
   trace reporting, and the first live run artifacts.
+- Pending clean-Agent-environment CLI fix: LightEval and native FC modules are
+  now imported only for their respective subcommands, so dataset listing and
+  EvalScope dry-runs do not require the large LightEval dependency group.
 
 ## Baseline and transport probes
 
@@ -62,6 +65,9 @@ the official score is therefore zero and the raw two-request trace is kept.
   than inventing a label, number, code fence, JSON field, or tool call.
 - Discriminator error: no known reproduction; regression tests cover transport,
   format, extraction, and strict model-error separation.
+- Clean Agent environment: after `uv sync --no-default-groups --group agent`,
+  dataset listing and EvalScope dry-run now pass without importing LightEval;
+  the unrelated legacy `tests/test_cli.py` still needs the full LightEval group.
 
 ## Remaining formal-evaluation limits
 

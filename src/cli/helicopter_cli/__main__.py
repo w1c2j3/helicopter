@@ -18,10 +18,9 @@ from .commands import (
 )
 from .config import load_config, merge_model_catalog
 from .env import DEFAULT_ENV_FILE, load_env
-from .eval_batch import run_batch
 from .eval_run import DEFAULT_SERVER_TIMEOUT_S, run_eval
 from .evalscope_agent import DEFAULT_CATALOG, run_evalscope
-from .function_calling import FC_TASKS, run_function_calling_eval
+from .fc_catalog import FC_TASKS
 from .paths import find_root
 from .performance import (
     base_url_from_lighteval_command,
@@ -448,8 +447,12 @@ def main(argv: list[str] | None = None) -> int:
     if getattr(args, "eval_command", None) == "perf":
         return run_completions_performance(args, root=root, env=env, config=config)
     if getattr(args, "eval_command", None) == "batch":
+        from .eval_batch import run_batch
+
         return run_batch(args, root=root, env=env, config=config)
     if getattr(args, "eval_command", None) in {"function-calling", "fc"}:
+        from .function_calling import run_function_calling_eval
+
         return run_function_calling_eval(args, root=root, env=env, config=config)
     if getattr(args, "eval_command", None) in {"agent-harness", "agent"}:
         return run_agent_harness(args, root=root, env=env, config=config)
