@@ -13,7 +13,7 @@ endpoint was `http://127.0.0.1:19329/v1`, model
 - `adc2500`: naive Chat transport adapter and EvalScope command wiring.
 - `52582e5` / `evalscope/strict-diagnostics`: strict extraction, discrimination,
   trace reporting, and the first live run artifacts.
-- Pending clean-Agent-environment CLI fix: LightEval and native FC modules are
+- `bd3c7d6` / `evalscope/agent-only-cli`: LightEval and native FC modules are
   now imported only for their respective subcommands, so dataset listing and
   EvalScope dry-runs do not require the large LightEval dependency group.
 
