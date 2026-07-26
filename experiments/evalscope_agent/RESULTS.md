@@ -28,6 +28,9 @@ All runs use API key `rwkv-skills` and a 10240-token context limit.
 - `df4974e` / `evalscope/native-local-code`: managed vllm-rwkv native parser
   flags, local-only model catalog and runner, native EvalScope defaults, and
   regression coverage are committed and pushed.
+- `61187fe` / `evalscope/native-local-benchmark`: local native preflight,
+  EvalScope reports, raw responses, and the acceptance audit are committed and
+  pushed.
 - The timestamped-workdir fix is validated by the v3 reruns below: the inner
   EvalScope work directory now contains the acceptance report and a copy of
   the raw trace summary, while the outer directory retains the proxy JSONL.

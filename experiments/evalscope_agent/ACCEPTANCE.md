@@ -30,7 +30,7 @@ uses the local 19316 service and never uses the SSH-forwarded model:
 | All discovered issues have regression coverage | PASS | naive Chat, native tool-call validation, direct short answers, timestamped workdir linkage, and acceptance report tests |
 | No blocking pipeline error | PASS (local path) | local 19316 health check, native preflight, and no-proxy EvalScope run all complete |
 | Key benchmark metrics meet the project threshold | NOT MET | v3 `general_fc tool_call_f1=0` and GAIA `mean_acc=0`; the model emitted prose and no native `tool_calls` |
-| Code, logs, reports, and checkpoints uploaded | PASS (code) / OPEN (artifacts) | branch `updata/supported-dataset` and tag `evalscope/native-local-code` contain the code; the post-audit evidence and local run are the next experiment checkpoint |
+| Code, logs, reports, and checkpoints uploaded | PASS | branch `updata/supported-dataset` contains commits `df4974e` and `61187fe`; tags `evalscope/native-local-code` and `evalscope/native-local-benchmark` provide rollback points for code and evidence |
 | Every major phase has a rollback checkpoint | PASS | `baseline/*` and `evalscope/*` annotated tags |
 | Input-to-report pipeline is automatic | PASS | `helicopter eval evalscope ...` produces EvalScope reports, predictions, reviews, traces, and `acceptance_report.json`; `--report-only` rebuilds evidence |
 
