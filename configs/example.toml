@@ -45,6 +45,24 @@ server_timeout = 600
 output_dir = "results/agent_harness"
 n_concurrent = 1
 
+[evalscope]
+# Install the optional dependency group first: uv sync --group agent.
+binary = "evalscope"
+output_dir = "results/evalscope"
+eval_type = "openai_api"
+eval_batch_size = 1
+naive_chat_proxy = true
+generation_config = { max_tokens = 1024, temperature = 0.0 }
+# datasets = ["swe_bench_verified_agentic"]
+# mode = "native"
+# generation_config = { max_tokens = 4096, temperature = 0.0 }
+
+[evalscope.agent_config]
+strategy = "function_calling"
+tools = ["bash"]
+environment = "docker"
+max_steps = 10
+
 [takeoff.grpo]
 project_name = "verl_rwkv_grpo"
 experiment_name = "rwkv7_grpo_vllm"

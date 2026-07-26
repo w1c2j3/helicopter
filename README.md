@@ -79,6 +79,7 @@ Important config sections:
 - `[lighteval]`: LightEval endpoint, output, and custom-task defaults.
 - `[function_calling]`: native OpenAI `tool_calls` benchmark defaults.
 - `[agent_harness]`: external agent harness planning defaults.
+- `[evalscope]`: EvalScope Agent dataset, AgentLoop/Bridge, sandbox, and output defaults.
 - `[takeoff.grpo]`: verl GRPO training defaults.
 
 Scoreboard database settings are read from `SCOREBOARD_DB_*` first and then
@@ -310,6 +311,87 @@ Some custom tasks intentionally use proxy or sanity metrics rather than the
 official benchmark harness. Examples include Arena-Hard baseline token F1,
 SWE-Bench patch token F1 or nonempty checks, and TAU static-plan token F1.
 `lighteval-tasks judges` marks these cases explicitly.
+
+### Run EvalScope Agent benchmarks
+
+EvalScope Agent benchmarks use the same OpenAI-compatible vLLM endpoint but keep
+their own multi-turn tool trace and report format. Install only the optional
+Agent dependency group first; the full `eval` and `rwkv` groups are not needed
+for this path:
+
+```bash
+uv sync --no-default-groups --group agent
+```
+
+List the Agent datasets tracked from EvalScope's supported-dataset registry:
+
+```bash
+helicopter eval evalscope --list-datasets
+```
+
+Run a Native AgentLoop benchmark against the requested WSL-local RWKV
+endpoint. The command starts a local naive-Chat proxy by default; it records
+the original request, converted request, raw response, and a diagnostic trace
+report under `results/evalscope`:
+
+```bash
+helicopter eval evalscope \
+  --config configs/example.toml \
+  g1h-2.9b general_fc \
+  --model-catalog configs/models/g1h-single-replica.toml \
+  --base-url http://127.0.0.1:19329/v1 \
+  --api-key rwkv-skills \
+  --no-server \
+  --limit 1 \
+  --strategy function_calling \
+  --agent-environment local
+```
+
+For coding agents whose server does not expose OpenAI tool calls, use
+EvalScope's text strategy and install its optional SWE-bench extra separately:
+
+```bash
+uv pip install --python .venv/bin/python 'evalscope[swe_bench]==1.9.1'
+helicopter eval evalscope g1h-2.9b swe_bench_verified_agentic \
+  --model-catalog configs/models/g1h-single-replica.toml \
+  --base-url http://127.0.0.1:19329/v1 --api-key rwkv-skills \
+  --no-server --strategy swe_bench_backticks --agent-environment local --limit 1
+```
+
+`function_calling` requires the serving process to support an OpenAI
+`tool_calls` response. The naive-Chat adapter removes unsupported tool fields
+only at the outbound transport boundary and never fabricates a tool call or
+answer. A missing tool call is recorded as `format_invalid`; HTTP failures and
+context-limit stops remain separately visible in `raw/trace_report.json`.
+
+For a regular Agent dataset, choose the tools explicitly:
+
+```bash
+helicopter eval evalscope g1d-0.4b gaia \
+  --mode native \
+  --tools python_exec \
+  --agent-environment docker \
+  --max-steps 10 \
+  --limit 5
+```
+
+EvalScope can also drive an external CLI such as Codex or Claude Code through
+its Agent Bridge:
+
+```bash
+helicopter eval evalscope g1d-0.4b swe_bench_pro \
+  --mode bridge \
+  --framework codex \
+  --agent-environment docker \
+  --agent-timeout 1800
+```
+
+The command automatically starts and stops the configured local vLLM server
+unless `--no-server` or `--keep-server` is set. Reports, predictions, reviews,
+and Agent traces are written under `results/evalscope` by default. EvalScope's
+official sandbox/verifier owns the benchmark score; the local diagnostic layer
+keeps raw responses and strict extraction/discrimination results separate from
+the single-turn LightEval and native function-calling score paths.
 
 The curated directly runnable non-function-calling LightEval catalog is stored
 in the scoreboard database table `benchmark_catalog`. It keeps 30 diverse,

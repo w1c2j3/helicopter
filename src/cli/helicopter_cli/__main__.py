@@ -20,6 +20,7 @@ from .config import load_config, merge_model_catalog
 from .env import DEFAULT_ENV_FILE, load_env
 from .eval_batch import run_batch
 from .eval_run import DEFAULT_SERVER_TIMEOUT_S, run_eval
+from .evalscope_agent import DEFAULT_CATALOG, run_evalscope
 from .function_calling import FC_TASKS, run_function_calling_eval
 from .paths import find_root
 from .performance import (
@@ -366,6 +367,69 @@ def build_parser() -> argparse.ArgumentParser:
     agent_harness.add_argument("--strict", action="store_true", help="preflight exits nonzero if required tools are missing")
     agent_harness.set_defaults(plan_builder=None)
 
+    evalscope = eval_subparsers.add_parser(
+        "evalscope",
+        help="run EvalScope Agent benchmarks against the OpenAI-compatible endpoint",
+    )
+    add_common_options(evalscope)
+    evalscope.add_argument("model", nargs="?", help="model alias from configs")
+    evalscope.add_argument("datasets", nargs="*", help="EvalScope dataset names; defaults to [evalscope].datasets")
+    evalscope.add_argument("--list-datasets", action="store_true", help="list the pinned EvalScope Agent dataset catalog")
+    evalscope.add_argument("--dataset-catalog", default=DEFAULT_CATALOG, help="EvalScope Agent dataset catalog JSON")
+    evalscope.add_argument("--format", choices=("text", "json", "summary"), default="text")
+    evalscope.add_argument("--binary", help="EvalScope executable; defaults to [evalscope].binary")
+    evalscope.add_argument("--base-url", help="OpenAI-compatible endpoint base URL")
+    evalscope.add_argument("--api-key", help="API key passed to EvalScope")
+    evalscope.add_argument("--served-model-name", help="model name sent to EvalScope")
+    evalscope.add_argument("--eval-type", help="EvalScope evaluation type; defaults to openai_api")
+    evalscope.add_argument("--mode", choices=("native", "bridge"), help="EvalScope AgentLoop or External Agent Bridge")
+    evalscope.add_argument("--framework", help="External Agent Bridge framework, e.g. codex or claude-code")
+    evalscope.add_argument("--agent-config", help="Agent config JSON string or JSON file")
+    evalscope.add_argument("--strategy", help="Native AgentLoop strategy")
+    evalscope.add_argument("--tools", action="append", help="Native AgentLoop tool list; repeat or use comma-separated names")
+    evalscope.add_argument("--agent-environment", help="Agent tool/CLI environment, local or docker")
+    evalscope.add_argument("--agent-timeout", type=float, help="External Agent Bridge per-sample timeout")
+    evalscope.add_argument("--max-steps", type=int, help="Native AgentLoop step cap")
+    evalscope.add_argument("--limit", help="maximum samples per dataset; integer or fraction")
+    evalscope.add_argument("--eval-batch-size", type=int)
+    evalscope.add_argument("--generation-config", help="EvalScope generation config JSON string or JSON file")
+    evalscope.add_argument("--dataset-args", help="EvalScope dataset args JSON string or JSON file")
+    evalscope.add_argument("--dataset-hub", choices=("modelscope", "huggingface"))
+    evalscope.add_argument("--work-dir", "--output-dir", dest="work_dir", help="EvalScope output directory")
+    evalscope.add_argument("--no-timestamp", action="store_true", default=None)
+    evalscope.add_argument("--use-cache")
+    evalscope.add_argument("--rerun-review", action="store_true", default=None)
+    evalscope.add_argument("--enable-progress-tracker", action="store_true", default=None)
+    evalscope.add_argument("--collect-perf", dest="collect_perf", action="store_true", default=None)
+    evalscope.add_argument("--no-collect-perf", dest="collect_perf", action="store_false")
+    evalscope.add_argument("--debug", action="store_true", default=None)
+    evalscope.add_argument("--ignore-errors", action="store_true", default=None)
+    evalscope.add_argument(
+        "--naive-chat-proxy",
+        dest="naive_chat_proxy",
+        action="store_true",
+        default=None,
+        help="serialize EvalScope OpenAI chat requests for the local RWKV naive Chat endpoint",
+    )
+    evalscope.add_argument(
+        "--no-naive-chat-proxy",
+        dest="naive_chat_proxy",
+        action="store_false",
+        help="send EvalScope requests directly without the local RWKV naive Chat adapter",
+    )
+    evalscope.add_argument("--no-server", action="store_true", help="reuse an existing endpoint")
+    evalscope.add_argument("--keep-server", action="store_true", help="leave the managed vLLM server running")
+    evalscope.add_argument("--server-timeout", type=float, default=DEFAULT_SERVER_TIMEOUT_S)
+    evalscope.add_argument("--wkv-mode", choices=WKV_MODES)
+    evalscope.add_argument("--emb-device", choices=EMB_DEVICES)
+    evalscope.add_argument("--tensor-parallel-size", type=int)
+    evalscope.add_argument("--gpu-memory-utilization", type=float)
+    evalscope.add_argument("--max-num-seqs", type=int)
+    evalscope.add_argument("--max-num-batched-tokens", type=int)
+    evalscope.add_argument("--enable-auto-tool-choice", action="store_true", default=None)
+    evalscope.add_argument("--vllm-env", action="append", help="explicit VLLM_* environment override for the managed server")
+    evalscope.set_defaults(plan_builder=None)
+
     return parser
 
 
@@ -389,6 +453,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_function_calling_eval(args, root=root, env=env, config=config)
     if getattr(args, "eval_command", None) in {"agent-harness", "agent"}:
         return run_agent_harness(args, root=root, env=env, config=config)
+    if getattr(args, "eval_command", None) == "evalscope":
+        return run_evalscope(args, root=root, env=env, config=config)
 
     plan = args.plan_builder(args, root=root, env=env, config=config)
     if getattr(args, "eval_command", None) == "lighteval" and not args.dry_run:
