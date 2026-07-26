@@ -2,10 +2,10 @@
 
 All model-backed commands in this record were run inside WSL with the
 repository environment and `uv run --no-default-groups --no-sync`. Historical
-baseline runs used `http://127.0.0.1:19329/v1` and the SSH-forwarded
-`rwkv7-g1h-2.9b-20260710-ctx10240` service. The post-audit native run uses the
-local-only `http://127.0.0.1:19316/v1` service with
-`rwkv7-g1h-1.5b-20260710-ctx10240`; it does not use the forwarded endpoint.
+baseline runs and the forwarded comparison use `http://127.0.0.1:19329/v1`
+and the SSH-forwarded `rwkv7-g1h-2.9b-20260710-ctx10240` service. The
+post-audit native run uses the local-only `http://127.0.0.1:19316/v1` service
+with `rwkv7-g1h-1.5b-20260710-ctx10240`. The paths remain separately recorded.
 All runs use API key `rwkv-skills` and a 10240-token context limit.
 
 ## Checkpoints
@@ -44,6 +44,12 @@ All runs use API key `rwkv-skills` and a 10240-token context limit.
 - `post-audit/local-1p5b-native-tools-20260727.json` records a real local
   HTTP response containing an OpenAI `tool_calls` object and
   `finish_reason=tool_calls`.
+- `post-audit/forwarded-2p9b-native-tools-20260727.json` records the forwarded
+  2.9B service rejecting an OpenAI tool request because its running server was
+  not started with the auto-tool-choice/parser flags.
+- `post-audit/forwarded-2p9b-naive-proxy-20260727.json` and its JSONL trace
+  record a successful 19329 request through the naive Chat proxy. The model
+  returned prose and no `tool_calls`; the proxy preserved that response.
 
 ## Baseline and transport probes
 
@@ -70,6 +76,8 @@ model response. See `naive-proxy-trace.jsonl`.
 | `results/evalscope/local-general-fc-1p5b-20260727/20260727_065200` | `general_fc`, 1 | local 19316, native tool path, no proxy, `max_steps=3` | `tool_call_f1=0`, schema/tool-call counts 0 | full local prediction/review/report/acceptance artifacts; selected sample had `should_call_tool=false`, and the model returned prose without `tool_calls` |
 | `results/evalscope/local-general-fc-1p5b-20260727-limit5/20260727_070506` | `general_fc`, 5 | local 19316, native tool path, no proxy, `max_tokens=1024` | `tool_call_f1=0`, `count_finish_reason_tool_call=0`, `schema_accuracy=0` | all 5 responses retained; sample 2 required a tool, but all five were classified `format_invalid` because the model returned text without `tool_calls`; mean latency 4.0416s, output throughput 230.65 tok/s |
 | `results/evalscope/local-gaia-1p5b-20260727/20260727_071448` | `gaia`, 3 (one per level) | local 19316, native AgentLoop, no proxy, `max_tokens=1024` | official `mean_acc=0` | full GAIA prediction/review/report/acceptance artifacts; all 3 samples were classified `extraction_failed` because the model returned multiline reasoning where GAIA requires a single-line final answer |
+| `results/evalscope/forwarded-general-fc-2p9b-20260727/20260727_073359` | `general_fc`, 1 | forwarded 19329 2.9B, external mock bridge + naive proxy, `max_tokens=1024`, `temperature=0` | official `tool_call_f1=0`, schema/tool-call counts 0 | exit code 0; raw response reached the generation cap, diagnostic status `context_truncated` plus `format_invalid`; mean latency 6.8861s, output throughput 148.71 tok/s |
+| `results/evalscope/forwarded-gaia-2p9b-20260727/20260727_073310` | `gaia`, 3 (one per level) | forwarded 19329 2.9B, external mock bridge + naive proxy | not scored | EvalScope entered the external bridge, but all samples were blocked before model calls by Docker failing to pull `python:3.11`; task config and acceptance report are retained |
 
 The second run proves the complete path: ModelScope dataset loading, proxy
 serialization, local model call, unchanged response, EvalScope report, and
@@ -86,12 +94,23 @@ recorded in `gaia-level1.json`. The model repeatedly described the intended
 bash action instead of emitting a tool call and reached the 1024-token cap;
 the official score is therefore zero and the raw two-request trace is kept.
 
+The forwarded 2.9B `general_fc` run proves the current `external` bridge
+configuration, EvalScope 1.9.1 task construction, model request, proxy trace,
+official report, and strict diagnostics end to end. It is a compatibility
+comparison, not a passing tool-call result: the remote server's native parser
+flags are absent, while the external mock runner sends a text-only request and
+the model response ends at the 1024-token cap.
+
 ## Failure classification
 
 - Chat format: fixed for the local endpoint by the naive Chat proxy; verified
   with a real HTTP 200 response.
 - Native tool transport: fixed in the managed server plan and verified on
   local 19316 with `--enable-auto-tool-choice --tool-call-parser rwkv`.
+- Forwarded service configuration: 19329 is reachable and serves the expected
+  2.9B model, but its live process rejects `tool_choice=auto` without the
+  required native parser flags; this is an endpoint configuration issue, not
+  an extraction or discriminator failure.
 - Interface error: reproduced as the original HTTP 400 tool-call request.
 - Model/format failure: `general_fc` response did not contain a tool call.
 - Agent runtime: the first GAIA run exposed the missing `ms_enclave` extra;
@@ -109,10 +128,14 @@ the official score is therefore zero and the raw two-request trace is kept.
 - GAIA extraction: reproduced a real multiline final response and correctly
   rejected it as `extraction_failed` rather than truncating reasoning into an
   answer; the raw response and official score remain in the local GAIA report.
+- External bridge: the first forwarded run exposed the invalid legacy config
+  discriminator (`bridge` emitted without `mode`). The adapter now emits
+  EvalScope 1.9.x `mode=external` and keeps `bridge` only as a CLI alias; the
+  forwarded `general_fc` rerun completed with exit code 0.
 
 ## Regression boundary (2026-07-27)
 
-- Agent-specific suite: **21 passed** with the Agent, naive-Chat, extraction,
+- Agent-specific suite: **22 passed** with the Agent, naive-Chat, extraction,
   and discrimination tests.
 - Full repository suite after `uv sync --no-default-groups --group agent
   --group eval`: **292 passed, 6 skipped, 22 failed**. The failures are in
@@ -128,8 +151,10 @@ the official score is therefore zero and the raw two-request trace is kept.
 `swe_bench_verified_agentic` was not scored because EvalScope 1.9.1 requires
 the optional `swebench` package; its extra installation exceeded the bounded
 experiment window. The current local 19316 process has an actual native
-tool-call parser, but the available local checkpoint is the 1.5B variant; the
-historical 19329 tunnel remains a baseline-only endpoint and was not used for
-the native run. GAIA can now enter the AgentLoop after the sandbox extra is
-installed, but the model still fails its required tool-call format on the fixed
-sample. These are recorded limits, not silently converted into passing results.
+tool-call parser, but the available local checkpoint is the 1.5B variant. The
+forwarded 19329 service exposes the requested 2.9B model and is usable through
+the external/naive bridge, but its live server lacks native tool-call parser
+flags and the fixed forwarded function-calling sample scored zero. GAIA can
+enter the AgentLoop, but this run was blocked by Docker image availability and
+the local model still fails its required tool-call format on the fixed sample.
+These are recorded limits, not silently converted into passing results.

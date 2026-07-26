@@ -1,0 +1,14 @@
+{
+  "output_dir": "/home/chase/GitHub/helicopter/results/evalscope/forwarded-general-fc-2p9b-20260727",
+  "exit_code": 1,
+  "counts": {},
+  "samples": [],
+  "official_reports": [],
+  "trace_report": {
+    "trace_path": "/home/chase/GitHub/helicopter/results/evalscope/forwarded-general-fc-2p9b-20260727/raw/naive_chat.jsonl",
+    "exit_code": 1,
+    "records": 0,
+    "counts": {},
+    "items": []
+  }
+}

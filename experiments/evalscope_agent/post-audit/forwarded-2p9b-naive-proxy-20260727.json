@@ -1,0 +1,42 @@
+{
+  "status": 200,
+  "body": {
+    "id": "chatcmpl-aebe39cf82a7cb23",
+    "object": "chat.completion",
+    "created": 1785108632,
+    "model": "rwkv7-g1h-2.9b-20260710-ctx10240",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": ">Okay, so I need to find the area of a triangle with a base of 10 and a height of 5. Hmm, I remember that the formula for the area of a triangle is (base × height) divided by 2. Let me write that down: Area = (base × height) / 2.\nSo, plugging in the numbers, the base is 10 and the height is 5. That would be (10 × 5) / 2. Let me calculate that. 10 multiplied by 5 is 50. Then, 50 divided by 2 is 25. So, the area should be 25 square units.\nWait, let me double-check that. If I use the formula correctly, yes, it's base times height divided by 2. So, 10 times 5 is 50, and half of that is 25. Yeah, that makes sense. I don't think I made any mistakes here. The area is definitely 25.</think>\nThe area of the triangle is 25 square units.",
+          "refusal": null,
+          "annotations": null,
+          "audio": null,
+          "function_call": null,
+          "reasoning": null
+        },
+        "logprobs": null,
+        "finish_reason": "stop",
+        "stop_reason": null,
+        "token_ids": null,
+        "routed_experts": null
+      }
+    ],
+    "service_tier": null,
+    "system_fingerprint": "vllm-0.23.1rc1.dev1227+gf476ab83f-nohash",
+    "usage": {
+      "prompt_tokens": 70,
+      "total_tokens": 273,
+      "completion_tokens": 203,
+      "prompt_tokens_details": null
+    },
+    "prompt_logprobs": null,
+    "prompt_token_ids": null,
+    "prompt_text": null,
+    "kv_transfer_params": null,
+    "ec_transfer_params": null,
+    "metrics": null
+  }
+}
