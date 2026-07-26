@@ -1,0 +1,116 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "http://127.0.0.1:19316/v1/chat/completions",
+    "headers": {
+      "Authorization": "Bearer [redacted]",
+      "Content-Type": "application/json"
+    },
+    "json": {
+      "model": "rwkv7-g1h-1.5b-20260710-ctx10240",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are solving a function-calling benchmark. Choose the tool call or calls needed to satisfy the user request. Return calls through the tool calling interface."
+        },
+        {
+          "role": "user",
+          "content": "User: Find the area of a triangle with a base of 10 units and height of 5 units."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "calculate_triangle_area",
+            "description": "Calculate the area of a triangle given its base and height.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "base": {
+                  "type": "integer",
+                  "description": "The base of the triangle."
+                },
+                "height": {
+                  "type": "integer",
+                  "description": "The height of the triangle."
+                },
+                "unit": {
+                  "type": "string",
+                  "description": "The unit of measure (defaults to 'units' if not specified)"
+                }
+              },
+              "required": [
+                "base",
+                "height"
+              ]
+            }
+          }
+        }
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true,
+      "temperature": 0,
+      "max_tokens": 768
+    }
+  },
+  "started_at": "2026-07-26T22:51:20Z",
+  "status": 200,
+  "response_headers": {
+    "date": "Sun, 26 Jul 2026 22:51:19 GMT",
+    "server": "uvicorn",
+    "content-length": "2117",
+    "content-type": "application/json"
+  },
+  "response_body": {
+    "id": "chatcmpl-a710e145a2e10314",
+    "object": "chat.completion",
+    "created": 1785106280,
+    "model": "rwkv7-g1h-1.5b-20260710-ctx10240",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": ">\nOkay, let's see. The user wants to find the area of a triangle with a base of 10 units and height of 5 units. I need to use the calculate_triangle_area tool for this.\n\nFirst, I should check if the tool is available. The description says it calculates the area given base and height. The parameters required are base and height. The user provided both values: 10 and 5. So I can call the tool with those parameters.\n\nWait, the tool's parameters are base and height, both required. The user specified base=10 and height=5, so I need to input those into the tool call. The unit is default 'units', but the user didn't specify, so maybe it's okay. The tool should handle the calculation correctly.\n\nI should make sure that the tool call is correctly formatted. The name is calculate_triangle_area, and the arguments should be base:10, height:5. No other parameters needed. Let me confirm the tool's required fields. The description says both are required, so yes, both must be provided.\n\nSo the correct tool call is to calculate_triangle_area with base=10 and height=5. No other tools are needed here. The user didn't mention any other functions, so this is the only one required. I'll proceed to make that tool call.\n</think>\n",
+          "refusal": null,
+          "annotations": null,
+          "audio": null,
+          "function_call": null,
+          "tool_calls": [
+            {
+              "id": "chatcmpl-tool-a9a63c83fe364664",
+              "type": "function",
+              "function": {
+                "name": "calculate_triangle_area",
+                "arguments": "{\"base\": 10, \"height\": 5}"
+              }
+            }
+          ],
+          "reasoning": null
+        },
+        "logprobs": null,
+        "finish_reason": "tool_calls",
+        "stop_reason": "\n### User",
+        "token_ids": null,
+        "routed_experts": null
+      }
+    ],
+    "service_tier": null,
+    "system_fingerprint": "vllm-0.23.1rc1.dev1227+gf476ab83f.d20260720-nohash",
+    "usage": {
+      "prompt_tokens": 268,
+      "total_tokens": 911,
+      "completion_tokens": 643,
+      "prompt_tokens_details": null
+    },
+    "prompt_logprobs": null,
+    "prompt_token_ids": null,
+    "prompt_text": null,
+    "kv_transfer_params": null,
+    "ec_transfer_params": null,
+    "metrics": null
+  },
+  "error": null,
+  "duration_ms": 3232.86
+}
