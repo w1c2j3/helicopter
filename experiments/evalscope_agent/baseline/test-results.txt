@@ -1,0 +1,32 @@
+Baseline commands were run with uv and Python 3.12.11 in the temporary
+environment C:\Users\chase\AppData\Local\Temp\helicopter-uv-baseline.
+
+1. `uv sync --no-default-groups --python 3.12`
+   PASS after setting `SETUPTOOLS_USE_DISTUTILS=local` for the inherited
+   environment setting. No repository dependency files were changed.
+
+2. `uv run --no-default-groups --no-sync -- pytest -q tests/test_commands_sampling.py tests/test_run_large_eval.py`
+   FAIL: `1 failed, 1 passed`.
+   Existing failure: `test_mode_specific_max_tokens_are_resolved_before_model_args`
+   expected `8192`, received `2048`.
+
+3. `uv run --no-default-groups --no-sync -- pytest -q tests/test_lighteval_answer_adapters.py`
+   PASS: `21 passed in 37.87s`.
+
+4. `uv run --no-default-groups --no-sync -- pytest -q`
+   BLOCKED during collection by the existing IFEval precondition requiring
+   NLTK resources `punkt` and `punkt_tab`.
+
+5. `uv run --no-default-groups --no-sync -- python -m nltk.downloader punkt punkt_tab`
+   BLOCKED: timed out after 184 seconds; no repository files were changed.
+
+6. `uv run --no-default-groups --no-sync -- python` HTTP preflight
+   BLOCKED: `GET http://127.0.0.1:19329/v1/models` returned WinError 10061.
+
+7. `uv sync --no-default-groups --group eval --python 3.12`
+   BLOCKED by `natto-py==1.0.1`, whose build imports removed Python 3.12
+   `distutils`. This was not altered in the baseline.
+
+Model-backed benchmark, raw completion, extraction, discrimination, and
+performance artifacts are intentionally marked not-run because the target
+service was unavailable.
