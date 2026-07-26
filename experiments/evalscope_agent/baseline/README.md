@@ -9,7 +9,8 @@ integration. The baseline commit is `4a68cb0366875930183bd9820436a7f81e223f7e`.
 - Model: `rwkv7-g1h-2.9b-20260710-ctx10240`
 - API key: `rwkv-skills` (never stored in artifacts)
 - Maximum context: `10240` tokens
-- Runtime: Python `3.12.11`, managed with `uv 0.7.19`
+- Windows preflight runtime: Python `3.12.11`, `uv 0.7.19`.
+- Actual model runtime: WSL Python `3.12.3`, `uv 0.9.24`.
 - Source branch: `chase/supported-dataset`
 
 The representative Agent benchmark set selected for the later fixed-condition
@@ -20,11 +21,17 @@ baseline scores.
 
 ## Baseline status
 
-The model service was not available during this baseline. A request to
-`GET /v1/models` was refused by the local host; the complete redacted request
-and error are in `raw-api-preflight.json`. Therefore there are no model
-responses, answer extractions, discriminator decisions, or benchmark
-performance samples to report yet.
+The first Windows-side model preflight was refused by the local host; the
+complete redacted request and error are in `raw-api-preflight.json`. The
+endpoint is a WSL-local SSH tunnel, so the reproducible baseline was then
+rechecked inside WSL with the repository's `uv` runtime. That recheck is in
+`chat-preflight.json` and records the unmodified tool-call request returning
+HTTP 400 because the server was not started with an auto tool-call parser.
+`chat-naive-preflight.json` records the same semantic system/user content
+serialized as naive Chat and returning HTTP 200. The old pipeline's
+`bfcl_simple_python` two-sample probe still recorded score `0.0000` with
+`HTTP Error 400: Bad Request`; the response body was not preserved by that
+old path. These are baseline failures, not corrected scores.
 
 The existing code was not changed to work around this blocker. The current
 test evidence is recorded in `test-results.txt`:
@@ -51,5 +58,13 @@ uv pip install --python "$env:UV_PROJECT_ENVIRONMENT\Scripts\python.exe" --edita
 uv run --no-default-groups --no-sync -- pytest -q tests/test_lighteval_answer_adapters.py
 ```
 
-The target service must be listening on port `19329` before any model-backed
-baseline or later benchmark stage can run.
+For the actual WSL endpoint, run from the WSL checkout so `127.0.0.1:19329`
+resolves to the model tunnel:
+
+```sh
+cd /home/chase/GitHub/helicopter
+export HELICOPTER_EVAL_API_KEY=rwkv-skills
+uv run --no-default-groups --no-sync python \
+  experiments/evalscope_agent/baseline/probe_chat.py \
+  --output experiments/evalscope_agent/baseline/chat-preflight.json
+```
