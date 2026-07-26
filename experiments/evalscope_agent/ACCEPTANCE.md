@@ -16,12 +16,12 @@ This audit is tied to commit `04c5c9d` and the fixed experiment configuration:
 | Requirement | Status | Evidence |
 | --- | --- | --- |
 | Local RWKV endpoint can be called | PASS | `baseline/chat-naive-preflight.json`; real v3 HTTP runs and EvalScope reports |
-| Naive Chat serialization is correct | PASS | `src/cli/helicopter_cli/naive_chat.py`, `tests/test_naive_chat.py`, `baseline/chat-naive-preflight.json` |
+| Naive Chat serialization is correct | PASS | `src/cli/helicopter_cli/naive_chat.py`, `src/cli/helicopter_cli/naive_chat_proxy.py`, proxy/serializer tests in `tests/test_naive_chat.py`, `baseline/chat-naive-preflight.json` |
 | Existing system and business messages are preserved | PASS | serializer tests cover role/order/content; proxy only transforms the outbound request boundary |
 | EvalScope Agent datasets are wired | PASS | `benchmarks/evalscope_agent_datasets.json`, CLI catalog listing returns 30 datasets |
 | Reproducible benchmark execution | CONDITIONAL | fixed config and real `general_fc`/GAIA v3 runs pass; SWE-bench was not scored because its optional verifier dependency is separate |
 | Raw response and request trace are retained | PASS | v3 `raw/naive_chat.jsonl`, `raw/trace_report.json`, timestamped `raw/acceptance_report.json` |
-| Answer extraction is strict and non-repairing | PASS | `evalscope_agent_results.py`; 16 targeted regression tests |
+| Answer extraction is strict and non-repairing | PASS | `evalscope_agent_results.py`; 17 targeted regression tests |
 | Discrimination separates transport/format/extraction/model failures | PASS | `tests/test_evalscope_agent_results.py`; live reports show `format_invalid`, `context_truncated`, and official scores separately |
 | All discovered issues have regression coverage | PASS | naive Chat, native tool-call validation, direct short answers, timestamped workdir linkage, and acceptance report tests |
 | No blocking pipeline error | CONDITIONAL | pipeline completes end-to-end; model capability blocker remains for tool-use scoring |
@@ -40,7 +40,7 @@ This audit is tied to commit `04c5c9d` and the fixed experiment configuration:
   HTTP 200 with prose and no `function_call`; `post-audit/native-tools-20260726.json`
   returned the unchanged HTTP 400 parser configuration error.
 - `uv lock --check`: passed.
-- `uv run --no-default-groups --no-sync pytest -q tests/test_naive_chat.py tests/test_evalscope_agent.py tests/test_evalscope_agent_results.py`: **16 passed**.
+- `uv run --no-default-groups --no-sync pytest -q tests/test_naive_chat.py tests/test_evalscope_agent.py tests/test_evalscope_agent_results.py`: **17 passed**.
 
 ## Go/no-go decision
 

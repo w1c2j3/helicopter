@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.request import Request, urlopen
 
+from helicopter_cli.naive_chat_proxy import NaiveChatProxy
 from helicopter_cli.naive_chat import serialize_messages, serialize_openai_request
 
 
@@ -58,3 +62,56 @@ def test_serialize_openai_request_rejects_missing_messages() -> None:
         assert "messages array" in str(error)
     else:
         raise AssertionError("missing messages must be an explicit transport failure")
+
+
+def test_proxy_serializes_request_preserves_response_and_records_trace(tmp_path) -> None:
+    received: list[dict[str, object]] = []
+
+    class UpstreamHandler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            received.append(json.loads(body))
+            response = b'{"id":"upstream","choices":[{"message":{"content":"raw model output"}}]}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), UpstreamHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    trace = tmp_path / "trace.jsonl"
+    proxy = NaiveChatProxy(f"http://127.0.0.1:{upstream.server_port}/v1", api_key="secret", trace_path=trace)
+    try:
+        proxy.start()
+        request = Request(
+            f"{proxy.base_url}/chat/completions",
+            data=json.dumps(
+                {
+                    "model": "rwkv",
+                    "messages": [{"role": "system", "content": "S"}, {"role": "user", "content": "U"}],
+                    "tools": [{"type": "function", "function": {"name": "bash"}}],
+                    "tool_choice": "auto",
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": "Bearer client-secret"},
+            method="POST",
+        )
+        with urlopen(request, timeout=10) as response:  # noqa: S310 - test-only local server
+            assert response.status == 200
+            assert response.read() == b'{"id":"upstream","choices":[{"message":{"content":"raw model output"}}]}'
+    finally:
+        proxy.close()
+        upstream.shutdown()
+        upstream.server_close()
+        thread.join(timeout=5)
+
+    assert received[0]["messages"][0]["content"].endswith("Assistant:")
+    assert "tools" not in received[0]
+    trace_record = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
+    assert trace_record["response"]["body"]["choices"][0]["message"]["content"] == "raw model output"
+    assert trace_record["request"]["headers"]["Authorization"] == "Bearer [redacted]"
