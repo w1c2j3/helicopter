@@ -32,6 +32,11 @@ def test_short_answer_requires_marker_and_distinguishes_model_error() -> None:
     assert discriminate_agent_result(extraction, reference_answer="Grace Hopper").status == "model_error"
     assert extract_agent_answer("Ada Lovelace", format_kind="short_answer").status == "extraction_failed"
 
+    direct = extract_agent_answer("17", format_kind="short_answer_direct")
+    assert direct.status == "ok"
+    assert discriminate_agent_result(direct, reference_answer="17").status == "correct"
+    assert extract_agent_answer("reasoning\n17", format_kind="short_answer_direct").status == "extraction_failed"
+
 
 def test_code_and_structured_answers_are_not_repaired() -> None:
     code = extract_agent_answer("```python\nprint(1)\n```", format_kind="code")
@@ -117,4 +122,5 @@ def test_acceptance_report_joins_official_target_and_raw_prediction(tmp_path) ->
     assert report["counts"] == {"model_error": 1}
     assert report["samples"][0]["reference_answer"] == "Grace Hopper"
     assert report["samples"][0]["extraction"]["raw_response"] == "Exact Answer: Ada Lovelace"
+    assert report["samples"][0]["raw_model_output"]["choices"][0]["message"]["content"] == "Exact Answer: Ada Lovelace"
     assert report["official_reports"][0]["report"]["score"] == 0.0

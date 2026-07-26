@@ -110,6 +110,14 @@ def extract_agent_answer(
             return _failed(kind, raw, "no complete numeric answer was found")
         return ExtractionResult(kind, raw, answer, "ok")
 
+    if kind in {"short_answer_direct", "direct_short_answer"}:
+        candidate = raw.strip()
+        if not candidate:
+            return _failed(kind, raw, "direct short answer is empty")
+        if "\n" in candidate or "\r" in candidate:
+            return _failed(kind, raw, "direct short answer contains multiple lines; refusing to truncate reasoning")
+        return ExtractionResult(kind, raw, candidate, "ok")
+
     if kind in {"short_answer", "short", "browsecomp"}:
         match = _ANSWER_LINE.search(raw)
         if not match:
@@ -154,7 +162,7 @@ def _same_answer(left: str, right: str, kind: str) -> bool:
             return json.loads(left) == json.loads(right)
         except json.JSONDecodeError:
             return False
-    if kind in {"short_answer", "short", "browsecomp"}:
+    if kind in {"short_answer", "short", "browsecomp", "short_answer_direct", "direct_short_answer"}:
         return " ".join(left.split()).casefold() == " ".join(right.split()).casefold()
     return left.strip() == right.strip()
 
@@ -289,7 +297,9 @@ def _dataset_format(dataset: str, *, prediction: dict[str, Any], review: dict[st
         return "code"
     if any(token in name for token in ("math", "numeric")):
         return "numeric"
-    if any(token in name for token in ("gaia", "browsecomp", "short_answer")):
+    if any(token in name for token in ("gaia", "browsecomp")):
+        return "short_answer_direct"
+    if "short_answer" in name:
         return "short_answer"
     if isinstance(metadata, dict) and metadata.get("tools"):
         return "function_calling"
@@ -383,6 +393,8 @@ def write_acceptance_report(output_dir: Path, *, exit_code: int | None = None) -
                 "format_kind": format_kind,
                 "reference_answer": reference_answer,
                 "official_sample_score": sample_score,
+                "messages": prediction.get("messages"),
+                "raw_model_output": prediction.get("model_output"),
                 "extraction": extraction.to_dict(),
                 "decision": decision.to_dict(),
                 "agent_trace": prediction.get("agent_trace"),

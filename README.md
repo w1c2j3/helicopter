@@ -406,6 +406,9 @@ uv run --no-default-groups --no-sync helicopter eval evalscope \
 This is diagnostic evidence, not a second scorer: missing `tool_calls`,
 truncated generations, HTTP failures, extraction failures, and strict model
 errors remain distinct instead of being repaired into a passing answer.
+For datasets whose official contract is a single-line answer (such as GAIA),
+the extractor accepts only a non-empty single-line raw response; a reasoning
+transcript is never truncated to manufacture a final answer.
 
 The curated directly runnable non-function-calling LightEval catalog is stored
 in the scoreboard database table `benchmark_catalog`. It keeps 30 diverse,
