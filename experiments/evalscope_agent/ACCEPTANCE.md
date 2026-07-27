@@ -3,11 +3,15 @@
 Status: **FINAL CANDIDATE (native local/remote paths and server-side SWE-bench execution verified; quality gate not met)**.
 
 This audit records the fixed experiment configuration, the post-audit
-vllm-rwkv source review, a separate local native-tool run, a remote GPU1 native
-2.9B run, and a forwarded 19329 external-bridge comparison. The formal local
-runner uses the local 19316 service; the remote 19331 service was a separate
-temporary native validation endpoint and the existing 19329 process was not
-modified:
+vllm-rwkv interface review, a separate local native-tool run, a remote GPU1
+native 2.9B run, and a forwarded 19329 external-bridge comparison. The
+EvalScope implementation owns dataset preparation, context assembly, model
+requests, raw-response retention, answer extraction, discrimination, and
+reporting. vllm-rwkv parser/template changes and model/Agent behavior are
+external dependencies; no inference-engine patch is shipped by this branch.
+The formal local runner uses the local 19316 service; the remote 19331 service
+was a separate temporary native validation endpoint and the existing 19329
+process was not modified:
 
 - API: `http://127.0.0.1:19316/v1`
 - Model: `rwkv7-g1h-1.5b-20260710-ctx10240`
@@ -23,18 +27,18 @@ modified:
 | Local RWKV endpoint can be called | PASS | `baseline/chat-naive-preflight.json`; real v3 HTTP runs and EvalScope reports |
 | Naive Chat serialization is correct | PASS | `src/cli/helicopter_cli/naive_chat.py`, `src/cli/helicopter_cli/naive_chat_proxy.py`, proxy/serializer tests in `tests/test_naive_chat.py`, `baseline/chat-naive-preflight.json` |
 | Existing system and business messages are preserved | PASS | serializer tests cover role/order/content; proxy only transforms the outbound request boundary |
-| vllm-rwkv native tool path is configured | PASS (local 19316 and temporary remote 19331); NOT CONFIGURED (existing 19329) | `vllm-rwkv` `rwkv_tool_parser.py`, native RWKV chat template, native preflight records, and `vllm-rwkv-tool-calls.patch`; patched GPU1/19331 accepts the checkpoint's `<tool_calls>` array, while existing 19329 still lacks the required flags |
+| vllm-rwkv native tool path is configured | EXTERNAL DEPENDENCY | The endpoint must expose OpenAI-compatible `message.tool_calls`; the pipeline only records the response and classifies a missing/malformed call. The temporary parser experiment is not part of this repository or runtime |
 | EvalScope Agent datasets are wired | PASS | `benchmarks/evalscope_agent_datasets.json`, CLI catalog listing returns 30 datasets |
 | Reproducible benchmark execution | CONDITIONAL | fixed config, local native runs, and server-side SWE-bench one-sample execution complete with `uv`; GAIA remains separately image-gated and formal quality thresholds are not met |
 | Raw response and request trace are retained | PASS | v3 `raw/naive_chat.jsonl`, `raw/trace_report.json`, timestamped `raw/acceptance_report.json` |
 | Answer extraction is strict and non-repairing | PASS | `evalscope_agent_results.py`; 22 targeted regression tests |
 | Discrimination separates transport/format/extraction/model failures | PASS | `tests/test_evalscope_agent_results.py`; live reports show `format_invalid`, `context_truncated`, and official scores separately |
 | All discovered issues have regression coverage | PASS | naive Chat, native tool-call validation, direct short answers, timestamped workdir linkage, and acceptance report tests |
-| EvalScope Agent regression suite | PASS | `tests/test_naive_chat.py`, `tests/test_evalscope_agent.py`, and `tests/test_evalscope_agent_results.py`: 22 passed |
+| EvalScope Agent regression suite | PASS | `tests/test_naive_chat.py`, `tests/test_evalscope_agent.py`, and `tests/test_evalscope_agent_results.py`: 24 passed |
 | Full repository regression | CONDITIONAL | full run: 292 passed, 6 skipped, 22 failures in existing LightEval/Famous120/benchmark compatibility tests; no EvalScope Agent test failed. Excluding the two LightEval test files leaves 23 passed and one pre-existing sampling-budget failure |
 | No blocking pipeline error | PASS (local path); PASS (forwarded external FC path) | local 19316 health check, native preflight, no-proxy EvalScope run, and forwarded 19329 external `general_fc` run all complete; forwarded GAIA is separately blocked by Docker image pull |
-| Server-side SWE-bench environment | PASS | `/home/rwkv/chase/EvalScope`, `swebench==4.1.0`, exact Astropy image, GPU1/19331, patched RWKV parser, container creation/cleanup, scoring and HTML report all completed in round 4 |
-| Key benchmark metrics meet the project threshold | NOT MET | local v3 `general_fc tool_call_f1=0`, local GAIA `mean_acc=0`, forwarded 19329 `general_fc tool_call_f1=0`, and native remote GPU1 `general_fc tool_call_f1=0`; GPU1 round 7 removes the 2048-token truncation with `max_tokens=4096` but still returns no tool call, confirming a model decision/quality failure |
+| Server-side SWE-bench environment | PASS (pipeline path) | `/home/rwkv/chase/EvalScope`, `swebench==4.1.0`, exact Astropy image, GPU1/19331, container creation/cleanup, scoring and HTML report all completed; inference-engine parser behavior remains external |
+| Key benchmark metrics meet the project threshold | NOT MET | local v3 `general_fc tool_call_f1=0`, local GAIA `mean_acc=0`, forwarded 19329 `general_fc tool_call_f1=0`, and native remote GPU1 five-sample `general_fc tool_call_f1=0`; the five-sample run contains positive/negative model decision errors, while controlled one-sample true-negative rounds are correctly classified `correct_no_tool_call` |
 | Code, logs, reports, and checkpoints uploaded | PASS | branch `updata/supported-dataset` contains the integration, native/local, forwarded comparison, reproducibility, and server-side SWE-bench evidence commits; tags `evalscope/native-local-code`, `evalscope/native-local-benchmark`, `evalscope/native-local-gaia`, `evalscope/forwarded-external-code`, and `evalscope/reproducible-runner` provide rollback points |
 | Every major phase has a rollback checkpoint | PASS | `baseline/*` and `evalscope/*` annotated tags |
 | Input-to-report pipeline is automatic | PASS | `helicopter eval evalscope ...` produces EvalScope reports, predictions, reviews, traces, and `acceptance_report.json`; `--report-only` rebuilds evidence |
@@ -57,14 +61,14 @@ modified:
 - `results/evalscope/local-general-fc-1p5b-20260727/20260727_065200/`: one
   no-proxy native EvalScope sample completed with official
   `tool_call_f1=0`; the sample asked for no tool, while the model still
-  returned prose. The acceptance report classifies the missing tool object as
-  `format_invalid` and preserves the raw response.
+  returned prose. The corrected acceptance report classifies this true negative
+  as `correct_no_tool_call` and preserves the raw response.
 - `results/evalscope/local-general-fc-1p5b-20260727-limit5/20260727_070506/`:
   five-sample local no-proxy rerun completed with exit code 0; all five raw
   responses are preserved, including one sample with
-  `should_call_tool=true`. The model emitted no native tool call in any sample,
-  so the diagnostic count is `format_invalid=5` and the official
-  `tool_call_f1=0`.
+  `should_call_tool=true`. The corrected diagnostic count is four
+  `correct_no_tool_call` true negatives and one `model_error` false negative;
+  the official `tool_call_f1=0` remains unchanged.
 - `results/evalscope/local-gaia-1p5b-20260727/20260727_071448/`: local native
   GAIA run completed for one sample in each of the three levels with exit code
   0; all three official scores are 0, and the diagnostic report records
@@ -98,12 +102,14 @@ modified:
   corrected native GAIA attempt. EvalScope entered the AgentLoop, but Docker
   could not pull `python:3.11`; the run is not scored.
 - `results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727-round6/20260727_100621/`:
-  one-sample GPU1 rerun with `max_tokens=2048`; the original response reached
-  the output cap and the acceptance report records `format_invalid=1`.
+  one-sample GPU1 rerun with `max_tokens=2048`; metadata says no tool call was
+  expected, and the corrected acceptance report records `correct_no_tool_call`.
 - `results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727-round7-max4096/20260727_100812/`:
   identical sample and endpoint with `max_tokens=4096`; the response ended
-  after about 390 tokens without a native tool call, so the score remained 0.
-  This controlled comparison rules out output truncation as the sole cause.
+  after about 390 tokens without a native tool call and is also
+  `correct_no_tool_call`; the one-sample F1 remains 0 because there is no
+  positive label. This controlled comparison rules out output truncation as
+  the sole cause of the five-sample quality failure.
 - `results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server/20260727_092121/`:
   first server-side SWE-bench run after adding the reproducible `swebench`
   dependency group. The exact Astropy image ran, but the model's invalid JSON
@@ -112,22 +118,25 @@ modified:
   patched-parser and `max_tokens=2048` rerun. Native `bash` calls were parsed
   and executed in the Docker sandbox; the official score is 0 because the
   model later requested unavailable `view`/`str_replace_editor` tools and did
-  not submit a patch. No client-side answer or patch repair was used.
+  not submit a patch; the corrected diagnostic is `agent_incomplete`, not an
+  extraction failure. No client-side answer or patch repair was used.
 - `results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server-round8-max4096/20260727_101325/`:
   same Astropy sample with `max_tokens=4096`; 34 native `bash` calls ran, the
   container was cleaned up, and the report was generated. The model repeatedly
   requested unavailable `view`, hit `max_steps_exceeded`, and produced no
-  patch, so `mean_acc=0` remains a model/agent-quality result.
+  patch, so the corrected diagnostic is `agent_incomplete` and `mean_acc=0`
+  remains a model/agent-quality result.
 - `experiments/evalscope_agent/vllm-rwkv-tool-calls.patch`:
   standalone external vllm-rwkv parser patch and regression additions. Direct
   parser checks passed for both non-streaming and streaming `<tool_calls>`.
 - `uv lock --check`: passed.
-- `uv run --no-default-groups --group agent --group eval --with pytest pytest -q tests/test_naive_chat.py tests/test_evalscope_agent.py tests/test_evalscope_agent_results.py`: **22 passed**.
+- `uv run --no-default-groups --group agent --group eval --with pytest pytest -q tests/test_naive_chat.py tests/test_evalscope_agent.py tests/test_evalscope_agent_results.py`: **24 passed**.
 - Server-side `uv sync --no-default-groups --group agent --group eval --group swe-bench`: completed; `swebench==4.1.0` installed.
 - Server-side SWE-bench round 4: exit code 0, 1 sample, 5 model requests, native tool calls executed, `mean_acc=0`, full HTML/JSON/trace artifacts.
 - GPU1 `general_fc` rounds 6 and 7: both exit code 0; round 7 used
   `max_tokens=4096`, kept the raw response unchanged, and still recorded
-  `format_invalid=1` with official `tool_call_f1=0`.
+  `correct_no_tool_call` with official `tool_call_f1=0` on the one-sample
+  true-negative input.
 - GPU1 SWE-bench round 8: exit code 0, `max_tokens=4096`, 5-step loop,
   34 native tool calls, `max_steps_exceeded`, `mean_acc=0`, and complete
   prediction/review/report/acceptance artifacts.

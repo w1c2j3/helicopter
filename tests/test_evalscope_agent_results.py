@@ -59,6 +59,21 @@ def test_swe_bench_backticks_and_tool_call_failures_are_explicit() -> None:
     missing_tool_call = extract_agent_answer("I should call bash.", format_kind="function_calling")
     assert discriminate_agent_result(missing_tool_call).status == "format_invalid"
 
+    no_tool_call = extract_agent_answer(
+        "No action is needed.",
+        format_kind="function_calling",
+        expected_tool_call=False,
+    )
+    assert no_tool_call.status == "no_tool_call"
+    assert discriminate_agent_result(no_tool_call).status == "correct_no_tool_call"
+
+    required_missing = extract_agent_answer(
+        "I should call bash.",
+        format_kind="function_calling",
+        expected_tool_call=True,
+    )
+    assert required_missing.status == "model_error"
+
     native_tool_call = extract_agent_answer(
         "",
         format_kind="function_calling",
@@ -124,6 +139,100 @@ def test_acceptance_report_joins_official_target_and_raw_prediction(tmp_path) ->
     assert report["samples"][0]["extraction"]["raw_response"] == "Exact Answer: Ada Lovelace"
     assert report["samples"][0]["raw_model_output"]["choices"][0]["message"]["content"] == "Exact Answer: Ada Lovelace"
     assert report["official_reports"][0]["report"]["score"] == 0.0
+
+
+def test_acceptance_report_respects_general_fc_no_call_labels(tmp_path) -> None:
+    prediction_dir = tmp_path / "predictions" / "model"
+    review_dir = tmp_path / "reviews" / "model"
+    prediction_dir.mkdir(parents=True)
+    review_dir.mkdir(parents=True)
+    predictions = [
+        {
+            "index": 0,
+            "model_output": {
+                "choices": [{"finish_reason": "stop", "message": {"content": "No action needed.", "tool_calls": None}}]
+            },
+            "metadata": {"should_call_tool": False},
+        },
+        {
+            "index": 1,
+            "model_output": {
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "search", "arguments": {"queries": ["x"]}},
+                                }
+                            ],
+                        },
+                    }
+                ]
+            },
+            "metadata": {"should_call_tool": False},
+        },
+    ]
+    reviews = [
+        {"index": 0, "target": "", "sample_score": {"score": {"value": {"passed": True}}}},
+        {"index": 1, "target": "", "sample_score": {"score": {"value": {"passed": False}}}},
+    ]
+    (prediction_dir / "general_fc_default.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in predictions) + "\n", encoding="utf-8"
+    )
+    (review_dir / "general_fc_default.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in reviews) + "\n", encoding="utf-8"
+    )
+
+    output = write_acceptance_report(tmp_path, exit_code=0)
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["counts"] == {"correct_no_tool_call": 1, "model_error": 1}
+
+
+def test_acceptance_report_uses_native_swebench_toolcall_strategy(tmp_path) -> None:
+    prediction_dir = tmp_path / "predictions" / "model"
+    review_dir = tmp_path / "reviews" / "model"
+    prediction_dir.mkdir(parents=True)
+    review_dir.mkdir(parents=True)
+    prediction = {
+        "index": 0,
+        "model_output": {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "bash", "arguments": {"command": "echo hi"}},
+                            }
+                        ],
+                    },
+                }
+            ]
+        },
+        "metadata": {},
+        "agent_trace": {
+            "strategy": "swe_bench_toolcall",
+            "events": [{"type": "error", "payload": {"message": "max_steps_exceeded"}}],
+        },
+    }
+    review = {"index": 0, "target": "", "sample_score": {"score": {"value": {"acc": 0.0}}}}
+    (prediction_dir / "swe_bench_verified_agentic_default.jsonl").write_text(
+        json.dumps(prediction) + "\n", encoding="utf-8"
+    )
+    (review_dir / "swe_bench_verified_agentic_default.jsonl").write_text(json.dumps(review) + "\n", encoding="utf-8")
+
+    output = write_acceptance_report(tmp_path, exit_code=0)
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["counts"] == {"agent_incomplete": 1}
+    assert report["samples"][0]["format_kind"] == "function_calling"
+    assert report["samples"][0]["extraction"]["status"] == "ok"
 
 
 def test_acceptance_report_can_use_trace_report_from_an_outer_proxy_dir(tmp_path) -> None:

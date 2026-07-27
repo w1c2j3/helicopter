@@ -8,6 +8,13 @@ post-audit native run uses the local-only `http://127.0.0.1:19316/v1` service
 with `rwkv7-g1h-1.5b-20260710-ctx10240`. The paths remain separately recorded.
 All runs use API key `rwkv-skills` and a 10240-token context limit.
 
+Scope boundary: this repository prepares benchmark data, assembles the
+existing messages, requests the model, retains the raw response, extracts an
+answer, and discriminates the result. vllm-rwkv parsing/template changes,
+tool availability, sandbox execution, and model behavior are external. The
+standalone parser patch mentioned below is an upstream issue artifact only; it
+is not shipped, imported, or required by the EvalScope pipeline.
+
 ## Checkpoints
 
 - `4a68cb0` / `baseline/pre-evalscope`: original pre-integration code.
@@ -41,9 +48,9 @@ All runs use API key `rwkv-skills` and a 10240-token context limit.
   trace, external `general_fc` run, GAIA sandbox-blocked run, and audit records.
 - `ad84822` / `evalscope/reproducible-runner`: uv dependency-group selection in
   the local runner and the corrected 22-test acceptance count.
-- The pending server-side SWE-bench checkpoint records the exact remote image,
-  the patched `<tool_calls>` parser artifact, and the round-4 native run before
-  the GPU was released for reassignment.
+- The pending server-side SWE-bench checkpoint records the exact remote image
+  and the round-4 native run before the GPU was released for reassignment;
+  parser behavior is recorded only as an external dependency.
 - `5f7171d`: regression boundary and the distinction between Agent-specific
   passes and unrelated LightEval compatibility failures are recorded.
 - The timestamped-workdir fix is validated by the v3 reruns below: the inner
@@ -65,12 +72,10 @@ All runs use API key `rwkv-skills` and a 10240-token context limit.
 - `post-audit/forwarded-2p9b-native-tools-gpu1-20260727.screen.log` is the
   captured vLLM startup, request, and normal SIGTERM shutdown log for that
   temporary GPU1 service.
-- `vllm-rwkv-tool-calls.patch` records the isolated vllm-rwkv parser/test change
-  applied to the server checkout: accept the `<tool_calls>` JSON-array form
-  emitted by this RWKV checkpoint while retaining strict tool-name and
-  argument validation. The server checkout also contains unrelated pre-existing
-  changes, so the patch is kept as a standalone rollback artifact rather than
-  committed there.
+- `vllm-rwkv-tool-calls.patch` is retained only as an external issue draft:
+  vllm-rwkv should normalize the checkpoint's `<tool_calls>` JSON-array form
+  to OpenAI `message.tool_calls`, including streaming deltas. It is not part of
+  this repository's implementation and must not be treated as a pipeline fix.
 - `post-audit/forwarded-2p9b-native-tools-gpu1-round3.screen.log` records the
   restarted GPU1/19331 service with that parser patch loaded.
 - `post-audit/forwarded-2p9b-naive-proxy-20260727.json` and its JSONL trace
@@ -95,22 +100,22 @@ model response. See `naive-proxy-trace.jsonl`.
 | Run | Dataset/limit | Generation | Official result | Diagnostic result |
 | --- | --- | --- | --- | --- |
 | `results/evalscope/live-general-fc` | `general_fc`, 1 | default, total reached 10240 | all scores 0 | raw output ended with `finish_reason=length`; old run had no diagnostic report |
-| `results/evalscope/live-general-fc-v2` | `general_fc`, 1 | `max_tokens=1024`, `temperature=0` | `tool_call_f1=0`, schema/tool-call counts 0 | `acceptance_report.json` records missing native `tool_calls` as `format_invalid` and retains the separate context-limit trace |
+| `results/evalscope/live-general-fc-v2` | `general_fc`, 1 | `max_tokens=1024`, `temperature=0` | `tool_call_f1=0`, schema/tool-call counts 0 | corrected acceptance report classifies the no-call sample as `correct_no_tool_call` and retains the separate context-limit trace |
 | `results/evalscope/live-gaia-v2` | `gaia/2023_level1`, 1 | `max_tokens=1024`, `max_steps=2` | `mean_acc=0` | `acceptance_report.json` joins target `17`, official `acc=0`, two raw requests, and no-tool-call/truncation diagnostics |
 | `results/evalscope/live-general-fc-v3/<timestamp>` | `general_fc`, 1 | `max_tokens=1024`, `temperature=0` | `tool_call_f1=0`, schema/tool-call counts 0 | post-extractor rerun; timestamped workdir, official report, predictions/reviews, raw proxy trace, and acceptance report all present |
 | `results/evalscope/live-gaia-v3/<timestamp>` | `gaia/2023_level1`, 1 | `max_tokens=1024`, `max_steps=2` | `mean_acc=0` | post-extractor rerun; target `17`, official `acc=0`, two requests, and timestamped acceptance/trace reports all present |
 | `results/evalscope/local-general-fc-1p5b-20260727/20260727_065200` | `general_fc`, 1 | local 19316, native tool path, no proxy, `max_steps=3` | `tool_call_f1=0`, schema/tool-call counts 0 | full local prediction/review/report/acceptance artifacts; selected sample had `should_call_tool=false`, and the model returned prose without `tool_calls` |
-| `results/evalscope/local-general-fc-1p5b-20260727-limit5/20260727_070506` | `general_fc`, 5 | local 19316, native tool path, no proxy, `max_tokens=1024` | `tool_call_f1=0`, `count_finish_reason_tool_call=0`, `schema_accuracy=0` | all 5 responses retained; sample 2 required a tool, but all five were classified `format_invalid` because the model returned text without `tool_calls`; mean latency 4.0416s, output throughput 230.65 tok/s |
+| `results/evalscope/local-general-fc-1p5b-20260727-limit5/20260727_070506` | `general_fc`, 5 | local 19316, native tool path, no proxy, `max_tokens=1024` | `tool_call_f1=0`, `count_finish_reason_tool_call=0`, `schema_accuracy=0` | all 5 responses retained; corrected diagnostics are four `correct_no_tool_call` true negatives and one `model_error` false negative for the required call; mean latency 4.0416s, output throughput 230.65 tok/s |
 | `results/evalscope/local-gaia-1p5b-20260727/20260727_071448` | `gaia`, 3 (one per level) | local 19316, native AgentLoop, no proxy, `max_tokens=1024` | official `mean_acc=0` | full GAIA prediction/review/report/acceptance artifacts; all 3 samples were classified `extraction_failed` because the model returned multiline reasoning where GAIA requires a single-line final answer |
-| `results/evalscope/forwarded-general-fc-2p9b-20260727/20260727_073359` | `general_fc`, 1 | forwarded 19329 2.9B, external mock bridge + naive proxy, `max_tokens=1024`, `temperature=0` | official `tool_call_f1=0`, schema/tool-call counts 0 | exit code 0; raw response reached the generation cap, diagnostic status `context_truncated` plus `format_invalid`; mean latency 6.8861s, output throughput 148.71 tok/s |
+| `results/evalscope/forwarded-general-fc-2p9b-20260727/20260727_073359` | `general_fc`, 1 | forwarded 19329 2.9B, external mock bridge + naive proxy, `max_tokens=1024`, `temperature=0` | official `tool_call_f1=0`, schema/tool-call counts 0 | exit code 0; corrected diagnostic status is `correct_no_tool_call`; mean latency 6.8861s, output throughput 148.71 tok/s |
 | `results/evalscope/forwarded-gaia-2p9b-20260727/20260727_073310` | `gaia`, 3 (one per level) | forwarded 19329 2.9B, external mock bridge + naive proxy | not scored | EvalScope entered the external bridge, but all samples were blocked before model calls by Docker failing to pull `python:3.11`; task config and acceptance report are retained |
 | `results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727/20260727_081019` | `general_fc`, 5 | remote GPU1/19331 2.9B, native vllm-rwkv tool parser, no proxy, `max_tokens=1024`, `temperature=0`, `max_steps=3` | `tool_call_f1=0`, `count_finish_reason_tool_call=1`, `count_successful_tool_call=1`, `schema_accuracy=1` | exit code 0; all five raw predictions retained; mean latency 6.6388s, output throughput 148.94 tok/s. The zero F1 is a model decision/answer-quality failure, not a transport or extraction failure |
-| `results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727-round6/20260727_100621` | `general_fc`, 1 | remote GPU1/19331 2.9B, native parser, no proxy, `max_tokens=2048`, `temperature=0` | `tool_call_f1=0`, `schema_accuracy=0` | exit code 0; input 3182 tokens and output reached 2048, `format_invalid=1`; the sample metadata required no tool, but the model produced unfinished prose at `finish_reason=length` |
-| `results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727-round7-max4096/20260727_100812` | `general_fc`, 1 | same endpoint/messages as round 6, `max_tokens=4096`, `temperature=0` | `tool_call_f1=0`, `schema_accuracy=0` | exit code 0; output stopped at about 390 tokens without a native call and remained `format_invalid=1`; increasing the output cap removed truncation but did not improve the model decision |
+| `results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727-round6/20260727_100621` | `general_fc`, 1 | remote GPU1/19331 2.9B, native parser, no proxy, `max_tokens=2048`, `temperature=0` | `tool_call_f1=0`, `schema_accuracy=0` | exit code 0; the sample metadata required no tool and the strict diagnostic is now `correct_no_tool_call`; the single true-negative sample has F1 0 because it contains no positive tool-call label |
+| `results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727-round7-max4096/20260727_100812` | `general_fc`, 1 | same endpoint/messages as round 6, `max_tokens=4096`, `temperature=0` | `tool_call_f1=0`, `schema_accuracy=0` | exit code 0; output stopped at about 390 tokens without a native call and is correctly classified `correct_no_tool_call`; increasing the output cap did not change the model decision |
 | `results/evalscope/forwarded-native-gaia-2p9b-gpu1-20260727-function-calling/20260727_081217` | `gaia`, 3 (one per level) | remote GPU1/19331 2.9B, native AgentLoop, `function_calling`, `max_steps=3` | not scored | the corrected run entered the AgentLoop but Docker timed out pulling `python:3.11`, then the temporary 19331 service received SIGTERM. No GAIA score is claimed |
 | `results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server/20260727_092121` | `swe_bench_verified_agentic`, 1 | server `/home/rwkv/chase/EvalScope`, remote Docker image, native 19331, `max_tokens=1024`, `max_steps=5` | `mean_acc=0` | full container and EvalScope path completed; raw response used an invalid mini-swe-agent JSON action and patch application failed; no environment blocker |
-| `results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server-round4/20260727_093947` | `swe_bench_verified_agentic`, 1 | server `/home/rwkv/chase/EvalScope`, patched RWKV parser, remote Docker image, native 19331, `max_tokens=2048`, `max_steps=5` | `mean_acc=0` | end-to-end pipeline path passed: native `bash` calls executed in the container and raw/review/report/HTML/acceptance artifacts generated; score 0 because the model requested unavailable `str_replace_editor/view` tools and did not submit a patch |
-| `results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server-round8-max4096/20260727_101325` | `swe_bench_verified_agentic`, 1 | same server/image/parser/tool contract as round 4, `max_tokens=4096`, `max_steps=5` | `mean_acc=0` | exit code 0; 34 native `bash` calls executed, but the model repeatedly requested unavailable `view`, then the loop ended with `max_steps_exceeded` and no patch; sandbox cleanup and full reports passed |
+| `results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server-round4/20260727_093947` | `swe_bench_verified_agentic`, 1 | server `/home/rwkv/chase/EvalScope`, patched RWKV parser, remote Docker image, native 19331, `max_tokens=2048`, `max_steps=5` | `mean_acc=0` | end-to-end pipeline path passed: native `bash` calls executed in the container and raw/review/report/HTML/acceptance artifacts generated; strict diagnostic is `agent_incomplete` because the model requested unavailable tools and did not submit a patch |
+| `results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server-round8-max4096/20260727_101325` | `swe_bench_verified_agentic`, 1 | same server/image/parser/tool contract as round 4, `max_tokens=4096`, `max_steps=5` | `mean_acc=0` | exit code 0; 34 native `bash` calls executed, but the model repeatedly requested unavailable `view`, then the loop ended with `max_steps_exceeded` and no patch; strict diagnostic is `agent_incomplete`, sandbox cleanup and full reports passed |
 
 The second run proves the complete path: ModelScope dataset loading, proxy
 serialization, local model call, unchanged response, EvalScope report, and
@@ -149,10 +154,9 @@ failure.
 The server-side SWE-bench rounds close the environment question. The
 `swebench==4.1.0` dependency is now a reproducible `uv` group, the exact
 Astropy image was transferred to the server Docker registry, and the server
-copy of the project ran EvalScope with the same 2.9B endpoint. Round 4 also
-validated the vllm-rwkv `<tool_calls>` parser extension: the model's native
-calls were parsed and executed, and the sandbox container was created and
-cleaned up normally. The remaining zero score is a model/tool-contract
+copy of the project ran EvalScope with the same 2.9B endpoint. The pipeline
+received and recorded the native calls and the sandbox container was created
+and cleaned up normally. The remaining zero score is a model/tool-contract
 failure—after a valid `bash` call the checkpoint requested `view` and
 `str_replace_editor`, which this benchmark intentionally does not expose—and
 is not converted into a pass.
@@ -164,24 +168,28 @@ The increased output budget therefore did not repair the model's tool-contract
 behavior; the acceptance report keeps this as a model/agent-quality failure.
 
 The later single-sample GPU1 reruns isolate the generation-cap hypothesis. With
-the same input and tool schema, `max_tokens=2048` ended at the cap and was
-recorded as `format_invalid`; `max_tokens=4096` stopped after a short prose
-answer but still emitted no tool call and still scored zero. This is evidence
-against changing the extractor or discriminator: the native response is
-retained unchanged and the failure is the model's decision/output contract.
+the same input and tool schema, both `max_tokens=2048` and `max_tokens=4096`
+returned no tool call for a sample explicitly labelled `should_call_tool=false`.
+The strict diagnostic therefore records `correct_no_tool_call` and retains the
+raw response; the official F1 remains zero because a one-sample true-negative
+run has no true-positive label. The five-sample run remains the authoritative
+quality check for positive/negative decision errors.
 
 ## Failure classification
 
 - Chat format: fixed for the local endpoint by the naive Chat proxy; verified
   with a real HTTP 200 response.
-- Native tool transport: fixed in the managed server plan and verified on
-  local 19316 with `--enable-auto-tool-choice --tool-call-parser rwkv`.
+- Native tool transport: external endpoint contract; verified on local 19316
+  with the required server flags, but no vllm-rwkv parser implementation is
+  maintained in this repository.
 - Forwarded service configuration: 19329 is reachable and serves the expected
   2.9B model, but its live process rejects `tool_choice=auto` without the
   required native parser flags; this is an endpoint configuration issue, not
   an extraction or discriminator failure.
 - Interface error: reproduced as the original HTTP 400 tool-call request.
-- Model/format failure: `general_fc` response did not contain a tool call.
+- Model/format failure: a `general_fc` response that omits a required tool call
+  or emits a tool call for a `should_call_tool=false` sample is a model decision
+  failure; an explicitly expected no-call response is `correct_no_tool_call`.
 - Agent tool-contract failure: SWE-bench round 8 emitted valid `bash` calls but
   repeatedly selected the unavailable `view` command and ended at
   `max_steps_exceeded` without a patch; no tool name was rewritten or hidden.
@@ -211,9 +219,10 @@ retained unchanged and the failure is the model's decision/output contract.
   external SIGTERM after the GAIA Docker pull timeout; this was not an OOM or
   vLLM parser crash.
 - RWKV native parser: the direct long-context request produced the model's
-  `<tool_calls>` array. vllm-rwkv originally ignored that wrapper; the
-  standalone parser patch adds strict parsing and streaming coverage. The
-  patched parser passed direct non-streaming and streaming regression checks.
+  `<tool_calls>` array. If an endpoint does not map that wrapper to OpenAI
+  `message.tool_calls`, it is an upstream vllm-rwkv issue. The EvalScope
+  pipeline preserves the raw response and reports the contract failure; it
+  does not rewrite the response.
 - SWE-bench environment: the server-side run uses the existing exact Astropy
   image and has no dependency, Docker, or interface blocker. The sample still
   scores zero because the model did not finish a patch.
@@ -223,7 +232,7 @@ retained unchanged and the failure is the model's decision/output contract.
 
 ## Regression boundary (2026-07-27)
 
-- Agent-specific suite: **22 passed** with the Agent, naive-Chat, extraction,
+- Agent-specific suite: **24 passed** with the Agent, naive-Chat, extraction,
   and discrimination tests.
 - Full repository suite after `uv sync --no-default-groups --group agent
   --group eval`: **292 passed, 6 skipped, 22 failed**. The failures are in

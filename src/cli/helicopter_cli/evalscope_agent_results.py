@@ -56,6 +56,7 @@ def extract_agent_answer(
     *,
     format_kind: str,
     tool_calls: Any = None,
+    expected_tool_call: bool | None = None,
 ) -> ExtractionResult:
     """Extract an answer only when the requested wire format is explicit."""
 
@@ -63,8 +64,25 @@ def extract_agent_answer(
     kind = str(format_kind).strip().lower()
 
     if kind in {"function_calling", "tool_call", "tool_calls"}:
-        if not isinstance(tool_calls, list) or not tool_calls:
+        if tool_calls is None or (isinstance(tool_calls, list) and not tool_calls):
+            if expected_tool_call is False:
+                return ExtractionResult(
+                    kind,
+                    raw,
+                    None,
+                    "no_tool_call",
+                    "benchmark metadata explicitly expected no tool call; raw response retained",
+                )
+            if expected_tool_call is True:
+                return _failed(
+                    kind,
+                    raw,
+                    "benchmark required a tool call but the model returned none",
+                    status="model_error",
+                )
             return _failed(kind, raw, "model returned text without an OpenAI tool_calls object", status="format_invalid")
+        if not isinstance(tool_calls, list):
+            return _failed(kind, raw, "OpenAI tool_calls must be a list", status="format_invalid")
         for item in tool_calls:
             function = item.get("function") if isinstance(item, dict) else None
             if (
@@ -192,6 +210,14 @@ def discriminate_agent_result(
             reference_answer,
             extraction.raw_response,
         )
+    if extraction.status == "no_tool_call":
+        return DiscriminationResult(
+            "correct_no_tool_call",
+            "benchmark expected no tool call; raw response was retained without fabricating an answer",
+            extraction.extracted_answer,
+            reference_answer,
+            extraction.raw_response,
+        )
     if extraction.status != "ok":
         return DiscriminationResult(
             extraction.status,
@@ -292,6 +318,19 @@ def _dataset_format(dataset: str, *, prediction: dict[str, Any], review: dict[st
     if any(token in name for token in ("general_fc", "bfcl", "function_call", "tau", "tool")):
         return "function_calling"
     if "swe" in name:
+        trace = prediction.get("agent_trace")
+        strategy = trace.get("strategy") if isinstance(trace, dict) else None
+        if isinstance(strategy, str) and strategy.endswith("toolcall"):
+            return "function_calling"
+        if isinstance(strategy, str) and strategy.endswith("backticks"):
+            return "swe_bench_backticks"
+        model_output = prediction.get("model_output")
+        if isinstance(model_output, dict):
+            choices = model_output.get("choices")
+            if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                message = choices[0].get("message")
+                if isinstance(message, dict) and isinstance(message.get("tool_calls"), list):
+                    return "function_calling"
         return "swe_bench_backticks"
     if any(token in name for token in ("code", "terminal")):
         return "code"
@@ -321,6 +360,96 @@ def _model_output_parts(prediction: dict[str, Any]) -> tuple[str, list[dict[str,
     tool_calls = message.get("tool_calls")
     finish_reason = choice.get("finish_reason") or output.get("stop_reason")
     return str(content or ""), tool_calls if isinstance(tool_calls, list) else None, str(finish_reason) if finish_reason else None
+
+
+def _expected_tool_call(prediction: dict[str, Any], review: dict[str, Any]) -> bool | None:
+    metadata = prediction.get("metadata")
+    if not isinstance(metadata, dict):
+        sample_score = review.get("sample_score")
+        metadata = sample_score.get("sample_metadata", {}) if isinstance(sample_score, dict) else {}
+    if isinstance(metadata, dict) and "should_call_tool" in metadata:
+        return bool(metadata["should_call_tool"])
+    return None
+
+
+def _function_call_decision(
+    extraction: ExtractionResult,
+    decision: DiscriminationResult,
+    *,
+    expected_tool_call: bool | None,
+    sample_score: Any,
+) -> DiscriminationResult:
+    """Apply EvalScope GeneralFC's decision labels without repairing output."""
+
+    if extraction.format_kind not in {"function_calling", "tool_call", "tool_calls"}:
+        return decision
+    if expected_tool_call is None:
+        return decision
+
+    value = sample_score.get("score", {}).get("value", {}) if isinstance(sample_score, dict) else {}
+    passed = value.get("passed") if isinstance(value, dict) else None
+    if passed is True:
+        status = "correct_tool_call" if expected_tool_call else "correct_no_tool_call"
+        reason = "official GeneralFC scorer accepted the model's tool-call decision"
+        return DiscriminationResult(
+            status,
+            reason,
+            extraction.extracted_answer,
+            decision.reference_answer,
+            decision.raw_response,
+        )
+    if passed is False or extraction.status == "model_error":
+        reason = (
+            "official GeneralFC scorer rejected the model's tool-call decision"
+            if passed is False
+            else extraction.error or "model did not emit the required tool call"
+        )
+        return DiscriminationResult(
+            "model_error",
+            reason,
+            extraction.extracted_answer,
+            decision.reference_answer,
+            decision.raw_response,
+        )
+    if expected_tool_call is False and extraction.status == "ok":
+        return DiscriminationResult(
+            "model_error",
+            "model emitted a tool call although GeneralFC metadata expected none",
+            extraction.extracted_answer,
+            decision.reference_answer,
+            decision.raw_response,
+        )
+    return decision
+
+
+def _agent_trace_decision(
+    prediction: dict[str, Any],
+    decision: DiscriminationResult,
+) -> DiscriminationResult:
+    """Classify an incomplete AgentLoop separately from wire-format failures."""
+
+    trace = prediction.get("agent_trace")
+    if not isinstance(trace, dict):
+        return decision
+    errors = [event.get("payload", {}) for event in trace.get("events", []) if event.get("type") == "error"]
+    for payload in errors:
+        if isinstance(payload, dict) and payload.get("message") == "max_steps_exceeded":
+            return DiscriminationResult(
+                "agent_incomplete",
+                "AgentLoop exceeded max_steps before submitting a final result",
+                decision.extracted_answer,
+                decision.reference_answer,
+                decision.raw_response,
+            )
+    if errors:
+        return DiscriminationResult(
+            "agent_error",
+            "AgentLoop recorded an execution error",
+            decision.extracted_answer,
+            decision.reference_answer,
+            decision.raw_response,
+        )
+    return decision
 
 
 def _official_reports(output_dir: Path) -> list[dict[str, Any]]:
@@ -376,9 +505,15 @@ def write_acceptance_report(
             dataset = _dataset_name_from_path(prediction_path)
             format_kind = _dataset_format(dataset, prediction=prediction, review=review)
             raw, tool_calls, finish_reason = _model_output_parts(prediction)
-            extraction = extract_agent_answer(raw, format_kind=format_kind, tool_calls=tool_calls)
+            extraction = extract_agent_answer(
+                raw,
+                format_kind=format_kind,
+                tool_calls=tool_calls,
+                expected_tool_call=_expected_tool_call(prediction, review),
+            )
             reference = review.get("target")
             reference_answer = str(reference) if reference not in (None, "") else None
+            sample_score = review.get("sample_score")
             transport_status = 200
             output = prediction.get("model_output")
             if isinstance(output, dict) and output.get("error"):
@@ -389,7 +524,13 @@ def write_acceptance_report(
                 transport_status=transport_status,
                 finish_reason=finish_reason,
             )
-            sample_score = review.get("sample_score")
+            decision = _function_call_decision(
+                extraction,
+                decision,
+                expected_tool_call=_expected_tool_call(prediction, review),
+                sample_score=sample_score,
+            )
+            decision = _agent_trace_decision(prediction, decision)
             samples.append({
                 "dataset": dataset,
                 "index": prediction.get("index", position),

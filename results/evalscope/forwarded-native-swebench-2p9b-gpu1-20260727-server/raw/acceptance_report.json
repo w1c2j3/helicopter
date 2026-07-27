@@ -1,5 +1,5 @@
 {
-  "output_dir": "/home/rwkv/chase/EvalScope/results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server",
+  "output_dir": "results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server",
   "exit_code": 120,
   "counts": {},
   "samples": [],

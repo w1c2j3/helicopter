@@ -1,15 +1,15 @@
 {
-  "output_dir": "/home/rwkv/chase/EvalScope/results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727-round7-max4096/20260727_100812",
+  "output_dir": "results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727-round7-max4096/20260727_100812",
   "exit_code": 0,
   "counts": {
-    "format_invalid": 1
+    "correct_no_tool_call": 1
   },
   "samples": [
     {
       "dataset": "general_fc",
       "index": 0,
-      "prediction_path": "/home/rwkv/chase/EvalScope/results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727-round7-max4096/20260727_100812/predictions/rwkv7-g1h-2.9b-20260710-ctx10240/general_fc_default.jsonl",
-      "review_path": "/home/rwkv/chase/EvalScope/results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727-round7-max4096/20260727_100812/reviews/rwkv7-g1h-2.9b-20260710-ctx10240/general_fc_default.jsonl",
+      "prediction_path": "results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727-round7-max4096/20260727_100812/predictions/rwkv7-g1h-2.9b-20260710-ctx10240/general_fc_default.jsonl",
+      "review_path": "results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727-round7-max4096/20260727_100812/reviews/rwkv7-g1h-2.9b-20260710-ctx10240/general_fc_default.jsonl",
       "format_kind": "function_calling",
       "reference_answer": null,
       "official_sample_score": {
@@ -371,12 +371,12 @@
         "format_kind": "function_calling",
         "raw_response": ">\nThe user says: \"No one is in charge of purchasing.\" This is a statement, not a request. The user is likely expressing frustration or a situation where they cannot sell their artwork because no one is in charge of purchasing. They might be looking for advice on how to handle this situation.\nThe user's message is: \"No one is in charge of purchasing.\" This is a statement, not a question. However, the system prompt says: \"If the user's message is a statement, you should respond with a helpful and empathetic message.\"\nSo I should respond with a helpful and empathetic message.\nI should acknowledge their situation, validate their feelings, and offer support.\nI should not ask for more information unless needed, but since they haven't asked for anything specific, I can just respond with empathy.\nI should also consider that they might be looking for advice on how to proceed, but since they didn't ask, I can offer to help if they want.\nBut the system prompt says: \"If the user's message is a statement, you should respond with a helpful and empathetic message.\"\nSo I'll respond with something like:\n\"I'm sorry to hear that no one is in charge of purchasing. That can be really frustrating. It's okay to feel stuck. Let's see if there's anything I can do to help you navigate this situation.\"\nI should keep it short and empathetic.\nI'll respond with that.</think>\nI'm sorry to hear that no one is in charge of purchasing. That can feel really frustrating and isolating.  \nIt's okay to feel stuck—sometimes the system just doesn't align with what we need.  \nIf you'd like, I can help you brainstorm ways to reach the right people, or we can explore other options together.  \nYou're not alone in this.",
         "extracted_answer": null,
-        "status": "format_invalid",
-        "error": "model returned text without an OpenAI tool_calls object"
+        "status": "no_tool_call",
+        "error": "benchmark metadata explicitly expected no tool call; raw response retained"
       },
       "decision": {
-        "status": "format_invalid",
-        "reason": "model returned text without an OpenAI tool_calls object",
+        "status": "correct_no_tool_call",
+        "reason": "official GeneralFC scorer accepted the model's tool-call decision",
         "extracted_answer": null,
         "reference_answer": null,
         "raw_response": ">\nThe user says: \"No one is in charge of purchasing.\" This is a statement, not a request. The user is likely expressing frustration or a situation where they cannot sell their artwork because no one is in charge of purchasing. They might be looking for advice on how to handle this situation.\nThe user's message is: \"No one is in charge of purchasing.\" This is a statement, not a question. However, the system prompt says: \"If the user's message is a statement, you should respond with a helpful and empathetic message.\"\nSo I should respond with a helpful and empathetic message.\nI should acknowledge their situation, validate their feelings, and offer support.\nI should not ask for more information unless needed, but since they haven't asked for anything specific, I can just respond with empathy.\nI should also consider that they might be looking for advice on how to proceed, but since they didn't ask, I can offer to help if they want.\nBut the system prompt says: \"If the user's message is a statement, you should respond with a helpful and empathetic message.\"\nSo I'll respond with something like:\n\"I'm sorry to hear that no one is in charge of purchasing. That can be really frustrating. It's okay to feel stuck. Let's see if there's anything I can do to help you navigate this situation.\"\nI should keep it short and empathetic.\nI'll respond with that.</think>\nI'm sorry to hear that no one is in charge of purchasing. That can feel really frustrating and isolating.  \nIt's okay to feel stuck—sometimes the system just doesn't align with what we need.  \nIf you'd like, I can help you brainstorm ways to reach the right people, or we can explore other options together.  \nYou're not alone in this."
@@ -386,7 +386,7 @@
   ],
   "official_reports": [
     {
-      "path": "/home/rwkv/chase/EvalScope/results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727-round7-max4096/20260727_100812/reports/rwkv7-g1h-2.9b-20260710-ctx10240/general_fc.json",
+      "path": "results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727-round7-max4096/20260727_100812/reports/rwkv7-g1h-2.9b-20260710-ctx10240/general_fc.json",
       "report": {
         "name": "rwkv7-g1h-2.9b-20260710-ctx10240@general_fc",
         "dataset_name": "general_fc",

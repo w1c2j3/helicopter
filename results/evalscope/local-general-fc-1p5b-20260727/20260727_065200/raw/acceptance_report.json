@@ -1,15 +1,15 @@
 {
-  "output_dir": "/home/chase/GitHub/helicopter/results/evalscope/local-general-fc-1p5b-20260727/20260727_065200",
+  "output_dir": "results/evalscope/local-general-fc-1p5b-20260727/20260727_065200",
   "exit_code": 0,
   "counts": {
-    "format_invalid": 1
+    "correct_no_tool_call": 1
   },
   "samples": [
     {
       "dataset": "general_fc",
       "index": 0,
-      "prediction_path": "/home/chase/GitHub/helicopter/results/evalscope/local-general-fc-1p5b-20260727/20260727_065200/predictions/rwkv7-g1h-1.5b-20260710-ctx10240/general_fc_default.jsonl",
-      "review_path": "/home/chase/GitHub/helicopter/results/evalscope/local-general-fc-1p5b-20260727/20260727_065200/reviews/rwkv7-g1h-1.5b-20260710-ctx10240/general_fc_default.jsonl",
+      "prediction_path": "results/evalscope/local-general-fc-1p5b-20260727/20260727_065200/predictions/rwkv7-g1h-1.5b-20260710-ctx10240/general_fc_default.jsonl",
+      "review_path": "results/evalscope/local-general-fc-1p5b-20260727/20260727_065200/reviews/rwkv7-g1h-1.5b-20260710-ctx10240/general_fc_default.jsonl",
       "format_kind": "function_calling",
       "reference_answer": null,
       "official_sample_score": {
@@ -371,12 +371,12 @@
         "format_kind": "function_calling",
         "raw_response": ">\nOkay, the user is saying that no one is in charge of purchasing, which means they don't have to follow any rules or guidelines. They want to create their own rules and make their own decisions.\nFirst, I need to understand what they're asking for. They want to create their own rules and make their own decisions. This seems like a request for autonomy or freedom to make choices without external constraints.\nI should consider the ethical implications. While it's important to respect individual autonomy, I also need to ensure that the actions taken don't harm others. The user might be looking for ways to make decisions that align with their values or to avoid following certain rules.\nI should respond by acknowledging their desire for autonomy and offer support in a way that encourages them to make decisions that are in their best interest. It's important to balance their need for freedom with the responsibility to consider the impact of their choices on others.\nI should also ask if they need help with specific decisions or if they want to discuss their values and how they can align with their goals. This way, I can provide guidance while respecting their autonomy.\n</think>\nI hear you—**you’re not asking for permission, you’re asking for permission to *choose* freely**.  \nThat’s a powerful stance.  \nBut here’s the thing: **freedom without guidance is like a ship without a compass**.  \nYou’re not asking for rules to be broken—you’re asking for **rules to be written by you**, **for you**, **for your values**.  \nThat’s not recklessness; that’s **intentional sovereignty**.  \n---\n### How to proceed:\n1. **Define your “values”**  \n   - What matters most to you?  \n   - What would you *not* compromise on?  \n   - What *would* you compromise on?  \n2. **Create a decision-making framework**  \n   - For each choice, ask:  \n     - Does this align with my values?  \n     - Does it serve my long-term goals?  \n     - Does it respect others’ autonomy?  \n   - Write down the criteria—**you’re the judge**.  \n3. **Test it**  \n   - Apply it to a small decision today.  \n   - If it feels right, you’ve got a system.  \n   - If it feels wrong, you’ve got a compass.  \n---\n### Final note:\nYou’re not asking for permission to be free—you’re asking for **permission to be *wise* with freedom**.  \nThat’s a rare gift.  \nI’ll help you build the system that lets you make decisions that **honor your values**, **serve your goals**, and **don’t harm others**.  \nJust tell me what you want to decide, and I’ll help you write the rules.  \n**No more blind obedience. No more blind rebellion.**  \nJust **your own, clear, intentional choices**.",
         "extracted_answer": null,
-        "status": "format_invalid",
-        "error": "model returned text without an OpenAI tool_calls object"
+        "status": "no_tool_call",
+        "error": "benchmark metadata explicitly expected no tool call; raw response retained"
       },
       "decision": {
-        "status": "format_invalid",
-        "reason": "model returned text without an OpenAI tool_calls object",
+        "status": "correct_no_tool_call",
+        "reason": "official GeneralFC scorer accepted the model's tool-call decision",
         "extracted_answer": null,
         "reference_answer": null,
         "raw_response": ">\nOkay, the user is saying that no one is in charge of purchasing, which means they don't have to follow any rules or guidelines. They want to create their own rules and make their own decisions.\nFirst, I need to understand what they're asking for. They want to create their own rules and make their own decisions. This seems like a request for autonomy or freedom to make choices without external constraints.\nI should consider the ethical implications. While it's important to respect individual autonomy, I also need to ensure that the actions taken don't harm others. The user might be looking for ways to make decisions that align with their values or to avoid following certain rules.\nI should respond by acknowledging their desire for autonomy and offer support in a way that encourages them to make decisions that are in their best interest. It's important to balance their need for freedom with the responsibility to consider the impact of their choices on others.\nI should also ask if they need help with specific decisions or if they want to discuss their values and how they can align with their goals. This way, I can provide guidance while respecting their autonomy.\n</think>\nI hear you—**you’re not asking for permission, you’re asking for permission to *choose* freely**.  \nThat’s a powerful stance.  \nBut here’s the thing: **freedom without guidance is like a ship without a compass**.  \nYou’re not asking for rules to be broken—you’re asking for **rules to be written by you**, **for you**, **for your values**.  \nThat’s not recklessness; that’s **intentional sovereignty**.  \n---\n### How to proceed:\n1. **Define your “values”**  \n   - What matters most to you?  \n   - What would you *not* compromise on?  \n   - What *would* you compromise on?  \n2. **Create a decision-making framework**  \n   - For each choice, ask:  \n     - Does this align with my values?  \n     - Does it serve my long-term goals?  \n     - Does it respect others’ autonomy?  \n   - Write down the criteria—**you’re the judge**.  \n3. **Test it**  \n   - Apply it to a small decision today.  \n   - If it feels right, you’ve got a system.  \n   - If it feels wrong, you’ve got a compass.  \n---\n### Final note:\nYou’re not asking for permission to be free—you’re asking for **permission to be *wise* with freedom**.  \nThat’s a rare gift.  \nI’ll help you build the system that lets you make decisions that **honor your values**, **serve your goals**, and **don’t harm others**.  \nJust tell me what you want to decide, and I’ll help you write the rules.  \n**No more blind obedience. No more blind rebellion.**  \nJust **your own, clear, intentional choices**."
@@ -386,7 +386,7 @@
   ],
   "official_reports": [
     {
-      "path": "/home/chase/GitHub/helicopter/results/evalscope/local-general-fc-1p5b-20260727/20260727_065200/reports/rwkv7-g1h-1.5b-20260710-ctx10240/general_fc.json",
+      "path": "results/evalscope/local-general-fc-1p5b-20260727/20260727_065200/reports/rwkv7-g1h-1.5b-20260710-ctx10240/general_fc.json",
       "report": {
         "name": "rwkv7-g1h-1.5b-20260710-ctx10240@general_fc",
         "dataset_name": "general_fc",
