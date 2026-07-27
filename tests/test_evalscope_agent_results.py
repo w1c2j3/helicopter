@@ -32,6 +32,10 @@ def test_short_answer_requires_marker_and_distinguishes_model_error() -> None:
     assert discriminate_agent_result(extraction, reference_answer="Grace Hopper").status == "model_error"
     assert extract_agent_answer("Ada Lovelace", format_kind="short_answer").status == "extraction_failed"
 
+    fullwidth_marker = extract_agent_answer("Exact Answer： Ada Lovelace", format_kind="short_answer")
+    assert fullwidth_marker.status == "ok"
+    assert fullwidth_marker.extracted_answer == "Ada Lovelace"
+
     direct = extract_agent_answer("17", format_kind="short_answer_direct")
     assert direct.status == "ok"
     assert discriminate_agent_result(direct, reference_answer="17").status == "correct"

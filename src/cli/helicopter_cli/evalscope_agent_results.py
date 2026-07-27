@@ -19,7 +19,7 @@ from .lighteval_answer_adapters import extract_choice_answer, extract_math_answe
 
 
 _SWE_BENCH_BLOCK = re.compile(r"```mswea_bash_command\n(.*?)\n```", re.DOTALL)
-_ANSWER_LINE = re.compile(r"(?im)^\s*(?:final\s+answer|exact\s+answer)\s*[:：]\s*(\S.*?)(?:\r?\n|$)")
+_ANSWER_LINE = re.compile(r"(?im)^\s*(?:final\s+answer|exact\s+answer)\s*[:\uFF1A]\s*(\S.*?)(?:\r?\n|$)")
 _CODE_BLOCK = re.compile(r"(?ms)^\s*```(?:[A-Za-z0-9_+-]+)?\s*\n(.*?)\n\s*```\s*$")
 
 
