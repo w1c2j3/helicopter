@@ -52,6 +52,9 @@ is not shipped, imported, or required by the EvalScope pipeline.
 - `ed4efd1` / `evalscope/extractor-fullwidth-marker`: the strict answer
   extractor now recognizes the Unicode fullwidth colon in explicit Final
   Answer/Exact Answer markers; the regression suite covers the observed case.
+- `64caa2f` / `evalscope/tool-call-contract-diagnostics`: malformed non-list
+  `message.tool_calls` values remain `format_invalid`, and an official
+  GeneralFC pass cannot override a transport/format/extraction failure.
 - The pending server-side SWE-bench checkpoint records the exact remote image
   and the round-4 native run before the GPU was released for reassignment;
   parser behavior is recorded only as an external dependency.
@@ -206,6 +209,9 @@ quality check for positive/negative decision errors.
   than inventing a label, number, code fence, JSON field, or tool call.
 - Discriminator error: no known reproduction; regression tests cover transport,
   format, extraction, and strict model-error separation.
+- Malformed tool-call contract: a non-list `message.tool_calls` object is
+  retained as raw output and classified `format_invalid`; it is never silently
+  interpreted as a correct no-call response.
 - Clean Agent environment: after `uv sync --no-default-groups --group agent`,
   dataset listing and EvalScope dry-run now pass without importing LightEval;
   the unrelated legacy `tests/test_cli.py` still needs the full LightEval group.
