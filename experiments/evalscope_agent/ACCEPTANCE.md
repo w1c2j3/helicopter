@@ -31,7 +31,7 @@ process was not modified:
 | EvalScope Agent datasets are wired | PASS | `benchmarks/evalscope_agent_datasets.json`, CLI catalog listing returns 30 datasets |
 | Reproducible benchmark execution | CONDITIONAL | fixed config, local native runs, and server-side SWE-bench one-sample execution complete with `uv`; GAIA remains separately image-gated and formal quality thresholds are not met |
 | Raw response and request trace are retained | PASS | v3 `raw/naive_chat.jsonl`, `raw/trace_report.json`, timestamped `raw/acceptance_report.json` |
-| Answer extraction is strict and non-repairing | PASS | `evalscope_agent_results.py`; 22 targeted regression tests |
+| Answer extraction is strict and non-repairing | PASS | `evalscope_agent_results.py`; 24 targeted regression tests |
 | Discrimination separates transport/format/extraction/model failures | PASS | `tests/test_evalscope_agent_results.py`; live reports show `format_invalid`, `context_truncated`, and official scores separately |
 | All discovered issues have regression coverage | PASS | naive Chat, native tool-call validation, direct short answers, timestamped workdir linkage, and acceptance report tests |
 | EvalScope Agent regression suite | PASS | `tests/test_naive_chat.py`, `tests/test_evalscope_agent.py`, and `tests/test_evalscope_agent_results.py`: 24 passed |

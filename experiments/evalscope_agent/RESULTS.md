@@ -47,7 +47,8 @@ is not shipped, imported, or required by the EvalScope pipeline.
 - `41cc021` / forwarded 2.9B experiment: 19329 native preflight, naive proxy
   trace, external `general_fc` run, GAIA sandbox-blocked run, and audit records.
 - `ad84822` / `evalscope/reproducible-runner`: uv dependency-group selection in
-  the local runner and the corrected 22-test acceptance count.
+  the local runner and the initial 22-test acceptance count; the current
+  Agent-specific suite is 24 tests.
 - The pending server-side SWE-bench checkpoint records the exact remote image
   and the round-4 native run before the GPU was released for reassignment;
   parser behavior is recorded only as an external dependency.
