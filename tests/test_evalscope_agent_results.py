@@ -179,10 +179,23 @@ def test_acceptance_report_respects_general_fc_no_call_labels(tmp_path) -> None:
             },
             "metadata": {"should_call_tool": False},
         },
+        {
+            "index": 2,
+            "model_output": {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": "malformed", "tool_calls": {"function": "search"}},
+                    }
+                ]
+            },
+            "metadata": {"should_call_tool": False},
+        },
     ]
     reviews = [
         {"index": 0, "target": "", "sample_score": {"score": {"value": {"passed": True}}}},
         {"index": 1, "target": "", "sample_score": {"score": {"value": {"passed": False}}}},
+        {"index": 2, "target": "", "sample_score": {"score": {"value": {"passed": True}}}},
     ]
     (prediction_dir / "general_fc_default.jsonl").write_text(
         "\n".join(json.dumps(row) for row in predictions) + "\n", encoding="utf-8"
@@ -193,7 +206,10 @@ def test_acceptance_report_respects_general_fc_no_call_labels(tmp_path) -> None:
 
     output = write_acceptance_report(tmp_path, exit_code=0)
     report = json.loads(output.read_text(encoding="utf-8"))
-    assert report["counts"] == {"correct_no_tool_call": 1, "model_error": 1}
+    assert report["counts"] == {"correct_no_tool_call": 1, "model_error": 1, "format_invalid": 1}
+    malformed = report["samples"][2]
+    assert malformed["extraction"]["status"] == "format_invalid"
+    assert malformed["decision"]["status"] == "format_invalid"
 
 
 def test_acceptance_report_uses_native_swebench_toolcall_strategy(tmp_path) -> None:
