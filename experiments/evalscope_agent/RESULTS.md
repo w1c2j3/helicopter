@@ -54,6 +54,14 @@ All runs use API key `rwkv-skills` and a 10240-token context limit.
 - `post-audit/forwarded-2p9b-native-tools-20260727.json` records the forwarded
   2.9B service rejecting an OpenAI tool request because its running server was
   not started with the auto-tool-choice/parser flags.
+- `post-audit/forwarded-2p9b-native-tools-gpu1-20260727.json` records a
+  separate 2.9B service on remote GPU1/port 19331 started with both native
+  RWKV parser flags. It returned HTTP 200, `finish_reason=tool_calls`, and a
+  structured `calculate_triangle_area` call; the existing 19329 service was
+  not modified.
+- `post-audit/forwarded-2p9b-native-tools-gpu1-20260727.screen.log` is the
+  captured vLLM startup, request, and normal SIGTERM shutdown log for that
+  temporary GPU1 service.
 - `post-audit/forwarded-2p9b-naive-proxy-20260727.json` and its JSONL trace
   record a successful 19329 request through the naive Chat proxy. The model
   returned prose and no `tool_calls`; the proxy preserved that response.
@@ -85,6 +93,8 @@ model response. See `naive-proxy-trace.jsonl`.
 | `results/evalscope/local-gaia-1p5b-20260727/20260727_071448` | `gaia`, 3 (one per level) | local 19316, native AgentLoop, no proxy, `max_tokens=1024` | official `mean_acc=0` | full GAIA prediction/review/report/acceptance artifacts; all 3 samples were classified `extraction_failed` because the model returned multiline reasoning where GAIA requires a single-line final answer |
 | `results/evalscope/forwarded-general-fc-2p9b-20260727/20260727_073359` | `general_fc`, 1 | forwarded 19329 2.9B, external mock bridge + naive proxy, `max_tokens=1024`, `temperature=0` | official `tool_call_f1=0`, schema/tool-call counts 0 | exit code 0; raw response reached the generation cap, diagnostic status `context_truncated` plus `format_invalid`; mean latency 6.8861s, output throughput 148.71 tok/s |
 | `results/evalscope/forwarded-gaia-2p9b-20260727/20260727_073310` | `gaia`, 3 (one per level) | forwarded 19329 2.9B, external mock bridge + naive proxy | not scored | EvalScope entered the external bridge, but all samples were blocked before model calls by Docker failing to pull `python:3.11`; task config and acceptance report are retained |
+| `results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727/20260727_081019` | `general_fc`, 5 | remote GPU1/19331 2.9B, native vllm-rwkv tool parser, no proxy, `max_tokens=1024`, `temperature=0`, `max_steps=3` | `tool_call_f1=0`, `count_finish_reason_tool_call=1`, `count_successful_tool_call=1`, `schema_accuracy=1` | exit code 0; all five raw predictions retained; mean latency 6.6388s, output throughput 148.94 tok/s. The zero F1 is a model decision/answer-quality failure, not a transport or extraction failure |
+| `results/evalscope/forwarded-native-gaia-2p9b-gpu1-20260727-function-calling/20260727_081217` | `gaia`, 3 (one per level) | remote GPU1/19331 2.9B, native AgentLoop, `function_calling`, `max_steps=3` | not scored | the corrected run entered the AgentLoop but Docker timed out pulling `python:3.11`, then the temporary 19331 service received SIGTERM. No GAIA score is claimed |
 
 The second run proves the complete path: ModelScope dataset loading, proxy
 serialization, local model call, unchanged response, EvalScope report, and
@@ -107,6 +117,15 @@ official report, and strict diagnostics end to end. It is a compatibility
 comparison, not a passing tool-call result: the remote server's native parser
 flags are absent, while the external mock runner sends a text-only request and
 the model response ends at the 1024-token cap.
+
+The GPU1 run closes the transport question for the requested 2.9B checkpoint:
+the same model, when served independently with
+`--enable-auto-tool-choice --tool-call-parser rwkv`, returns native OpenAI
+tool calls. EvalScope then sends and receives native calls without the naive
+proxy. Its official F1 remains zero on the fixed five-sample benchmark because
+the model emits a call on only one sample; the successful-call and schema
+metrics are retained separately so this is not misclassified as an adapter
+failure.
 
 ## Failure classification
 
@@ -139,6 +158,14 @@ the model response ends at the 1024-token cap.
   discriminator (`bridge` emitted without `mode`). The adapter now emits
   EvalScope 1.9.x `mode=external` and keeps `bridge` only as a CLI alias; the
   forwarded `general_fc` rerun completed with exit code 0.
+- Remote native 2.9B: a separately launched GPU1/19331 service with the RWKV
+  parser flags passed the direct native tool-call preflight and the native
+  EvalScope `general_fc` transport path. The official F1 failure is attributed
+  to model behavior on the fixed dataset. The service later shut down on an
+  external SIGTERM after the GAIA Docker pull timeout; this was not an OOM or
+  vLLM parser crash.
+- GAIA sandbox: the corrected native run still cannot be scored in this
+  environment because Docker cannot pull `python:3.11` from the registry.
 
 ## Regression boundary (2026-07-27)
 
@@ -159,9 +186,9 @@ the model response ends at the 1024-token cap.
 the optional `swebench` package; its extra installation exceeded the bounded
 experiment window. The current local 19316 process has an actual native
 tool-call parser, but the available local checkpoint is the 1.5B variant. The
-forwarded 19329 service exposes the requested 2.9B model and is usable through
-the external/naive bridge, but its live server lacks native tool-call parser
-flags and the fixed forwarded function-calling sample scored zero. GAIA can
-enter the AgentLoop, but this run was blocked by Docker image availability and
-the local model still fails its required tool-call format on the fixed sample.
-These are recorded limits, not silently converted into passing results.
+forwarded 19329 remains the existing 2.9B service and was not restarted; it
+lacks native parser flags. A separate GPU1/19331 instance proved that the
+requested 2.9B checkpoint can return native tool calls, but the fixed native
+`general_fc` score is still zero. GAIA can enter the AgentLoop, but this run
+was blocked by Docker image availability. These are recorded limits, not
+silently converted into passing results.
