@@ -253,7 +253,7 @@ quality check for positive/negative decision errors.
 - Agent-specific suite: **24 passed** with the Agent, naive-Chat, extraction,
   and discrimination tests.
 - Full repository suite from the current worktree with
-  `uv run --all-groups --with pytest pytest -q`: **300 passed, 23 failed, 6
+  `uv run --all-groups --with pytest pytest -q`: **302 passed, 23 failed, 6
   skipped, 4 warnings, 406 subtests**. The failures are in LightEval/Famous120,
   benchmark compatibility, and sampling-policy assertions; no EvalScope Agent
   test failed.
