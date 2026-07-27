@@ -105,6 +105,8 @@ model response. See `naive-proxy-trace.jsonl`.
 | `results/evalscope/forwarded-general-fc-2p9b-20260727/20260727_073359` | `general_fc`, 1 | forwarded 19329 2.9B, external mock bridge + naive proxy, `max_tokens=1024`, `temperature=0` | official `tool_call_f1=0`, schema/tool-call counts 0 | exit code 0; raw response reached the generation cap, diagnostic status `context_truncated` plus `format_invalid`; mean latency 6.8861s, output throughput 148.71 tok/s |
 | `results/evalscope/forwarded-gaia-2p9b-20260727/20260727_073310` | `gaia`, 3 (one per level) | forwarded 19329 2.9B, external mock bridge + naive proxy | not scored | EvalScope entered the external bridge, but all samples were blocked before model calls by Docker failing to pull `python:3.11`; task config and acceptance report are retained |
 | `results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727/20260727_081019` | `general_fc`, 5 | remote GPU1/19331 2.9B, native vllm-rwkv tool parser, no proxy, `max_tokens=1024`, `temperature=0`, `max_steps=3` | `tool_call_f1=0`, `count_finish_reason_tool_call=1`, `count_successful_tool_call=1`, `schema_accuracy=1` | exit code 0; all five raw predictions retained; mean latency 6.6388s, output throughput 148.94 tok/s. The zero F1 is a model decision/answer-quality failure, not a transport or extraction failure |
+| `results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727-round6/20260727_100621` | `general_fc`, 1 | remote GPU1/19331 2.9B, native parser, no proxy, `max_tokens=2048`, `temperature=0` | `tool_call_f1=0`, `schema_accuracy=0` | exit code 0; input 3182 tokens and output reached 2048, `format_invalid=1`; the sample metadata required no tool, but the model produced unfinished prose at `finish_reason=length` |
+| `results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727-round7-max4096/20260727_100812` | `general_fc`, 1 | same endpoint/messages as round 6, `max_tokens=4096`, `temperature=0` | `tool_call_f1=0`, `schema_accuracy=0` | exit code 0; output stopped at about 390 tokens without a native call and remained `format_invalid=1`; increasing the output cap removed truncation but did not improve the model decision |
 | `results/evalscope/forwarded-native-gaia-2p9b-gpu1-20260727-function-calling/20260727_081217` | `gaia`, 3 (one per level) | remote GPU1/19331 2.9B, native AgentLoop, `function_calling`, `max_steps=3` | not scored | the corrected run entered the AgentLoop but Docker timed out pulling `python:3.11`, then the temporary 19331 service received SIGTERM. No GAIA score is claimed |
 | `results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server/20260727_092121` | `swe_bench_verified_agentic`, 1 | server `/home/rwkv/chase/EvalScope`, remote Docker image, native 19331, `max_tokens=1024`, `max_steps=5` | `mean_acc=0` | full container and EvalScope path completed; raw response used an invalid mini-swe-agent JSON action and patch application failed; no environment blocker |
 | `results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server-round4/20260727_093947` | `swe_bench_verified_agentic`, 1 | server `/home/rwkv/chase/EvalScope`, patched RWKV parser, remote Docker image, native 19331, `max_tokens=2048`, `max_steps=5` | `mean_acc=0` | end-to-end pipeline path passed: native `bash` calls executed in the container and raw/review/report/HTML/acceptance artifacts generated; score 0 because the model requested unavailable `str_replace_editor/view` tools and did not submit a patch |
@@ -153,6 +155,13 @@ cleaned up normally. The remaining zero score is a model/tool-contract
 failure—after a valid `bash` call the checkpoint requested `view` and
 `str_replace_editor`, which this benchmark intentionally does not expose—and
 is not converted into a pass.
+
+The later single-sample GPU1 reruns isolate the generation-cap hypothesis. With
+the same input and tool schema, `max_tokens=2048` ended at the cap and was
+recorded as `format_invalid`; `max_tokens=4096` stopped after a short prose
+answer but still emitted no tool call and still scored zero. This is evidence
+against changing the extractor or discriminator: the native response is
+retained unchanged and the failure is the model's decision/output contract.
 
 ## Failure classification
 

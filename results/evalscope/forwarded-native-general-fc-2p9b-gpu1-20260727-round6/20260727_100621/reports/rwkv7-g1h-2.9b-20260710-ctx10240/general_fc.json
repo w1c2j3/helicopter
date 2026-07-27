@@ -1,0 +1,166 @@
+{
+    "name": "rwkv7-g1h-2.9b-20260710-ctx10240@general_fc",
+    "dataset_name": "general_fc",
+    "dataset_pretty_name": "General-FunctionCalling",
+    "dataset_description": "\n## Overview\n\nGeneral-FunctionCalling is a customizable benchmark for evaluating function calling (tool use) capabilities of language models. It tests both the decision to call tools and the accuracy of generated function calls.\n\n## Task Description\n\n- **Task Type**: Function Calling / Tool Use Evaluation\n- **Input**: Messages with available tool definitions\n- **Output**: Function calls with valid arguments\n- **Flexibility**: Supports custom datasets via local files\n\n## Key Features\n\n- Evaluates function calling decision accuracy\n- Schema validation for function arguments\n- Comprehensive metrics (F1, precision, recall)\n- Custom dataset support via local file loading\n- JSON schema-based argument validation\n\n## Evaluation Notes\n\n- Default configuration uses **0-shot** evaluation\n- Metrics: **tool_call_f1**, **schema_accuracy**, count metrics\n- Aggregation: **F1** score\n- Validates function calls against JSON schema\n- See [User Guide](https://evalscope.readthedocs.io/en/latest/advanced_guides/custom_dataset/llm.html#fc) for dataset format\n",
+    "model_name": "rwkv7-g1h-2.9b-20260710-ctx10240",
+    "score": 0.0,
+    "metrics": [
+        {
+            "name": "tool_call_f1",
+            "num": 1,
+            "score": 0.0,
+            "macro_score": 0.0,
+            "categories": [
+                {
+                    "name": [
+                        "default"
+                    ],
+                    "num": 1,
+                    "score": 0.0,
+                    "macro_score": 0.0,
+                    "subsets": [
+                        {
+                            "name": "default",
+                            "score": 0.0,
+                            "num": 1,
+                            "is_aggregate": false
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "count_finish_reason_tool_call",
+            "num": 1,
+            "score": 0.0,
+            "macro_score": 0.0,
+            "categories": [
+                {
+                    "name": [
+                        "default"
+                    ],
+                    "num": 1,
+                    "score": 0.0,
+                    "macro_score": 0.0,
+                    "subsets": [
+                        {
+                            "name": "default",
+                            "score": 0.0,
+                            "num": 1,
+                            "is_aggregate": false
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "count_successful_tool_call",
+            "num": 1,
+            "score": 0.0,
+            "macro_score": 0.0,
+            "categories": [
+                {
+                    "name": [
+                        "default"
+                    ],
+                    "num": 1,
+                    "score": 0.0,
+                    "macro_score": 0.0,
+                    "subsets": [
+                        {
+                            "name": "default",
+                            "score": 0.0,
+                            "num": 1,
+                            "is_aggregate": false
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "schema_accuracy",
+            "num": 1,
+            "score": 0.0,
+            "macro_score": 0.0,
+            "categories": [
+                {
+                    "name": [
+                        "default"
+                    ],
+                    "num": 1,
+                    "score": 0.0,
+                    "macro_score": 0.0,
+                    "subsets": [
+                        {
+                            "name": "default",
+                            "score": 0.0,
+                            "num": 1,
+                            "is_aggregate": false
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "analysis": "N/A",
+    "perf_metrics": {
+        "summary": {
+            "n_samples": 1,
+            "latency": {
+                "mean": 13.614164,
+                "std": null,
+                "min": 13.614164,
+                "25%": 13.614164,
+                "50%": 13.614164,
+                "75%": 13.614164,
+                "90%": 13.614164,
+                "99%": 13.614164,
+                "max": 13.614164
+            },
+            "throughput": {
+                "avg_output_tps": 150.43,
+                "avg_req_ps": 0.0735
+            },
+            "usage": {
+                "input_tokens": {
+                    "mean": 3182.0,
+                    "std": null,
+                    "min": 3182.0,
+                    "25%": 3182.0,
+                    "50%": 3182.0,
+                    "75%": 3182.0,
+                    "90%": 3182.0,
+                    "99%": 3182.0,
+                    "max": 3182.0
+                },
+                "output_tokens": {
+                    "mean": 2048.0,
+                    "std": null,
+                    "min": 2048.0,
+                    "25%": 2048.0,
+                    "50%": 2048.0,
+                    "75%": 2048.0,
+                    "90%": 2048.0,
+                    "99%": 2048.0,
+                    "max": 2048.0
+                },
+                "total_tokens": {
+                    "mean": 5230.0,
+                    "std": null,
+                    "min": 5230.0,
+                    "25%": 5230.0,
+                    "50%": 5230.0,
+                    "75%": 5230.0,
+                    "90%": 5230.0,
+                    "99%": 5230.0,
+                    "max": 5230.0
+                },
+                "total_input_tokens": 3182,
+                "total_output_tokens": 2048,
+                "total_tokens_count": 5230
+            }
+        }
+    },
+    "num": 1
+}
