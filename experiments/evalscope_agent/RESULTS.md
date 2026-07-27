@@ -110,6 +110,7 @@ model response. See `naive-proxy-trace.jsonl`.
 | `results/evalscope/forwarded-native-gaia-2p9b-gpu1-20260727-function-calling/20260727_081217` | `gaia`, 3 (one per level) | remote GPU1/19331 2.9B, native AgentLoop, `function_calling`, `max_steps=3` | not scored | the corrected run entered the AgentLoop but Docker timed out pulling `python:3.11`, then the temporary 19331 service received SIGTERM. No GAIA score is claimed |
 | `results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server/20260727_092121` | `swe_bench_verified_agentic`, 1 | server `/home/rwkv/chase/EvalScope`, remote Docker image, native 19331, `max_tokens=1024`, `max_steps=5` | `mean_acc=0` | full container and EvalScope path completed; raw response used an invalid mini-swe-agent JSON action and patch application failed; no environment blocker |
 | `results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server-round4/20260727_093947` | `swe_bench_verified_agentic`, 1 | server `/home/rwkv/chase/EvalScope`, patched RWKV parser, remote Docker image, native 19331, `max_tokens=2048`, `max_steps=5` | `mean_acc=0` | end-to-end pipeline path passed: native `bash` calls executed in the container and raw/review/report/HTML/acceptance artifacts generated; score 0 because the model requested unavailable `str_replace_editor/view` tools and did not submit a patch |
+| `results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server-round8-max4096/20260727_101325` | `swe_bench_verified_agentic`, 1 | same server/image/parser/tool contract as round 4, `max_tokens=4096`, `max_steps=5` | `mean_acc=0` | exit code 0; 34 native `bash` calls executed, but the model repeatedly requested unavailable `view`, then the loop ended with `max_steps_exceeded` and no patch; sandbox cleanup and full reports passed |
 
 The second run proves the complete path: ModelScope dataset loading, proxy
 serialization, local model call, unchanged response, EvalScope report, and
@@ -156,6 +157,12 @@ failure—after a valid `bash` call the checkpoint requested `view` and
 `str_replace_editor`, which this benchmark intentionally does not expose—and
 is not converted into a pass.
 
+The round-8 controlled SWE-bench rerun used `max_tokens=4096`. It produced
+valid native `bash` calls and container results, but repeatedly issued the
+unavailable `view` command and exhausted the five-step loop without a patch.
+The increased output budget therefore did not repair the model's tool-contract
+behavior; the acceptance report keeps this as a model/agent-quality failure.
+
 The later single-sample GPU1 reruns isolate the generation-cap hypothesis. With
 the same input and tool schema, `max_tokens=2048` ended at the cap and was
 recorded as `format_invalid`; `max_tokens=4096` stopped after a short prose
@@ -175,6 +182,9 @@ retained unchanged and the failure is the model's decision/output contract.
   an extraction or discriminator failure.
 - Interface error: reproduced as the original HTTP 400 tool-call request.
 - Model/format failure: `general_fc` response did not contain a tool call.
+- Agent tool-contract failure: SWE-bench round 8 emitted valid `bash` calls but
+  repeatedly selected the unavailable `view` command and ended at
+  `max_steps_exceeded` without a patch; no tool name was rewritten or hidden.
 - Agent runtime: the first GAIA run exposed the missing `ms_enclave` extra;
   installing `evalscope[sandbox]` with `uv pip` removed that import blocker for
   the fixed-subset rerun.

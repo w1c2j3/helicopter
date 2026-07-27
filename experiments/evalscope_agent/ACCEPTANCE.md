@@ -113,6 +113,11 @@ modified:
   and executed in the Docker sandbox; the official score is 0 because the
   model later requested unavailable `view`/`str_replace_editor` tools and did
   not submit a patch. No client-side answer or patch repair was used.
+- `results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server-round8-max4096/20260727_101325/`:
+  same Astropy sample with `max_tokens=4096`; 34 native `bash` calls ran, the
+  container was cleaned up, and the report was generated. The model repeatedly
+  requested unavailable `view`, hit `max_steps_exceeded`, and produced no
+  patch, so `mean_acc=0` remains a model/agent-quality result.
 - `experiments/evalscope_agent/vllm-rwkv-tool-calls.patch`:
   standalone external vllm-rwkv parser patch and regression additions. Direct
   parser checks passed for both non-streaming and streaming `<tool_calls>`.
@@ -123,6 +128,9 @@ modified:
 - GPU1 `general_fc` rounds 6 and 7: both exit code 0; round 7 used
   `max_tokens=4096`, kept the raw response unchanged, and still recorded
   `format_invalid=1` with official `tool_call_f1=0`.
+- GPU1 SWE-bench round 8: exit code 0, `max_tokens=4096`, 5-step loop,
+  34 native tool calls, `max_steps_exceeded`, `mean_acc=0`, and complete
+  prediction/review/report/acceptance artifacts.
 
 ## Go/no-go decision
 
