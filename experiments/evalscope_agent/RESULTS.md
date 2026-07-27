@@ -49,6 +49,9 @@ is not shipped, imported, or required by the EvalScope pipeline.
 - `ad84822` / `evalscope/reproducible-runner`: uv dependency-group selection in
   the local runner and the initial 22-test acceptance count; the current
   Agent-specific suite is 24 tests.
+- `ed4efd1` / `evalscope/extractor-fullwidth-marker`: the strict answer
+  extractor now recognizes the Unicode fullwidth colon in explicit Final
+  Answer/Exact Answer markers; the regression suite covers the observed case.
 - The pending server-side SWE-bench checkpoint records the exact remote image
   and the round-4 native run before the GPU was released for reassignment;
   parser behavior is recorded only as an external dependency.

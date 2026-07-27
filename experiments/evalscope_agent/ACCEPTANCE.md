@@ -126,11 +126,17 @@ process was not modified:
   requested unavailable `view`, hit `max_steps_exceeded`, and produced no
   patch, so the corrected diagnostic is `agent_incomplete` and `mean_acc=0`
   remains a model/agent-quality result.
+- The CLI catalog lists 30 pinned EvalScope Agent datasets. Native dry-runs for
+  `general_fc`, `gaia`, and `swe_bench_verified_agentic` all produced the
+  expected EvalScope command with the configured model, endpoint, dataset,
+  strategy, and generation settings without contacting a model.
 - `experiments/evalscope_agent/vllm-rwkv-tool-calls.patch`:
   standalone external vllm-rwkv parser patch and regression additions. Direct
   parser checks passed for both non-streaming and streaming `<tool_calls>`.
 - `uv lock --check`: passed.
 - `uv run --no-default-groups --group agent --group eval --with pytest pytest -q tests/test_naive_chat.py tests/test_evalscope_agent.py tests/test_evalscope_agent_results.py`: **24 passed**.
+- The answer-extraction regression includes an explicit fullwidth-colon marker
+  (`Exact Answer： ...`); direct extraction and the 24-test suite pass.
 - Server-side `uv sync --no-default-groups --group agent --group eval --group swe-bench`: completed; `swebench==4.1.0` installed.
 - Server-side SWE-bench round 4: exit code 0, 1 sample, 5 model requests, native tool calls executed, `mean_acc=0`, full HTML/JSON/trace artifacts.
 - GPU1 `general_fc` rounds 6 and 7: both exit code 0; round 7 used
