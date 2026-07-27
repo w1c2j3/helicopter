@@ -55,6 +55,9 @@ is not shipped, imported, or required by the EvalScope pipeline.
 - `64caa2f` / `evalscope/tool-call-contract-diagnostics`: malformed non-list
   `message.tool_calls` values remain `format_invalid`, and an official
   GeneralFC pass cannot override a transport/format/extraction failure.
+- `09094e9` / `evalscope/tool-argument-validation`: function arguments are
+  accepted only as JSON objects (native object form or valid JSON string),
+  while malformed arguments remain explicit `format_invalid` failures.
 - The pending server-side SWE-bench checkpoint records the exact remote image
   and the round-4 native run before the GPU was released for reassignment;
   parser behavior is recorded only as an external dependency.
@@ -212,6 +215,9 @@ quality check for positive/negative decision errors.
 - Malformed tool-call contract: a non-list `message.tool_calls` object is
   retained as raw output and classified `format_invalid`; it is never silently
   interpreted as a correct no-call response.
+- Malformed tool arguments: invalid JSON and non-object arguments are rejected
+  as `format_invalid`; the 46 object-form arguments in the saved EvalScope
+  predictions remain unchanged.
 - Clean Agent environment: after `uv sync --no-default-groups --group agent`,
   dataset listing and EvalScope dry-run now pass without importing LightEval;
   the unrelated legacy `tests/test_cli.py` still needs the full LightEval group.
