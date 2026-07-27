@@ -1,0 +1,189 @@
+2026-07-27 09:21:21 - evalscope - INFO: Running with native backend
+2026-07-27 09:21:22 - evalscope - INFO: Dump task config to /home/rwkv/chase/EvalScope/results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server/20260727_092121/configs/task_config.yaml
+2026-07-27 09:21:22 - evalscope - INFO: {
+    "model_id": "rwkv7-g1h-2.9b-20260710-ctx10240",
+    "model_args": {},
+    "model_task": "text_generation",
+    "chat_template": null,
+    "datasets": [
+        "swe_bench_verified_agentic"
+    ],
+    "dataset_args": {
+        "swe_bench_verified_agentic": {
+            "name": "swe_bench_verified_agentic",
+            "dataset_id": "princeton-nlp/SWE-bench_Verified",
+            "output_types": [
+                "generation"
+            ],
+            "subset_list": [
+                "default"
+            ],
+            "default_subset": "default",
+            "few_shot_num": 0,
+            "few_shot_random": false,
+            "train_split": null,
+            "eval_split": "test",
+            "prompt_template": "{question}",
+            "few_shot_prompt_template": null,
+            "system_prompt": null,
+            "query_template": null,
+            "pretty_name": "SWE-bench_Verified_Agentic",
+            "description": "\n## Overview\n\nSWE-bench Verified Agentic is the agentic-mode evaluation of SWE-bench Verified, a human-validated subset of 500 samples from SWE-bench. Unlike the oracle single-turn variant, the model must autonomously explore the repository, run shell commands, edit source files, and submit a patch through a multi-turn agent loop driven inside a per-instance Docker container.\n\n## Task Description\n\n- **Task Type**: Automated Software Engineering / Bug Fixing (Agentic)\n- **Input**: GitHub issue description (no oracle file context)\n- **Output**: Code patch (diff format) collected from `git diff` after autonomous editing\n- **Repositories**: 12 popular Python projects (Django, Flask, Requests, etc.)\n\n## Key Features\n\n- 500 human-validated Issue-Pull Request pairs\n- Multi-turn agent loop (mini-swe-agent `swebench.yaml` compatible)\n- Per-instance SWE-bench Docker container as the execution sandbox\n- Sentinel-based patch submission protocol (`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`)\n- Supports both function-calling (`toolcall`) and text-based (`backticks`) action protocols\n\n## Evaluation Notes\n\n- Requires `pip install swebench==4.1.0` before evaluation\n- Docker images are built/pulled automatically for each repository\n- Timeout of 1800 seconds (30 min) per instance for final patch validation\n- See the [usage documentation](https://evalscope.readthedocs.io/en/latest/third_party/swe_bench.html) for detailed setup instructions\n- Supports both local image building and remote image pulling\n\n## Agentic Mode\n\nThis benchmark drives a multi-turn agent loop (mirrors mini-swe-agent's\n`swebench.yaml`) inside a per-instance SWE-bench Docker container. The\nmodel issues `bash` commands to explore `/testbed`, edit source files,\nand finally submits its `git diff` patch by printing the sentinel\n`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` followed by the patch contents.\n\nThe default `swe_bench_toolcall` strategy uses OpenAI function calling with\na single `bash` tool. Models without function-calling support can select\n`swe_bench_backticks` through `NativeAgentConfig.strategy`; that strategy\nexpects one ` ```mswea_bash_command ``` ` block per turn.\n",
+            "paper_url": null,
+            "data_statistics": null,
+            "sample_example": null,
+            "tags": [
+                "Coding"
+            ],
+            "filters": null,
+            "metric_list": [
+                "acc"
+            ],
+            "aggregation": "mean",
+            "shuffle": false,
+            "shuffle_choices": false,
+            "force_redownload": false,
+            "review_timeout": null,
+            "extra_params": {
+                "build_docker_images": false,
+                "pull_remote_images_if_available": false,
+                "force_arch": "x86_64",
+                "dockerhub_username": "swebench"
+            },
+            "sandbox_config": {},
+            "max_image_bytes": null
+        }
+    },
+    "dataset_dir": "/home/rwkv/.cache/modelscope/hub/datasets",
+    "dataset_hub": "modelscope",
+    "repeats": 1,
+    "eval_type": "openai_api",
+    "eval_backend": "Native",
+    "eval_config": null,
+    "limit": 1,
+    "eval_batch_size": 1,
+    "use_cache": null,
+    "rerun_review": false,
+    "work_dir": "/home/rwkv/chase/EvalScope/results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server/20260727_092121",
+    "no_timestamp": false,
+    "enable_progress_tracker": false,
+    "ignore_errors": false,
+    "debug": false,
+    "seed": 42,
+    "api_url": "http://127.0.0.1:19331/v1",
+    "api_key": "**********",
+    "timeout": null,
+    "stream": null,
+    "judge_strategy": "auto",
+    "judge_worker_num": 1,
+    "judge_model_args": {},
+    "analysis_report": false,
+    "collect_perf": true,
+    "sandbox": {
+        "enabled": false,
+        "engine": "docker",
+        "default_config": {},
+        "manager_config": {},
+        "pool_size": null
+    },
+    "use_sandbox": false,
+    "sandbox_type": "docker",
+    "sandbox_manager_config": {},
+    "agent_config": {
+        "environment": "local",
+        "environment_extra": {},
+        "kwargs": {},
+        "skills_dir": null,
+        "skill_prompt_nudge": true,
+        "mode": "native",
+        "strategy": "swe_bench_toolcall",
+        "tools": [
+            "bash"
+        ],
+        "max_steps": 5,
+        "command_timeout": null,
+        "mcp_servers": []
+    },
+    "evalscope_version": "1.9.1",
+    "model": "rwkv7-g1h-2.9b-20260710-ctx10240",
+    "generation_config": {
+        "batch_size": 1,
+        "max_tokens": 1024,
+        "temperature": 0.0
+    }
+}
+2026-07-27 09:21:22 - evalscope - INFO: Start loading benchmark dataset: swe_bench_verified_agentic
+2026-07-27 09:21:22 - evalscope - INFO: Loading dataset princeton-nlp/SWE-bench_Verified from modelscope > subset: default > split: test ...
+2026-07-27 09:21:30 - evalscope - WARNING: swe_bench_verified_agentic: 1 samples to evaluate (1 subset, --limit=1 per subset). Remove `--limit` for a formal evaluation.
+2026-07-27 09:21:30 - evalscope - INFO: Subsets of swe_bench_verified_agentic: ['default']
+2026-07-27 09:21:30 - evalscope - INFO: Loading model for prediction...
+2026-07-27 09:21:30 - evalscope - INFO: Creating model rwkv7-g1h-2.9b-20260710-ctx10240 with eval_type=openai_api base_url=http://127.0.0.1:19331/v1, config={'retries': 5, 'retry_interval': 10, 'batch_size': 1, 'max_tokens': 1024, 'temperature': 0.0, 'anthropic_cache_strategy': 'evaluation'}, model_args={}
+2026-07-27 09:21:30 - evalscope - INFO: Model loaded successfully.
+2026-07-27 09:22:00 - evalscope - INFO: AgentLoop reached max_steps=5 for sample 0; terminating.
+2026-07-27 09:22:00 - evalscope - INFO: Starting evaluation for astropy__astropy-12907 in log dir /home/rwkv/chase/EvalScope/results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server/20260727_092121/swebench_log/astropy__astropy-12907...
+2026-07-27 09:22:00 - evalscope - INFO: Creating container for astropy__astropy-12907...
+2026-07-27 09:22:00 - evalscope - INFO: Container for astropy__astropy-12907 created: 05c83587a60435a5638ea726753d936d805ac6b04eeee10312e64779ad1dcd6e
+2026-07-27 09:22:01 - evalscope - INFO: Container for astropy__astropy-12907 started: 05c83587a60435a5638ea726753d936d805ac6b04eeee10312e64779ad1dcd6e
+2026-07-27 09:22:01 - evalscope - INFO: Intermediate patch for astropy__astropy-12907 written to /home/rwkv/chase/EvalScope/results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server/20260727_092121/swebench_log/astropy__astropy-12907/patch.diff, now applying to container...
+2026-07-27 09:22:01 - evalscope - INFO: Failed to apply patch to container: git apply --verbose
+2026-07-27 09:22:01 - evalscope - INFO: Failed to apply patch to container: git apply --verbose --reject
+2026-07-27 09:22:01 - evalscope - INFO: Failed to apply patch to container: patch --batch --fuzz=5 -p1 -i
+2026-07-27 09:22:01 - evalscope - INFO: >>>>> Patch Apply Failed:
+patch: **** Only garbage was found in the patch input.
+patch unexpectedly ends in middle of line
+
+2026-07-27 09:22:01 - evalscope - ERROR: Error in evaluating model for astropy__astropy-12907: astropy__astropy-12907 >>>>> Patch Apply Failed:
+patch: **** Only garbage was found in the patch input.
+patch unexpectedly ends in middle of line
+
+Traceback (most recent call last):
+  File "/home/rwkv/chase/EvalScope/.venv/lib/python3.12/site-packages/evalscope/benchmarks/swe_bench/utils.py", line 133, in eval_instance
+    raise Exception(f'{instance_id} {APPLY_PATCH_FAIL}:\n{val.output.decode(UTF8)}')
+Exception: astropy__astropy-12907 >>>>> Patch Apply Failed:
+patch: **** Only garbage was found in the patch input.
+patch unexpectedly ends in middle of line
+
+
+2026-07-27 09:22:01 - evalscope - INFO: Attempting to stop container amazing_feistel...
+2026-07-27 09:22:17 - evalscope - INFO: Attempting to remove container amazing_feistel...
+2026-07-27 09:22:17 - evalscope - INFO: Container amazing_feistel removed.
+2026-07-27 09:22:17 - evalscope - INFO: Evaluating[swe_bench_verified_agentic] 100%| 1/1 [Elapsed: 00:47 < Remaining: 00:00, 47.08s/it]
+2026-07-27 09:22:17 - evalscope - INFO: swe_bench_verified_agentic: predictions complete, aggregating scores...
+2026-07-27 09:22:17 - evalscope - INFO: Aggregating scores for subset: default
+2026-07-27 09:22:17 - evalscope - INFO: Generating report...
+2026-07-27 09:22:17 - evalscope - INFO: 
+swe_bench_verified_agentic report table:
+┌──────────────────────────────────┬────────────────────────────┬──────────┬──────────┬───────┬─────────┬─────────┐
+│ Model                            │ Dataset                    │ Metric   │ Subset   │   Num │   Score │ Cat.0   │
+├──────────────────────────────────┼────────────────────────────┼──────────┼──────────┼───────┼─────────┼─────────┤
+│ rwkv7-g1h-2.9b-20260710-ctx10240 │ swe_bench_verified_agentic │ mean_acc │ default  │     1 │       0 │ default │
+└──────────────────────────────────┴────────────────────────────┴──────────┴──────────┴───────┴─────────┴─────────┘ 
+
+2026-07-27 09:22:17 - evalscope - INFO: Skipping report analysis (`analysis_report=False`).
+2026-07-27 09:22:17 - evalscope - INFO: Dump report to: /home/rwkv/chase/EvalScope/results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server/20260727_092121/reports/rwkv7-g1h-2.9b-20260710-ctx10240/swe_bench_verified_agentic.json 
+
+2026-07-27 09:22:17 - evalscope - INFO: 
+swe_bench_verified_agentic perf table:
+Model                             Dataset                       Num    Avg Lat  Avg TTFT    Avg TPOT      Avg Thpt    Avg In    Avg Out
+                                                                           (s)  (ms)        (ms)           (tok/s)       Tok        Tok
+--------------------------------  --------------------------  -----  ---------  ----------  ----------  ----------  --------  ---------
+rwkv7-g1h-2.9b-20260710-ctx10240  swe_bench_verified_agentic      5      5.993  -           -               148.71    3583.2      891.2
+
+2026-07-27 09:22:17 - evalscope - INFO: Benchmark swe_bench_verified_agentic evaluation finished.
+2026-07-27 09:22:17 - evalscope - INFO: Running[eval] 100%| 1/1 [Elapsed: 00:54 < Remaining: 00:00, 54.90s/benchmark]
+2026-07-27 09:22:17 - evalscope - INFO: Overall report table: 
+┌──────────────────────────────────┬────────────────────────────┬──────────┬──────────┬───────┬─────────┬─────────┐
+│ Model                            │ Dataset                    │ Metric   │ Subset   │   Num │   Score │ Cat.0   │
+├──────────────────────────────────┼────────────────────────────┼──────────┼──────────┼───────┼─────────┼─────────┤
+│ rwkv7-g1h-2.9b-20260710-ctx10240 │ swe_bench_verified_agentic │ mean_acc │ default  │     1 │       0 │ default │
+└──────────────────────────────────┴────────────────────────────┴──────────┴──────────┴───────┴─────────┴─────────┘ 
+
+2026-07-27 09:22:17 - evalscope - INFO: Overall perf table: 
+Model                             Dataset                       Num    Avg Lat  Avg TTFT    Avg TPOT      Avg Thpt    Avg In    Avg Out
+                                                                           (s)  (ms)        (ms)           (tok/s)       Tok        Tok
+--------------------------------  --------------------------  -----  ---------  ----------  ----------  ----------  --------  ---------
+rwkv7-g1h-2.9b-20260710-ctx10240  swe_bench_verified_agentic      5      5.993  -           -               148.71    3583.2      891.2 
+
+2026-07-27 09:22:18 - evalscope - INFO: HTML report generated: /home/rwkv/chase/EvalScope/results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server/20260727_092121/reports/report.html
+2026-07-27 09:22:18 - evalscope - INFO: Finished evaluation for rwkv7-g1h-2.9b-20260710-ctx10240 on ['swe_bench_verified_agentic']
+2026-07-27 09:22:18 - evalscope - INFO: Output directory: /home/rwkv/chase/EvalScope/results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server/20260727_092121

@@ -1,6 +1,6 @@
 # EvalScope Agent pipeline acceptance audit
 
-Status: **FINAL CANDIDATE (native local and remote 2.9B tool paths verified; quality gate not met)**.
+Status: **FINAL CANDIDATE (native local/remote paths and server-side SWE-bench execution verified; quality gate not met)**.
 
 This audit records the fixed experiment configuration, the post-audit
 vllm-rwkv source review, a separate local native-tool run, a remote GPU1 native
@@ -23,9 +23,9 @@ modified:
 | Local RWKV endpoint can be called | PASS | `baseline/chat-naive-preflight.json`; real v3 HTTP runs and EvalScope reports |
 | Naive Chat serialization is correct | PASS | `src/cli/helicopter_cli/naive_chat.py`, `src/cli/helicopter_cli/naive_chat_proxy.py`, proxy/serializer tests in `tests/test_naive_chat.py`, `baseline/chat-naive-preflight.json` |
 | Existing system and business messages are preserved | PASS | serializer tests cover role/order/content; proxy only transforms the outbound request boundary |
-| vllm-rwkv native tool path is configured | PASS (local 19316 and temporary remote 19331); NOT CONFIGURED (existing 19329) | `vllm-rwkv` `rwkv_tool_parser.py`, native RWKV chat template, `scripts/start_local_rwkv_tool_server.sh`, and the two native preflight records; local 19316 and remote GPU1/19331 start with both required flags, while existing 19329 rejects the same request because its live process lacks them |
+| vllm-rwkv native tool path is configured | PASS (local 19316 and temporary remote 19331); NOT CONFIGURED (existing 19329) | `vllm-rwkv` `rwkv_tool_parser.py`, native RWKV chat template, native preflight records, and `vllm-rwkv-tool-calls.patch`; patched GPU1/19331 accepts the checkpoint's `<tool_calls>` array, while existing 19329 still lacks the required flags |
 | EvalScope Agent datasets are wired | PASS | `benchmarks/evalscope_agent_datasets.json`, CLI catalog listing returns 30 datasets |
-| Reproducible benchmark execution | CONDITIONAL | fixed config and local native `general_fc` and GAIA runs complete; SWE-bench and other official harnesses remain dependency- and environment-gated |
+| Reproducible benchmark execution | CONDITIONAL | fixed config, local native runs, and server-side SWE-bench one-sample execution complete with `uv`; GAIA remains separately image-gated and formal quality thresholds are not met |
 | Raw response and request trace are retained | PASS | v3 `raw/naive_chat.jsonl`, `raw/trace_report.json`, timestamped `raw/acceptance_report.json` |
 | Answer extraction is strict and non-repairing | PASS | `evalscope_agent_results.py`; 22 targeted regression tests |
 | Discrimination separates transport/format/extraction/model failures | PASS | `tests/test_evalscope_agent_results.py`; live reports show `format_invalid`, `context_truncated`, and official scores separately |
@@ -33,8 +33,9 @@ modified:
 | EvalScope Agent regression suite | PASS | `tests/test_naive_chat.py`, `tests/test_evalscope_agent.py`, and `tests/test_evalscope_agent_results.py`: 22 passed |
 | Full repository regression | CONDITIONAL | full run: 292 passed, 6 skipped, 22 failures in existing LightEval/Famous120/benchmark compatibility tests; no EvalScope Agent test failed. Excluding the two LightEval test files leaves 23 passed and one pre-existing sampling-budget failure |
 | No blocking pipeline error | PASS (local path); PASS (forwarded external FC path) | local 19316 health check, native preflight, no-proxy EvalScope run, and forwarded 19329 external `general_fc` run all complete; forwarded GAIA is separately blocked by Docker image pull |
+| Server-side SWE-bench environment | PASS | `/home/rwkv/chase/EvalScope`, `swebench==4.1.0`, exact Astropy image, GPU1/19331, patched RWKV parser, container creation/cleanup, scoring and HTML report all completed in round 4 |
 | Key benchmark metrics meet the project threshold | NOT MET | local v3 `general_fc tool_call_f1=0`, local GAIA `mean_acc=0`, forwarded 19329 `general_fc tool_call_f1=0`, and native remote GPU1 `general_fc tool_call_f1=0`; the GPU1 preflight proves native transport, but the fixed benchmark still has a model decision/quality failure |
-| Code, logs, reports, and checkpoints uploaded | PASS | branch `updata/supported-dataset` contains the staged integration, native/local, forwarded comparison, and reproducibility commits through `ad84822`; tags `evalscope/native-local-code`, `evalscope/native-local-benchmark`, `evalscope/native-local-gaia`, `evalscope/forwarded-external-code`, and `evalscope/reproducible-runner` provide rollback points |
+| Code, logs, reports, and checkpoints uploaded | PASS | branch `updata/supported-dataset` contains the integration, native/local, forwarded comparison, reproducibility, and server-side SWE-bench evidence commits; tags `evalscope/native-local-code`, `evalscope/native-local-benchmark`, `evalscope/native-local-gaia`, `evalscope/forwarded-external-code`, and `evalscope/reproducible-runner` provide rollback points |
 | Every major phase has a rollback checkpoint | PASS | `baseline/*` and `evalscope/*` annotated tags |
 | Input-to-report pipeline is automatic | PASS | `helicopter eval evalscope ...` produces EvalScope reports, predictions, reviews, traces, and `acceptance_report.json`; `--report-only` rebuilds evidence |
 
@@ -96,15 +97,31 @@ modified:
 - `results/evalscope/forwarded-native-gaia-2p9b-gpu1-20260727-function-calling/`:
   corrected native GAIA attempt. EvalScope entered the AgentLoop, but Docker
   could not pull `python:3.11`; the run is not scored.
+- `results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server/20260727_092121/`:
+  first server-side SWE-bench run after adding the reproducible `swebench`
+  dependency group. The exact Astropy image ran, but the model's invalid JSON
+  action led to a strict patch-apply failure.
+- `results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server-round4/20260727_093947/`:
+  patched-parser and `max_tokens=2048` rerun. Native `bash` calls were parsed
+  and executed in the Docker sandbox; the official score is 0 because the
+  model later requested unavailable `view`/`str_replace_editor` tools and did
+  not submit a patch. No client-side answer or patch repair was used.
+- `experiments/evalscope_agent/vllm-rwkv-tool-calls.patch`:
+  standalone external vllm-rwkv parser patch and regression additions. Direct
+  parser checks passed for both non-streaming and streaming `<tool_calls>`.
 - `uv lock --check`: passed.
 - `uv run --no-default-groups --group agent --group eval --with pytest pytest -q tests/test_naive_chat.py tests/test_evalscope_agent.py tests/test_evalscope_agent_results.py`: **22 passed**.
+- Server-side `uv sync --no-default-groups --group agent --group eval --group swe-bench`: completed; `swebench==4.1.0` installed.
+- Server-side SWE-bench round 4: exit code 0, 1 sample, 5 model requests, native tool calls executed, `mean_acc=0`, full HTML/JSON/trace artifacts.
 
 ## Go/no-go decision
 
 The software integration and local native endpoint are runnable and
 evidence-preserving. The remote GPU1 experiment additionally verifies the
-native 2.9B tool-call transport required by the requested model interface. This
-version must not be labeled a formal passing Agent benchmark release because
-the fixed native `general_fc` F1 and GAIA scores are not passing and the GAIA
-sandbox cannot pull its required image. The current adapter intentionally does
-not fabricate calls, append answers, or repair truncated output.
+native 2.9B tool-call transport, the server-side `<tool_calls>` parser path,
+and the SWE-bench container pipeline required by the requested model
+interface. This version must not be labeled a formal passing Agent benchmark
+release because the fixed native `general_fc`, SWE-bench, and GAIA scores are
+not passing and GAIA still cannot pull its required image. The current adapter
+intentionally does not fabricate calls, append answers, or repair truncated
+output.

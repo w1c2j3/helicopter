@@ -26,6 +26,10 @@ agent = [
   "evalscope[mcp,sandbox]>=1.9.1,<2.0.0",
 ]
 
+swe-bench = [
+  "evalscope[swe_bench]>=1.9.1,<2.0.0",
+]
+
 rwkv = [
   "accelerate",
   "aiohttp>=3.13.3",

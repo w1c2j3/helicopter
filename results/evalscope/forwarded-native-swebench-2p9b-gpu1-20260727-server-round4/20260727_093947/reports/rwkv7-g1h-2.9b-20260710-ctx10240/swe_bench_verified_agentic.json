@@ -1,0 +1,94 @@
+{
+    "name": "rwkv7-g1h-2.9b-20260710-ctx10240@swe_bench_verified_agentic",
+    "dataset_name": "swe_bench_verified_agentic",
+    "dataset_pretty_name": "SWE-bench_Verified_Agentic",
+    "dataset_description": "\n## Overview\n\nSWE-bench Verified Agentic is the agentic-mode evaluation of SWE-bench Verified, a human-validated subset of 500 samples from SWE-bench. Unlike the oracle single-turn variant, the model must autonomously explore the repository, run shell commands, edit source files, and submit a patch through a multi-turn agent loop driven inside a per-instance Docker container.\n\n## Task Description\n\n- **Task Type**: Automated Software Engineering / Bug Fixing (Agentic)\n- **Input**: GitHub issue description (no oracle file context)\n- **Output**: Code patch (diff format) collected from `git diff` after autonomous editing\n- **Repositories**: 12 popular Python projects (Django, Flask, Requests, etc.)\n\n## Key Features\n\n- 500 human-validated Issue-Pull Request pairs\n- Multi-turn agent loop (mini-swe-agent `swebench.yaml` compatible)\n- Per-instance SWE-bench Docker container as the execution sandbox\n- Sentinel-based patch submission protocol (`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`)\n- Supports both function-calling (`toolcall`) and text-based (`backticks`) action protocols\n\n## Evaluation Notes\n\n- Requires `pip install swebench==4.1.0` before evaluation\n- Docker images are built/pulled automatically for each repository\n- Timeout of 1800 seconds (30 min) per instance for final patch validation\n- See the [usage documentation](https://evalscope.readthedocs.io/en/latest/third_party/swe_bench.html) for detailed setup instructions\n- Supports both local image building and remote image pulling\n\n## Agentic Mode\n\nThis benchmark drives a multi-turn agent loop (mirrors mini-swe-agent's\n`swebench.yaml`) inside a per-instance SWE-bench Docker container. The\nmodel issues `bash` commands to explore `/testbed`, edit source files,\nand finally submits its `git diff` patch by printing the sentinel\n`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` followed by the patch contents.\n\nThe default `swe_bench_toolcall` strategy uses OpenAI function calling with\na single `bash` tool. Models without function-calling support can select\n`swe_bench_backticks` through `NativeAgentConfig.strategy`; that strategy\nexpects one ` ```mswea_bash_command ``` ` block per turn.\n",
+    "model_name": "rwkv7-g1h-2.9b-20260710-ctx10240",
+    "score": 0.0,
+    "metrics": [
+        {
+            "name": "mean_acc",
+            "num": 1,
+            "score": 0.0,
+            "macro_score": 0.0,
+            "categories": [
+                {
+                    "name": [
+                        "default"
+                    ],
+                    "num": 1,
+                    "score": 0.0,
+                    "macro_score": 0.0,
+                    "subsets": [
+                        {
+                            "name": "default",
+                            "score": 0.0,
+                            "num": 1,
+                            "is_aggregate": false
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "analysis": "N/A",
+    "perf_metrics": {
+        "summary": {
+            "n_samples": 5,
+            "latency": {
+                "mean": 6.379939,
+                "std": 6.596007,
+                "min": 0.819432,
+                "25%": 0.846207,
+                "50%": 3.175903,
+                "75%": 13.500541,
+                "90%": 13.534783,
+                "99%": 13.555328,
+                "max": 13.557611
+            },
+            "throughput": {
+                "avg_output_tps": 149.59,
+                "avg_req_ps": 0.1567
+            },
+            "usage": {
+                "input_tokens": {
+                    "mean": 2538.2,
+                    "std": 706.329031,
+                    "min": 1641.0,
+                    "25%": 2201.0,
+                    "50%": 2338.0,
+                    "75%": 3193.0,
+                    "90%": 3268.0,
+                    "99%": 3313.0,
+                    "max": 3318.0
+                },
+                "output_tokens": {
+                    "mean": 954.4,
+                    "std": 1009.056639,
+                    "min": 99.0,
+                    "25%": 112.0,
+                    "50%": 465.0,
+                    "75%": 2048.0,
+                    "90%": 2048.0,
+                    "99%": 2048.0,
+                    "max": 2048.0
+                },
+                "total_tokens": {
+                    "mean": 3492.6,
+                    "std": 1384.02919,
+                    "min": 2106.0,
+                    "25%": 2313.0,
+                    "50%": 3292.0,
+                    "75%": 4386.0,
+                    "90%": 4974.0,
+                    "99%": 5326.8,
+                    "max": 5366.0
+                },
+                "total_input_tokens": 12691,
+                "total_output_tokens": 4772,
+                "total_tokens_count": 17463
+            }
+        }
+    },
+    "num": 1
+}
