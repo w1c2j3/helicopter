@@ -130,9 +130,9 @@ process was not modified:
   `general_fc`, `gaia`, and `swe_bench_verified_agentic` all produced the
   expected EvalScope command with the configured model, endpoint, dataset,
   strategy, and generation settings without contacting a model.
-- `experiments/evalscope_agent/vllm-rwkv-tool-calls.patch`:
-  standalone external vllm-rwkv parser patch and regression additions. Direct
-  parser checks passed for both non-streaming and streaming `<tool_calls>`.
+- `experiments/evalscope_agent/post-audit/vllm-rwkv-tool-call-upstream-issue.md`:
+  external issue draft describing the observed non-streaming and streaming
+  `<tool_calls>` contract. No parser patch is shipped by this repository.
 - `uv lock --check`: passed.
 - `uv run --no-default-groups --group agent --group eval --with pytest pytest -q tests/test_naive_chat.py tests/test_evalscope_agent.py tests/test_evalscope_agent_results.py`: **24 passed**.
 - The answer-extraction regression includes an explicit fullwidth-colon marker

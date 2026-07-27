@@ -12,8 +12,8 @@ Scope boundary: this repository prepares benchmark data, assembles the
 existing messages, requests the model, retains the raw response, extracts an
 answer, and discriminates the result. vllm-rwkv parsing/template changes,
 tool availability, sandbox execution, and model behavior are external. The
-standalone parser patch mentioned below is an upstream issue artifact only; it
-is not shipped, imported, or required by the EvalScope pipeline.
+upstream issue note mentioned below is an external contract record only; no
+engine patch is shipped, imported, or required by the EvalScope pipeline.
 
 ## Checkpoints
 
@@ -82,12 +82,14 @@ is not shipped, imported, or required by the EvalScope pipeline.
 - `post-audit/forwarded-2p9b-native-tools-gpu1-20260727.screen.log` is the
   captured vLLM startup, request, and normal SIGTERM shutdown log for that
   temporary GPU1 service.
-- `vllm-rwkv-tool-calls.patch` is retained only as an external issue draft:
-  vllm-rwkv should normalize the checkpoint's `<tool_calls>` JSON-array form
-  to OpenAI `message.tool_calls`, including streaming deltas. It is not part of
-  this repository's implementation and must not be treated as a pipeline fix.
+- `post-audit/vllm-rwkv-tool-call-upstream-issue.md` records the external issue
+  draft for normalizing the checkpoint's `<tool_calls>` JSON-array form to
+  OpenAI `message.tool_calls`, including streaming deltas. No engine patch is
+  part of this repository's implementation.
 - `post-audit/forwarded-2p9b-native-tools-gpu1-round3.screen.log` records the
-  restarted GPU1/19331 service with that parser patch loaded.
+  restarted GPU1/19331 service during the external parser experiment; that
+  engine-side change was not part of this repository and has been removed from
+  the deliverable.
 - `post-audit/forwarded-2p9b-naive-proxy-20260727.json` and its JSONL trace
   record a successful 19329 request through the naive Chat proxy. The model
   returned prose and no `tool_calls`; the proxy preserved that response.
