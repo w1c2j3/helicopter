@@ -288,6 +288,36 @@ def publish_results(
     return len(expected_tasks)
 
 
+def read_aggregate_metrics(
+    *,
+    output_dir: Path,
+    task_names: list[str],
+) -> dict[str, float]:
+    results, _, _ = _read_standard_results(output_dir)
+    task_results = results.get("results")
+    if not isinstance(task_results, dict):
+        raise PublicationError("LightEval results lack task results")
+
+    metrics: dict[str, float] = {}
+    for task_name in task_names:
+        raw_aggregates = task_results.get(task_name)
+        if not isinstance(raw_aggregates, dict):
+            raise PublicationError(f"LightEval output is missing task {task_name}")
+        selector = task_name.rsplit("|", 1)[0]
+        for metric_name, value in raw_aggregates.items():
+            if (
+                isinstance(metric_name, str)
+                and not metric_name.endswith("_stderr")
+                and not isinstance(value, bool)
+                and isinstance(value, (int, float))
+                and math.isfinite(value)
+            ):
+                metrics[f"{selector}/{metric_name}"] = float(value)
+    if not metrics:
+        raise PublicationError("LightEval output contains no finite aggregate metrics")
+    return metrics
+
+
 def _read_standard_results(
     output_dir: Path,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, object]]:

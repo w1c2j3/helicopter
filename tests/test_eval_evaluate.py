@@ -68,9 +68,12 @@ def test_expected_tasks_are_weight_mode_task_product(tmp_path: Path) -> None:
     weights = (tmp_path / "a.pth", tmp_path / "b.pth")
     config = LightEvalConfig(
         prompt_template="bot",
+        publish=True,
+        result_path=None,
         weights=weights,
         weight_hashes=("a" * 64, "b" * 64),
         benchmarks=("gsm8k",),
+        wkv_modes=("fp16", "fp32io16"),
         scoreboard_url="https://example.test",
         scoreboard_token="secret",
         staging_root=tmp_path / "staging",

@@ -4,8 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 VENV="${VENV:-$ROOT/.venv}"
+EVAL_VENV="${EVAL_VENV:-$ROOT/.venv-lighteval}"
 UV="${UV:-uv}"
-INSTALL_COMPONENTS="${INSTALL_COMPONENTS:-rwkv-lm,dev}"
+INSTALL_COMPONENTS="${INSTALL_COMPONENTS:-rwkv-lm,vllm-rwkv,verl-rwkv,lighteval,dev}"
 INSTALL_SYSTEM_DEPS="${INSTALL_SYSTEM_DEPS:-0}"
 UPDATE_UV="${UPDATE_UV:-0}"
 UV_UPGRADE="${UV_UPGRADE:-0}"
@@ -37,6 +38,8 @@ SCOREBOARD_SERVER="$ROOT/src/scoreboard-server"
 SCOREBOARD_CLIENT="$ROOT/src/scoreboard-client"
 STAMP_DIR="$VENV/.helicopter-stamps"
 VLLM_STAMP="$STAMP_DIR/vllm-native.sha256"
+EVAL_STAMP_DIR="$EVAL_VENV/.helicopter-stamps"
+EVAL_VLLM_STAMP="$EVAL_STAMP_DIR/vllm-native.sha256"
 
 export PATH="$VENV/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
@@ -112,7 +115,7 @@ native_component_enabled() {
 }
 
 vllm_package_enabled() {
-  component_enabled vllm-rwkv || component_enabled lighteval
+  component_enabled vllm-rwkv
 }
 
 python_component_enabled() {
@@ -336,10 +339,14 @@ configure_cuda_arch_list() {
   native_component_enabled || return 0
   [[ "$VLLM_TARGET_DEVICE" == "cuda" ]] || return 0
   [[ -z "${TORCH_CUDA_ARCH_LIST:-}" ]] || return 0
-  [[ -x "$VENV/bin/python" ]] || return 0
+  local runtime_venv="$VENV"
+  if ! vllm_package_enabled && component_enabled lighteval; then
+    runtime_venv="$EVAL_VENV"
+  fi
+  [[ -x "$runtime_venv/bin/python" ]] || return 0
 
   local arch_list
-  arch_list="$("$VENV/bin/python" - <<'PY'
+  arch_list="$("$runtime_venv/bin/python" - <<'PY'
 import torch
 
 if not torch.cuda.is_available() or torch.cuda.device_count() == 0:
@@ -374,12 +381,31 @@ sync_uv_env() {
   IFS=, read -r -a components <<<"$INSTALL_COMPONENTS"
   for component in "${components[@]}"; do
     case "$component" in
-      scoreboard-server | scoreboard-client) ;;
+      lighteval | scoreboard-server | scoreboard-client) ;;
       *) sync_args+=(--group "$component") ;;
     esac
   done
 
   run "$UV" "${sync_args[@]}"
+}
+
+sync_lighteval_env() {
+  component_enabled lighteval || return 0
+  if [[ ! -x "$EVAL_VENV/bin/python" ]]; then
+    run "$UV" venv --allow-existing --python "$PYTHON_VERSION" "$EVAL_VENV"
+  fi
+
+  local sync_args=(
+    sync
+    --project "$ROOT"
+    --active
+    --inexact
+    --no-default-groups
+    --group lighteval
+  )
+  append_uv_sync_policy sync_args
+  [[ -n "$UV_INDEX_URL" ]] && sync_args+=(--index-url "$UV_INDEX_URL")
+  run env VIRTUAL_ENV="$EVAL_VENV" "$UV" "${sync_args[@]}"
 }
 
 sync_scoreboard_server() {
@@ -424,12 +450,13 @@ sync_scoreboard_client() {
 }
 
 vllm_native_fingerprint() {
+  local target_venv="${1:-$VENV}"
   {
     printf 'VLLM_TARGET_DEVICE=%s\n' "$VLLM_TARGET_DEVICE"
     printf 'VLLM_VERSION_OVERRIDE=%s\n' "$VLLM_VERSION_OVERRIDE"
     printf 'CMAKE_BUILD_TYPE=%s\n' "$CMAKE_BUILD_TYPE"
     printf 'TORCH_CUDA_ARCH_LIST=%s\n' "${TORCH_CUDA_ARCH_LIST:-}"
-    "$VENV/bin/python" - <<'PY'
+    "$target_venv/bin/python" - <<'PY'
 import platform
 import sys
 
@@ -448,10 +475,11 @@ PY
 }
 
 vllm_native_ready() {
+  local target_venv="${1:-$VENV}"
   local -a modules=(vllm._C_stable_libtorch vllm.rwkv7_ops)
   [[ "$VLLM_BUILD_PROFILE" == "rwkv" ]] &&
     modules=(vllm._rapid_sampling vllm.rwkv7_ops)
-  "$VENV/bin/python" - "${modules[@]}" <<'PY' >/dev/null
+  "$target_venv/bin/python" - "${modules[@]}" <<'PY' >/dev/null
 import importlib
 import sys
 
@@ -469,17 +497,29 @@ PY
 }
 
 install_vllm_package() {
+  local target_venv="${1:-$VENV}"
+  local target_stamp="${2:-$VLLM_STAMP}"
   local pip=( "$UV" pip install )
   [[ -n "$UV_INDEX_URL" ]] && pip+=(--index-url "$UV_INDEX_URL")
-  pip+=(--project "$ROOT" --python "$VENV/bin/python" )
+  pip+=(--project "$ROOT" --python "$target_venv/bin/python" )
 
-  mkdir -p "$STAMP_DIR"
+  if [[ "${DRY_RUN:-0}" == "1" && ! -x "$target_venv/bin/python" ]]; then
+    print_cmd env \
+      VLLM_TARGET_DEVICE="$VLLM_TARGET_DEVICE" \
+      VLLM_VERSION_OVERRIDE="$VLLM_VERSION_OVERRIDE" \
+      VLLM_USE_PRECOMPILED="${VLLM_USE_PRECOMPILED:-0}" \
+      CMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
+      "${pip[@]}" --no-deps --no-build-isolation -e "$VLLM" --torch-backend=auto
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$target_stamp")"
   local fingerprint
-  fingerprint="$(vllm_native_fingerprint)"
+  fingerprint="$(vllm_native_fingerprint "$target_venv")"
 
-  if [[ "$VLLM_REBUILD" != "1" && -f "$VLLM_STAMP" ]] &&
-     [[ "$(cat "$VLLM_STAMP")" == "$fingerprint" ]] &&
-     vllm_native_ready; then
+  if [[ "$VLLM_REBUILD" != "1" && -f "$target_stamp" ]] &&
+     [[ "$(cat "$target_stamp")" == "$fingerprint" ]] &&
+     vllm_native_ready "$target_venv"; then
     echo "vLLM native extensions are already built for this source and environment; reusing existing install"
     return 0
   fi
@@ -491,9 +531,9 @@ install_vllm_package() {
     CMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
     "${pip[@]}" --no-deps --no-build-isolation -e "$VLLM" --torch-backend=auto
 
-  vllm_native_ready
-  fingerprint="$(vllm_native_fingerprint)"
-  printf '%s\n' "$fingerprint" >"$VLLM_STAMP"
+  vllm_native_ready "$target_venv"
+  fingerprint="$(vllm_native_fingerprint "$target_venv")"
+  printf '%s\n' "$fingerprint" >"$target_stamp"
 }
 
 install_rwkv_lm_package() {
@@ -534,7 +574,7 @@ check_python_packages() {
 
   filtered_output="$(printf '%s\n' "$check_output" |
     grep -v -F 'The package `nvidia-cusparselt-cu13` was built for a different platform' |
-    grep -v -E '^(Checked [0-9]+ packages in .+|Found 1 incompatibility)$' || true)"
+    grep -v -E '^(Using Python .+|Checked [0-9]+ packages in .+|Found 1 incompatibility)$' || true)"
   if [[ -z "$filtered_output" ]] &&
      [[ "$check_output" == *'The package `nvidia-cusparselt-cu13` was built for a different platform'* ]]; then
     printf '%s\n' "$check_output" >&2
@@ -546,23 +586,55 @@ check_python_packages() {
   return 1
 }
 
+check_lighteval_packages() {
+  component_enabled lighteval || return 0
+  [[ "$RUN_PIP_CHECK" == "1" ]] || return 0
+
+  print_cmd "$UV" pip check --project "$ROOT" --python "$EVAL_VENV/bin/python"
+  [[ "${DRY_RUN:-0}" == "1" ]] && return 0
+
+  local check_output filtered_output
+  if check_output="$("$UV" pip check --project "$ROOT" --python "$EVAL_VENV/bin/python" 2>&1)"; then
+    printf '%s\n' "$check_output"
+    return 0
+  fi
+  filtered_output="$(printf '%s\n' "$check_output" |
+    grep -v -F 'The package `nvidia-cusparselt-cu13` was built for a different platform' |
+    grep -v -E '^(Using Python .+|Checked [0-9]+ packages in .+|Found 1 incompatibility)$' || true)"
+  if [[ -z "$filtered_output" ]] &&
+     [[ "$check_output" == *'The package `nvidia-cusparselt-cu13` was built for a different platform'* ]]; then
+    printf '%s\n' "$check_output" >&2
+    warn "ignoring uv platform-tag check for nvidia-cusparselt-cu13 in the LightEval environment"
+    return 0
+  fi
+  printf '%s\n' "$check_output" >&2
+  return 1
+}
+
 configure_network
 configure_build_dirs
 clean_submodule_venvs
 python_component_enabled && ensure_uv
 check_compiler_env
 python_component_enabled && sync_uv_env
+sync_lighteval_env
 sync_scoreboard_server
 sync_scoreboard_client
 check_native_env
 check_cuda_env
 configure_cuda_arch_list
-vllm_package_enabled && clean_vllm_cmake_cache
-vllm_package_enabled && install_vllm_package
+(vllm_package_enabled || component_enabled lighteval) && clean_vllm_cmake_cache
+vllm_package_enabled && install_vllm_package "$VENV" "$VLLM_STAMP"
+component_enabled lighteval &&
+  install_vllm_package "$EVAL_VENV" "$EVAL_VLLM_STAMP"
 component_enabled rwkv-lm && install_rwkv_lm_package
 component_enabled verl-rwkv && install_verl_package
 python_component_enabled && check_python_packages
+check_lighteval_packages
 
 clean_submodule_venvs
 
 echo "Environment ready: $VENV"
+if component_enabled lighteval; then
+  echo "LightEval environment ready: $EVAL_VENV"
+fi

@@ -19,10 +19,10 @@ from .publish import (
     content_digest,
     prepare_staging,
     publish_results,
+    read_aggregate_metrics,
 )
 
 
-WKV_MODES = ("fp16", "fp32io16")
 MAX_NEW_TOKENS = 8192
 _MARKUP = re.compile(r"\*\*|__|`+")
 _BOXED = re.compile(
@@ -46,19 +46,25 @@ def run(*, config_path: Path, env: Mapping[str, str], dry_run: bool) -> int:
         try:
             config = LightEvalConfig.read(config_path, env)
             tasks, skipped, lighteval_version = _resolve_benchmarks(config.benchmarks)
-            client = ScoreboardClient(
-                config.scoreboard_url,
-                config.scoreboard_token,
-            )
-            readiness = client.preflight()
             expected_tasks = _expected_tasks(config, tasks)
-            campaign = _campaign_payload(
-                config,
-                tasks,
-                skipped,
-                expected_tasks,
-                lighteval_version,
-            )
+            client: ScoreboardClient | None = None
+            readiness: dict[str, object] | None = None
+            campaign: dict[str, object] | None = None
+            if config.publish:
+                if config.scoreboard_url is None or config.scoreboard_token is None:
+                    raise ConfigError("published evaluation requires Scoreboard access")
+                client = ScoreboardClient(
+                    config.scoreboard_url,
+                    config.scoreboard_token,
+                )
+                readiness = client.preflight()
+                campaign = _campaign_payload(
+                    config,
+                    tasks,
+                    skipped,
+                    expected_tasks,
+                    lighteval_version,
+                )
             if dry_run:
                 print(
                     json.dumps(
@@ -72,7 +78,8 @@ def run(*, config_path: Path, env: Mapping[str, str], dry_run: bool) -> int:
                             ],
                             "skipped_benchmarks": skipped,
                             "tasks": tasks,
-                            "execution_units": len(config.weights) * len(WKV_MODES),
+                            "execution_units": len(config.weights)
+                            * len(config.wkv_modes),
                             "expected_task_count": len(expected_tasks),
                             "scoreboard": readiness,
                         },
@@ -82,6 +89,13 @@ def run(*, config_path: Path, env: Mapping[str, str], dry_run: bool) -> int:
                     )
                 )
                 return 0
+            if not config.publish:
+                return _run_local(
+                    config=config,
+                    tasks=tasks,
+                )
+            if campaign is None or client is None:
+                raise ConfigError("published evaluation was not initialized")
             return _run_campaign(
                 config=config,
                 tasks=tasks,
@@ -126,7 +140,7 @@ def _run_campaign(
         config.weight_hashes,
         strict=True,
     ):
-        for wkv_mode in WKV_MODES:
+        for wkv_mode in config.wkv_modes:
             output_dir = run_root / weight_hash / wkv_mode
             output_dir.mkdir(parents=True)
             model, sampling_config = _evaluate(
@@ -156,6 +170,54 @@ def _run_campaign(
     client.finalize(campaign_id, len(expected_tasks))
     _remove_completed_run(run_root, staging_root)
     print(f"campaign {campaign_id} complete; evaluation results retained by Scoreboard")
+    return 0
+
+
+def _run_local(
+    *,
+    config: LightEvalConfig,
+    tasks: list[dict[str, object]],
+) -> int:
+    if config.result_path is None:
+        raise ConfigError("local evaluation requires result_path")
+    staging_root = prepare_staging(config.staging_root)
+    run_root = staging_root / f"local-{uuid.uuid4()}"
+    run_root.mkdir(mode=0o700)
+    task_names = [str(task["task_name"]) for task in tasks]
+    weight = config.weights[0]
+    weight_hash = config.weight_hashes[0]
+    wkv_mode = config.wkv_modes[0]
+    output_dir = run_root / weight_hash / wkv_mode
+    output_dir.mkdir(parents=True)
+    _evaluate(
+        config=config,
+        weight=weight,
+        weight_hash=weight_hash,
+        wkv_mode=wkv_mode,
+        task_names=task_names,
+        output_dir=output_dir,
+    )
+    metrics = read_aggregate_metrics(
+        output_dir=output_dir,
+        task_names=task_names,
+    )
+    result = {
+        "schema_version": 1,
+        "weight_sha256": weight_hash,
+        "wkv_mode": wkv_mode,
+        "metrics": metrics,
+    }
+    config.result_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = config.result_path.with_name(
+        f".{config.result_path.name}.{uuid.uuid4().hex}.tmp"
+    )
+    temporary.write_text(
+        json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(config.result_path)
+    _remove_completed_run(run_root, staging_root)
+    print(f"evaluation metrics written to {config.result_path}")
     return 0
 
 
@@ -428,7 +490,6 @@ def _resolve_benchmarks(
     inventory = Registry(
         tasks=None,
         load_multilingual=True,
-        custom_tasks=None,
     ).get_tasks_dump()
     metadata: dict[str, tuple[str, dict[str, object]]] = {}
     for row in inventory:
@@ -451,7 +512,6 @@ def _resolve_benchmarks(
             registry = Registry(
                 tasks=selector,
                 load_multilingual=True,
-                custom_tasks=None,
             )
         except ValueError:
             skipped.append(selector)
@@ -522,7 +582,7 @@ def _expected_tasks(
         config.weight_hashes,
         strict=True,
     ):
-        for wkv_mode in WKV_MODES:
+        for wkv_mode in config.wkv_modes:
             for task in tasks:
                 task_name = str(task["task_name"])
                 expected.append(
@@ -554,7 +614,7 @@ def _campaign_payload(
     registry_digest = content_digest(tasks)
     eval_contract_digest = content_digest(
         {
-            "wkv_modes": WKV_MODES,
+            "wkv_modes": config.wkv_modes,
             "max_samples": None,
             "max_new_tokens": MAX_NEW_TOKENS,
             "prompt_template": config.prompt_template,

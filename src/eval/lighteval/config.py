@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,13 +15,17 @@ PROMPT_TEMPLATES = {
     "assistant": ("\n\nAssistant: ", "\nUser:"),
     "function_calling": ("\n### Assistant", "\n### User"),
 }
-_CONFIG_FIELDS = {"schema_version", "prompt_template", "weights", "benchmarks"}
-_ENV_FIELDS = (
-    "WEIGHT_PATH",
-    "HELICOPTER_SCOREBOARD_URL",
-    "HELICOPTER_SCOREBOARD_TOKEN",
-    "HELICOPTER_EVAL_STAGING_ROOT",
-)
+WKV_MODES = ("fp16", "fp32io16")
+_CONFIG_FIELDS = {
+    "schema_version",
+    "prompt_template",
+    "publish",
+    "result_path",
+    "weights",
+    "benchmarks",
+    "wkv_modes",
+}
+_ENV_REFERENCE = re.compile(r"^\$\{([A-Z][A-Z0-9_]*)\}$")
 
 
 class ConfigError(ValueError):
@@ -30,11 +35,14 @@ class ConfigError(ValueError):
 @dataclass(frozen=True)
 class LightEvalConfig:
     prompt_template: str
+    publish: bool
+    result_path: Path | None
     weights: tuple[Path, ...]
     weight_hashes: tuple[str, ...]
     benchmarks: tuple[str, ...]
-    scoreboard_url: str
-    scoreboard_token: str
+    wkv_modes: tuple[str, ...]
+    scoreboard_url: str | None
+    scoreboard_token: str | None
     staging_root: Path
 
     @classmethod
@@ -65,10 +73,55 @@ class LightEvalConfig:
             raise ConfigError(
                 "prompt_template must be one of: " + ", ".join(PROMPT_TEMPLATES)
             )
-        configured_weights = cls._strings(raw["weights"], "weights")
+        configured_weights = tuple(
+            cls._expand_environment(value, env, "weights")
+            for value in cls._strings(raw["weights"], "weights")
+        )
         benchmarks = cls._strings(raw["benchmarks"], "benchmarks")
+        publish = raw.get("publish", True)
+        if not isinstance(publish, bool):
+            raise ConfigError("publish must be a boolean")
+        wkv_modes = cls._strings(raw.get("wkv_modes", list(WKV_MODES)), "wkv_modes")
+        unsupported_modes = sorted(set(wkv_modes) - set(WKV_MODES))
+        if unsupported_modes:
+            raise ConfigError("unsupported wkv_modes: " + ", ".join(unsupported_modes))
 
-        missing_env = [name for name in _ENV_FIELDS if not env.get(name)]
+        configured_result_path = raw.get("result_path")
+        result_path: Path | None = None
+        if configured_result_path is not None:
+            if not isinstance(configured_result_path, str):
+                raise ConfigError("result_path must be a string")
+            expanded = cls._expand_environment(
+                configured_result_path,
+                env,
+                "result_path",
+            )
+            result_path = cls._absolute_path(expanded, "result_path")
+        if publish and result_path is not None:
+            raise ConfigError("result_path is only valid when publish = false")
+        if not publish:
+            if result_path is None:
+                raise ConfigError("result_path is required when publish = false")
+            if len(configured_weights) != 1 or len(wkv_modes) != 1:
+                raise ConfigError(
+                    "publish = false requires exactly one weight and one wkv_mode"
+                )
+
+        missing_env = [
+            name
+            for name in ("WEIGHT_PATH",)
+            if not env.get(name)
+        ]
+        if publish:
+            missing_env.extend(
+                name
+                for name in (
+                    "HELICOPTER_EVAL_STAGING_ROOT",
+                    "HELICOPTER_SCOREBOARD_URL",
+                    "HELICOPTER_SCOREBOARD_TOKEN",
+                )
+                if not env.get(name)
+            )
         if missing_env:
             raise ConfigError(
                 "missing private eval environment: " + ", ".join(missing_env)
@@ -78,10 +131,16 @@ class LightEvalConfig:
             raise ConfigError("WEIGHT_PATH must be a regular directory")
         weight_root = weight_root.resolve()
 
-        staging_root = cls._absolute_path(
-            env["HELICOPTER_EVAL_STAGING_ROOT"],
-            "HELICOPTER_EVAL_STAGING_ROOT",
-        )
+        configured_staging_root = env.get("HELICOPTER_EVAL_STAGING_ROOT")
+        if configured_staging_root:
+            staging_root = cls._absolute_path(
+                configured_staging_root,
+                "HELICOPTER_EVAL_STAGING_ROOT",
+            )
+        else:
+            if result_path is None:
+                raise ConfigError("local evaluation requires result_path")
+            staging_root = result_path.parent / ".lighteval-staging"
         if staging_root.exists() and (
             not staging_root.is_dir() or staging_root.is_symlink()
         ):
@@ -91,18 +150,25 @@ class LightEvalConfig:
         if staging_root.resolve(strict=False) == weight_root:
             raise ConfigError("staging root must differ from WEIGHT_PATH")
 
-        scoreboard_url = env["HELICOPTER_SCOREBOARD_URL"]
-        parsed_url = urlsplit(scoreboard_url)
-        if (
-            scoreboard_url != scoreboard_url.strip()
-            or parsed_url.scheme not in {"http", "https"}
-            or not parsed_url.netloc
-            or parsed_url.username is not None
-            or parsed_url.password is not None
-            or parsed_url.query
-            or parsed_url.fragment
-        ):
-            raise ConfigError("HELICOPTER_SCOREBOARD_URL must be an HTTP(S) base URL")
+        scoreboard_url: str | None = None
+        scoreboard_token: str | None = None
+        if publish:
+            scoreboard_url = env["HELICOPTER_SCOREBOARD_URL"]
+            parsed_url = urlsplit(scoreboard_url)
+            if (
+                scoreboard_url != scoreboard_url.strip()
+                or parsed_url.scheme not in {"http", "https"}
+                or not parsed_url.netloc
+                or parsed_url.username is not None
+                or parsed_url.password is not None
+                or parsed_url.query
+                or parsed_url.fragment
+            ):
+                raise ConfigError(
+                    "HELICOPTER_SCOREBOARD_URL must be an HTTP(S) base URL"
+                )
+            scoreboard_url = scoreboard_url.rstrip("/")
+            scoreboard_token = env["HELICOPTER_SCOREBOARD_TOKEN"]
 
         weights: list[Path] = []
         weight_hashes: list[str] = []
@@ -141,11 +207,14 @@ class LightEvalConfig:
 
         return cls(
             prompt_template=prompt_template,
+            publish=publish,
+            result_path=result_path,
             weights=tuple(weights),
             weight_hashes=tuple(weight_hashes),
             benchmarks=benchmarks,
-            scoreboard_url=scoreboard_url.rstrip("/"),
-            scoreboard_token=env["HELICOPTER_SCOREBOARD_TOKEN"],
+            wkv_modes=wkv_modes,
+            scoreboard_url=scoreboard_url,
+            scoreboard_token=scoreboard_token,
             staging_root=staging_root,
         )
 
@@ -175,6 +244,21 @@ class LightEvalConfig:
             raise ConfigError(f"{name} must be an absolute path")
         return path
 
+    @staticmethod
+    def _expand_environment(
+        value: str,
+        env: Mapping[str, str],
+        name: str,
+    ) -> str:
+        match = _ENV_REFERENCE.fullmatch(value)
+        if match is None:
+            return value
+        variable = match.group(1)
+        expanded = env.get(variable)
+        if not expanded:
+            raise ConfigError(f"{name} references missing environment variable {variable}")
+        return expanded
+
     @property
     def prompt(self) -> tuple[str, str]:
         return PROMPT_TEMPLATES[self.prompt_template]
@@ -183,6 +267,8 @@ class LightEvalConfig:
         return {
             "schema_version": 1,
             "prompt_template": self.prompt_template,
+            "publish": self.publish,
+            "result_path": str(self.result_path) if self.result_path else None,
             "weights": [
                 {"name": path.name, "sha256": digest}
                 for path, digest in zip(
@@ -192,7 +278,8 @@ class LightEvalConfig:
                 )
             ],
             "benchmarks": list(self.benchmarks),
+            "wkv_modes": list(self.wkv_modes),
             "scoreboard_url": self.scoreboard_url,
-            "scoreboard_token": "[REDACTED]",
+            "scoreboard_token": "[REDACTED]" if self.scoreboard_token else None,
             "staging_root": str(self.staging_root),
         }

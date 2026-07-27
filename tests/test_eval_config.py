@@ -50,6 +50,37 @@ def test_read_minimal_multi_weight_config(tmp_path: Path) -> None:
     assert "secret-token" not in json.dumps(config.public())
 
 
+def test_local_config_expands_invocation_paths_without_scoreboard(
+    tmp_path: Path,
+) -> None:
+    environment = _environment(tmp_path)
+    environment.pop("HELICOPTER_SCOREBOARD_URL")
+    environment.pop("HELICOPTER_SCOREBOARD_TOKEN")
+    environment.pop("HELICOPTER_EVAL_STAGING_ROOT")
+    environment["MAXRL_EVAL_WEIGHT"] = "a.pth"
+    environment["MAXRL_EVAL_RESULT_PATH"] = str(tmp_path / "metrics.json")
+    config = LightEvalConfig.read(
+        _write_config(
+            tmp_path / "eval.toml",
+            """
+schema_version = 1
+publish = false
+result_path = "${MAXRL_EVAL_RESULT_PATH}"
+weights = ["${MAXRL_EVAL_WEIGHT}"]
+wkv_modes = ["fp32io16"]
+benchmarks = ["aime25", "gsm8k", "asdiv", "math_500"]
+""",
+        ),
+        environment,
+    )
+
+    assert config.publish is False
+    assert config.scoreboard_url is None
+    assert config.result_path == tmp_path / "metrics.json"
+    assert config.staging_root == tmp_path / ".lighteval-staging"
+    assert config.wkv_modes == ("fp32io16",)
+
+
 @pytest.mark.parametrize(
     ("body", "message"),
     [
@@ -162,3 +193,45 @@ def test_dry_run_resolves_without_creating_campaign(
     assert output["execution_units"] == 2
     assert output["expected_task_count"] == 2
     assert "secret-token" not in json.dumps(output)
+
+
+def test_local_run_never_constructs_scoreboard_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _environment(tmp_path)
+    environment.pop("HELICOPTER_SCOREBOARD_URL")
+    environment.pop("HELICOPTER_SCOREBOARD_TOKEN")
+    environment.pop("HELICOPTER_EVAL_STAGING_ROOT")
+    environment["MAXRL_EVAL_WEIGHT"] = "a.pth"
+    environment["MAXRL_EVAL_RESULT_PATH"] = str(tmp_path / "metrics.json")
+    config_path = _write_config(
+        tmp_path / "eval.toml",
+        """
+schema_version = 1
+publish = false
+result_path = "${MAXRL_EVAL_RESULT_PATH}"
+weights = ["${MAXRL_EVAL_WEIGHT}"]
+wkv_modes = ["fp32io16"]
+benchmarks = ["aime25", "gsm8k", "asdiv", "math_500"]
+""",
+    )
+    task = {
+        "selector": "gsm8k",
+        "task_name": "gsm8k|0",
+    }
+    monkeypatch.setattr(
+        evaluate,
+        "_resolve_benchmarks",
+        lambda _selectors: ([task], [], "0.13.0"),
+    )
+    monkeypatch.setattr(
+        evaluate,
+        "ScoreboardClient",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("local evaluation must not access Scoreboard")
+        ),
+    )
+    monkeypatch.setattr(evaluate, "_run_local", lambda **_kwargs: 0)
+
+    assert evaluate.run(config_path=config_path, env=environment, dry_run=False) == 0

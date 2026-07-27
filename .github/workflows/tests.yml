@@ -28,26 +28,15 @@ jobs:
           python-version: "3.12"
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
 
-      - name: Install lightweight test dependencies
-        run: |
-          uv sync --frozen --no-default-groups --group dev
-          VIRTUAL_ENV=.venv uv sync \
-            --project src/scoreboard-server \
-            --active \
-            --inexact \
-            --frozen \
-            --no-default-groups \
-            --group dev
+      - name: Install test dependencies
+        run: uv sync --locked --group test
 
       - name: Run lightweight tests
         env:
-          PYTHONPATH: src/cli:src/scoreboard-server
-        run: |
-          source .venv/bin/activate
-          python -m unittest discover -s tests
-          python -m pytest -q \
-            tests/test_eval_config.py \
-            tests/test_eval_evaluate.py \
-            tests/test_eval_publish.py
+          HF_HOME: ${{ runner.temp }}/huggingface
+          PYTHONPATH: src/cli
+        run: uv run --no-sync pytest tests

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
 import stat
+from pathlib import Path
 
 from .commands import (
     EMB_DEVICES,
@@ -18,10 +18,7 @@ from .paths import find_root
 from .runner import run_command
 
 
-def add_common_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--config", help="TOML config path; defaults to the newest configs/local/*.toml"
-    )
+def add_runtime_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--env-file", default=DEFAULT_ENV_FILE, help="dotenv file to load first"
     )
@@ -35,10 +32,19 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     infer = subparsers.add_parser("infer", help="start vLLM for an RWKV model")
-    add_common_options(infer)
+    add_runtime_options(infer)
+    infer.add_argument(
+        "--config",
+        help="serving TOML; defaults to configs/example.toml",
+    )
     infer.add_argument("model", help="model alias from configs")
     infer.add_argument("--wkv-mode", choices=WKV_MODES)
     infer.add_argument("--emb-device", choices=EMB_DEVICES)
+    infer.add_argument(
+        "--allow-fp16-accumulation",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     infer.add_argument("--host")
     infer.add_argument("--port")
     infer.add_argument("--served-model-name")
@@ -51,45 +57,20 @@ def build_parser() -> argparse.ArgumentParser:
     infer.set_defaults(plan_builder=build_infer_plan)
 
     takeoff = subparsers.add_parser(
-        "takeoff", help="start verl training for an RWKV model"
+        "takeoff", help="launch a Verl-owned MaxRL config"
     )
-    add_common_options(takeoff)
-    takeoff.add_argument("model", help="model alias from configs")
-    takeoff.add_argument("algorithm", choices=("grpo",))
-    takeoff.add_argument("--dataset", required=True, help="dataset alias from configs")
-    takeoff.add_argument("--num-nodes", type=int)
-    takeoff.add_argument("--num-devices", type=int)
-    takeoff.add_argument("--wkv-mode", choices=WKV_MODES)
-    takeoff.add_argument("--emb-device", choices=EMB_DEVICES)
+    add_runtime_options(takeoff)
+    takeoff.add_argument("--config", required=True, help="Verl-owned MaxRL TOML")
     takeoff.add_argument(
-        "--override", action="append", help="extra Hydra override passed to verl"
+        "--override", action="append", help="operational override validated by Verl"
     )
     takeoff.set_defaults(plan_builder=build_takeoff_plan)
 
     evaluate = subparsers.add_parser(
         "eval",
-        help="run configured LightEval benchmarks and publish them",
-        description=(
-            "Run every configured LightEval selector for each weight in fp16 "
-            "and fp32io16, then publish one complete Scoreboard campaign."
-        ),
-        epilog=(
-            "The TOML contains schema_version = 1, an optional prompt_template "
-            "(bot, assistant, or function_calling), weights relative to "
-            "WEIGHT_PATH, and direct LightEval task or superset selectors in "
-            "benchmarks. Missing selectors are skipped. Exit 0 means every "
-            "resolved task was stored, the campaign was finalized, and its "
-            "local LightEval results were removed."
-        ),
+        help="run configured LightEval benchmarks",
     )
-    evaluate.add_argument(
-        "--config",
-        required=True,
-        help=(
-            "TOML containing schema_version, optional prompt_template, weights, "
-            "and benchmarks"
-        ),
-    )
+    evaluate.add_argument("--config", required=True, help="LightEval TOML")
     evaluate.add_argument(
         "--env-file",
         default=DEFAULT_ENV_FILE,
@@ -109,11 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     root = find_root()
     if args.command == "eval":
-        env_path = find_env_path(
-            root,
-            args.env_file,
-            use_fallbacks=False,
-        )
+        env_path = find_env_path(root, args.env_file, use_fallbacks=False)
         if env_path is not None:
             try:
                 env_status = env_path.lstat()
@@ -130,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
                     f"{env_path}"
                 )
         try:
-            env, _ = load_env(
+            eval_env, _ = load_env(
                 root,
                 args.env_file,
                 use_fallbacks=False,
@@ -138,27 +115,53 @@ def main(argv: list[str] | None = None) -> int:
             )
         except (OSError, UnicodeError) as error:
             parser.error(f"cannot securely read eval private environment file: {error}")
-        from helicopter_lighteval.evaluate import run as run_evaluation
-
         config_path = Path(args.config).expanduser()
         if not config_path.is_absolute():
             config_path = Path.cwd() / config_path
-        return run_evaluation(
-            config_path=config_path,
-            env=env,
-            dry_run=args.dry_run,
+        configured_python = eval_env.get("HELICOPTER_EVAL_PYTHON")
+        eval_python = (
+            Path(configured_python).expanduser()
+            if configured_python
+            else root / ".venv-lighteval/bin/python"
         )
-    env, _ = load_env(root, args.env_file)
-    config, _ = load_config(root, args.config)
-    prepend_venv_path(env, root, config)
+        if not eval_python.is_absolute():
+            eval_python = root / eval_python
+        if not os.access(eval_python, os.X_OK):
+            parser.error(
+                f"LightEval Python executable not found: {eval_python}; "
+                "prepare the lighteval component"
+            )
+        command = [
+            str(eval_python),
+            "-m",
+            "helicopter_lighteval",
+            "--config",
+            str(config_path),
+        ]
+        if args.dry_run:
+            command.append("--dry-run")
+        return run_command(
+            command,
+            cwd=root,
+            env=eval_env,
+            shown_env={},
+            dry_run=False,
+        )
 
-    plan = args.plan_builder(args, root=root, env=env, config=config)
+    env, _ = load_env(root, args.env_file)
+    prepend_venv_path(env, root)
+
+    if args.command == "takeoff":
+        plan = args.plan_builder(args, root=root, env=env)
+    else:
+        config, _ = load_config(root, args.config)
+        plan = args.plan_builder(args, root=root, env=env, config=config)
     return run_command(
         plan.command,
         cwd=plan.cwd,
         env=plan.env,
         shown_env=plan.shown_env,
-        dry_run=args.dry_run,
+        dry_run=args.dry_run and args.command != "takeoff",
     )
 
 

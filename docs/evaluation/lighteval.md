@@ -6,7 +6,10 @@
 helicopter eval --config ./configs/eval/lighteval.toml
 ```
 
-命令按配置顺序处理每个权重，并固定运行 `fp16`、`fp32io16` 两种 WKV mode。
+公开 CLI 会把评估委托给独立的 `.venv-lighteval`。LightEval 及其数学解析依赖不会
+安装进 Verl 使用的训练 `.venv`；可用 `HELICOPTER_EVAL_PYTHON` 显式覆盖该解释器。
+
+命令按配置顺序处理每个权重。发布型配置默认运行 `fp16`、`fp32io16` 两种 WKV mode。
 每个 weight/mode 使用一次 LightEval 官方 `Pipeline`，评估 `benchmarks` 中全部可解析
 的 task 或 superset selector。不存在于固定 LightEval 版本中的 selector 会报告为
 skipped；已解析 task 的 dataset、metric、模型或发布失败则使整个命令失败。
@@ -16,6 +19,7 @@ skipped；已解析 task 的 dataset、metric、模型或发布失败则使整�
 ```toml
 schema_version = 1
 prompt_template = "bot"
+publish = true
 
 weights = [
   "rwkv7/model-a.pth",
@@ -30,19 +34,29 @@ benchmarks = [
 ]
 ```
 
-配置只有四项：
+公共配置项为：
 
 - `schema_version`：固定为 `1`。
 - `prompt_template`：可省略，默认 `bot`；也可选 `assistant` 或
   `function_calling`。
+- `publish`：可省略，默认 `true`，结果经 Scoreboard API 入库。
 - `weights`：相对私有环境变量 `WEIGHT_PATH` 的权重路径，可配置多个。
 - `benchmarks`：直接写 LightEval task 或 superset selector，不维护名字映射。
+- `wkv_modes`：可省略，默认同时运行 `fp16` 和 `fp32io16`。
+- `result_path`：仅在 `publish = false` 时使用，指定本地 metrics JSON。
+
+MaxRL 训练期验证使用
+[`configs/eval/maxrl_math.toml`](../../configs/eval/maxrl_math.toml)。它显式设置
+`publish = false`、`wkv_modes = ["fp32io16"]`，并只列出 LightEval 原生支持的
+`aime25`、`gsm8k`、`asdiv`、`math_500`。权重与结果路径由 Verl 在每次验证触发时
+通过环境变量提供；
+该模式不会创建 Scoreboard client，不做 API preflight，也不会访问后端数据库。
 
 superset 由 LightEval 自己展开，所以配置不需要列出展开后的数百个 task。仓库默认
 清单见 [`configs/eval/lighteval.toml`](../../configs/eval/lighteval.toml)；不支持的
 小众 benchmark 不写入清单，当前 LightEval release 缺少的 selector 自动跳过。
-产品不提供 exclude、`max_samples`、生成参数、WKV mode、并发、shard 或 capacity
-配置。所有解析出的 task 使用完整 evaluation split。
+产品不提供 exclude、`max_samples`、生成参数、并发、shard 或 capacity 配置。
+所有解析出的 task 使用完整 evaluation split。
 
 三个 prompt template 来自 vLLM-RWKV：
 
@@ -79,7 +93,9 @@ helicopter eval \
 
 `HELICOPTER_EVAL_STAGING_ROOT` 是 LightEval 标准 results/details 的临时保存目录。
 目录不存在时以 `0700` 创建；已存在时必须由当前用户所有、权限严格为 `0700`，
-且不能是 symlink。不要把它配置为权重目录或共享目录。
+且不能是 symlink。不要把它配置为权重目录或共享目录。发布型评估必须配置该值；
+`publish = false` 时可省略，并自动使用 `result_path` 同目录下的
+`.lighteval-staging`。
 
 ## 查看计划
 
@@ -89,7 +105,8 @@ helicopter eval \
   --dry-run
 ```
 
-dry-run 会校验配置和权重、展开 selector、检查 Scoreboard publication API，并输出
+dry-run 会校验配置和权重、展开 selector，并在 `publish = true` 时检查 Scoreboard
+publication API，然后输出
 weight SHA、resolved/skipped selector、实际 task 和执行单元数。它不会加载 dataset
 或模型，也不会创建 campaign。Bearer token 始终显示为 `[REDACTED]`。
 
@@ -109,9 +126,9 @@ state/FP32 accumulation。
 task config 会记录 `original_num_docs`、`effective_num_docs` 和
 `skipped_multiselect_docs`，后端和前端均使用实际评估题数。
 
-## 强制入库和清理
+## 发布入库和本地结果
 
-正式运行先创建 Scoreboard campaign，然后对每个 weight/mode：
+`publish = true` 时，正式运行先创建 Scoreboard campaign，然后对每个 weight/mode：
 
 1. 运行完整 LightEval Pipeline，并把标准结果写到 staging。
 2. 读取标准 results/details，逐 task 请求 Scoreboard 入库。
@@ -122,6 +139,11 @@ task config 会记录 `original_num_docs`、`effective_num_docs` 和
 安全清理失败都会非零退出，并保留本次本地 LightEval 内容供排查。因此成功运行后
 完整结果只保留在 PostgreSQL；失败运行不会因自动清理而丢失证据。新命令始终创建
 新 campaign，不实现本地 manifest、自动 resume、quarantine 或结果等级。
+
+`publish = false` 时只允许一个 weight 和一个 WKV mode。命令运行相同的 LightEval
+Pipeline，从标准 results JSON 读取 native aggregate metrics，原子写入
+`result_path`，随后清理 staging；整个路径不会构造 Scoreboard client，也不会向
+Scoreboard 发出 HTTP 请求。
 
 ## 后端和前端
 

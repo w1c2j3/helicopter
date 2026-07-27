@@ -56,14 +56,14 @@ REMOTE_SSH_HOST="${REMOTE_SSH_HOST:-$REMOTE_WORKSPACE_ID.devpod}"
 REMOTE_ROOT="${REMOTE_ROOT:-/workspace/Projects/MachineLearning/helicopter}"
 REMOTE_VENV="${REMOTE_VENV:-$REMOTE_ROOT/.venv}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
-INSTALL_COMPONENTS="${INSTALL_COMPONENTS:-rwkv-lm,dev}"
+INSTALL_COMPONENTS="${INSTALL_COMPONENTS:-rwkv-lm,vllm-rwkv,verl-rwkv,lighteval,dev}"
 UPDATE_UV="${UPDATE_UV:-0}"
 UV_UPGRADE="${UV_UPGRADE:-0}"
 RUN_PIP_CHECK="${RUN_PIP_CHECK:-1}"
 UV_SYNC_INEXACT="${UV_SYNC_INEXACT:-1}"
 VLLM_TARGET_DEVICE="${VLLM_TARGET_DEVICE:-cuda}"
 VLLM_BUILD_PROFILE="${VLLM_BUILD_PROFILE:-rwkv}"
-VLLM_VERSION_OVERRIDE="${VLLM_VERSION_OVERRIDE:-0.11.2.dev278+gdbc3d9991}"
+VLLM_VERSION_OVERRIDE="${VLLM_VERSION_OVERRIDE:-}"
 VLLM_USE_PRECOMPILED="${VLLM_USE_PRECOMPILED:-0}"
 VLLM_REBUILD="${VLLM_REBUILD:-auto}"
 VERL_REINSTALL="${VERL_REINSTALL:-auto}"
@@ -275,6 +275,7 @@ sync_remote_repo() {
     --exclude '.git/' \
     --exclude '.git' \
     --exclude '.venv/' \
+    --exclude '.venv-lighteval/' \
     --exclude '.env' \
     --exclude '.env.local' \
     --exclude '__pycache__/' \
