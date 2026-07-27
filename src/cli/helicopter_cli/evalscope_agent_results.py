@@ -478,8 +478,17 @@ def _official_reports(output_dir: Path) -> list[dict[str, Any]]:
         except (OSError, json.JSONDecodeError):
             continue
         if isinstance(value, dict):
-            reports.append({"path": str(path), "report": value})
+            reports.append({"path": _report_path(path), "report": value})
     return reports
+
+
+def _report_path(path: Path) -> str:
+    """Keep report artifact paths portable when the CLI receives an absolute path."""
+
+    try:
+        return path.resolve().relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 def _dataset_name_from_path(path: Path) -> str:
@@ -549,8 +558,8 @@ def write_acceptance_report(
             samples.append({
                 "dataset": dataset,
                 "index": prediction.get("index", position),
-                "prediction_path": str(prediction_path),
-                "review_path": str(review_path) if review_path.is_file() else None,
+                "prediction_path": _report_path(prediction_path),
+                "review_path": _report_path(review_path) if review_path.is_file() else None,
                 "format_kind": format_kind,
                 "reference_answer": reference_answer,
                 "official_sample_score": sample_score,
@@ -578,7 +587,7 @@ def write_acceptance_report(
     output_path.write_text(
         json.dumps(
             {
-                "output_dir": str(output_dir),
+                "output_dir": _report_path(output_dir),
                 "exit_code": exit_code,
                 "counts": counts,
                 "samples": samples,

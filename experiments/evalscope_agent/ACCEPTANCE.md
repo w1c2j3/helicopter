@@ -158,3 +158,12 @@ release because the fixed native `general_fc`, SWE-bench, and GAIA scores are
 not passing and GAIA still cannot pull its required image. The current adapter
 intentionally does not fabricate calls, append answers, or repair truncated
 output.
+
+## Latest report-path audit
+
+The `--report-only` path is now portable: absolute workspace paths are
+serialized as checkout-relative POSIX paths, so regenerating a saved report
+does not embed the local machine's checkout directory. The saved GPU1
+`general_fc` acceptance report was regenerated with an absolute work directory
+and had no content diff. The focused `uv` regression suite is **52 passed**;
+this is an engineering fix and does not change the no-go quality decision above.

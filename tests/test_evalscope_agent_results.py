@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from helicopter_cli.evalscope_agent_results import (
+    _report_path,
     discriminate_agent_result,
     extract_agent_answer,
     write_acceptance_report,
     write_trace_report,
 )
+
+
+def test_report_paths_are_portable_for_absolute_workspace_paths() -> None:
+    workspace_run = Path.cwd() / "results" / "evalscope" / "run"
+    assert _report_path(workspace_run) == "results/evalscope/run"
 
 
 def test_choice_extraction_requires_an_explicit_final_choice() -> None:

@@ -274,3 +274,17 @@ transport and the `<tool_calls>` parser path, but the fixed native
 `general_fc` and SWE-bench scores remain zero. GAIA still has its separate
 Docker registry limitation. These are recorded limits, not silently converted
 into passing results.
+
+## Report portability audit (2026-07-27)
+
+- The acceptance-report regeneration check found that `--report-only` could
+  serialize an absolute `--work-dir` into `output_dir`, sample artifact paths,
+  and official report paths. This made an otherwise identical report depend on
+  the machine checkout path.
+- `_report_path` now emits workspace-relative POSIX paths for artifacts below
+  the current checkout and preserves an absolute path only when an artifact is
+  genuinely outside the workspace. No model output, extraction result, or
+  score is changed.
+- Re-running `--report-only` against the saved GPU1 `general_fc` run with an
+  absolute work directory produced no report diff. The focused regression suite
+  is **52 passed**, and `uv lock --check` passed.
