@@ -105,6 +105,18 @@ def _latest_evalscope_work_dir(output_dir: Path) -> Path:
     return max(candidates, key=lambda path: path.stat().st_mtime_ns)
 
 
+def _saved_trace_exit_code(path: Path) -> int | None:
+    """Read a prior run's exit code without treating a missing trace as success."""
+
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")).get("exit_code")
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def _json_mapping(value: Any, *, root: Path, name: str) -> dict[str, Any]:
     if value is None or value == "":
         return {}
@@ -355,10 +367,13 @@ def run_evalscope(args: Any, *, root: Path, env: dict[str, str], config: dict[st
         output_dir = _output_dir(config, root=root, env=env, args=args)
         work_dir = _latest_evalscope_work_dir(output_dir)
         outer_trace = output_dir / "raw" / "trace_report.json"
+        trace_report = work_dir / "raw" / "trace_report.json"
+        if not trace_report.is_file():
+            trace_report = outer_trace
         report = write_acceptance_report(
             work_dir,
-            exit_code=0,
-            trace_report_path=outer_trace if outer_trace.is_file() else None,
+            exit_code=_saved_trace_exit_code(trace_report),
+            trace_report_path=trace_report if trace_report.is_file() else None,
         )
         print(f"evalscope: acceptance report written to {report}")
         return 0

@@ -176,3 +176,9 @@ while the existing GPU1/19331 forward returns a native OpenAI tool call. Both
 raw request/response records are saved under
 `experiments/evalscope_agent/post-audit/`. The repository does not modify the
 inference engine or repair the 19329 response.
+
+The report-only path also preserves the saved run status: it reads
+`raw/trace_report.json` instead of assuming exit code zero, and emits `null`
+when no trustworthy prior status exists. This prevents report regeneration
+from masking an earlier transport or runtime failure; the regression is
+covered by the current **53-test** focused `uv` suite.

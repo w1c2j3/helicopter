@@ -230,6 +230,29 @@ class EvalScopeAgentTests(unittest.TestCase):
             newer.mkdir(parents=True)
             self.assertEqual(_latest_evalscope_work_dir(root), newer.parent)
 
+    def test_report_only_preserves_saved_trace_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            (output_dir / "predictions").mkdir()
+            (output_dir / "reviews").mkdir()
+            raw_dir = output_dir / "raw"
+            raw_dir.mkdir()
+            (raw_dir / "trace_report.json").write_text(
+                json.dumps({"exit_code": 17, "records": 0}),
+                encoding="utf-8",
+            )
+
+            result = run_evalscope(
+                evalscope_args(report_only=True, work_dir=str(output_dir)),
+                root=ROOT,
+                env={},
+                config={"models": {"demo": {"served_model_name": "demo-served"}}},
+            )
+
+            self.assertEqual(result, 0)
+            report = json.loads((raw_dir / "acceptance_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["exit_code"], 17)
+
 
 if __name__ == "__main__":
     unittest.main()

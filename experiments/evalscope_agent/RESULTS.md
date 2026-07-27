@@ -303,3 +303,13 @@ into passing results.
 - The 19331 response also retains the model's prose and `</think>` text in the
   raw content. The pipeline keeps that content unchanged and extracts only the
   native tool-call field; no answer or tag is added by the client.
+
+## Report-only exit-code audit (2026-07-27)
+
+- A report-only review found that the CLI previously hard-coded
+  `exit_code=0`, which could make a failed saved run appear successful.
+- Report-only regeneration now reads the exit code from the saved
+  `raw/trace_report.json`; if that trace is absent or malformed, the report
+  records `null` rather than claiming success.
+- The new regression creates a saved trace with exit code 17 and verifies that
+  report-only preserves 17. The focused `uv` suite now passes **53 tests**.
