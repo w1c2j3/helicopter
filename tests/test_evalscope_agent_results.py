@@ -85,6 +85,13 @@ def test_swe_bench_backticks_and_tool_call_failures_are_explicit() -> None:
     )
     assert native_tool_call.status == "ok"
 
+    invalid_arguments = extract_agent_answer(
+        "",
+        format_kind="function_calling",
+        tool_calls=[{"id": "call_2", "type": "function", "function": {"name": "bash", "arguments": "not-json"}}],
+    )
+    assert invalid_arguments.status == "format_invalid"
+
 
 def test_transport_and_context_failures_precede_answer_scoring() -> None:
     extraction = extract_agent_answer("Final answer: 2", format_kind="numeric")
