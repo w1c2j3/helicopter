@@ -1,5 +1,5 @@
 {
-  "output_dir": "/home/chase/GitHub/helicopter/results/evalscope/forwarded-native-gaia-2p9b-gpu1-20260727-function-calling/20260727_081217",
+  "output_dir": "results/evalscope/forwarded-native-gaia-2p9b-gpu1-20260727-function-calling/20260727_081217",
   "exit_code": 1,
   "counts": {},
   "samples": [],

@@ -1,14 +1,34 @@
 {
-  "output_dir": "/home/chase/GitHub/helicopter/results/evalscope/forwarded-general-fc-2p9b-20260727",
+  "output_dir": "results/evalscope/forwarded-general-fc-2p9b-20260727",
   "exit_code": 1,
   "counts": {},
   "samples": [],
   "official_reports": [],
   "trace_report": {
     "trace_path": "/home/chase/GitHub/helicopter/results/evalscope/forwarded-general-fc-2p9b-20260727/raw/naive_chat.jsonl",
-    "exit_code": 1,
-    "records": 0,
-    "counts": {},
-    "items": []
+    "exit_code": 0,
+    "records": 1,
+    "counts": {
+      "context_truncated": 1
+    },
+    "items": [
+      {
+        "path": "/v1/chat/completions",
+        "decision": {
+          "status": "context_truncated",
+          "reason": "model completion ended at the context or generation limit",
+          "extracted_answer": null,
+          "reference_answer": null,
+          "raw_response": ">We have a conversation. The user is a person who is in a difficult situation: they have a debt of 60,000, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time,"
+        },
+        "extraction": {
+          "format_kind": "function_calling",
+          "raw_response": ">We have a conversation. The user is a person who is in a difficult situation: they have a debt of 60,000, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time,",
+          "extracted_answer": null,
+          "status": "format_invalid",
+          "error": "model returned text without an OpenAI tool_calls object"
+        }
+      }
+    ]
   }
 }

@@ -1,5 +1,5 @@
 {
-  "output_dir": "/home/chase/GitHub/helicopter/results/evalscope/local-gaia-1p5b-20260727/20260727_071448",
+  "output_dir": "results/evalscope/local-gaia-1p5b-20260727/20260727_071448",
   "exit_code": 0,
   "counts": {
     "extraction_failed": 3
@@ -8,8 +8,8 @@
     {
       "dataset": "gaia",
       "index": 0,
-      "prediction_path": "/home/chase/GitHub/helicopter/results/evalscope/local-gaia-1p5b-20260727/20260727_071448/predictions/rwkv7-g1h-1.5b-20260710-ctx10240/gaia_2023_level1.jsonl",
-      "review_path": "/home/chase/GitHub/helicopter/results/evalscope/local-gaia-1p5b-20260727/20260727_071448/reviews/rwkv7-g1h-1.5b-20260710-ctx10240/gaia_2023_level1.jsonl",
+      "prediction_path": "results/evalscope/local-gaia-1p5b-20260727/20260727_071448/predictions/rwkv7-g1h-1.5b-20260710-ctx10240/gaia_2023_level1.jsonl",
+      "review_path": "results/evalscope/local-gaia-1p5b-20260727/20260727_071448/reviews/rwkv7-g1h-1.5b-20260710-ctx10240/gaia_2023_level1.jsonl",
       "format_kind": "short_answer_direct",
       "reference_answer": "17",
       "official_sample_score": {
@@ -285,8 +285,8 @@
     {
       "dataset": "gaia",
       "index": 0,
-      "prediction_path": "/home/chase/GitHub/helicopter/results/evalscope/local-gaia-1p5b-20260727/20260727_071448/predictions/rwkv7-g1h-1.5b-20260710-ctx10240/gaia_2023_level2.jsonl",
-      "review_path": "/home/chase/GitHub/helicopter/results/evalscope/local-gaia-1p5b-20260727/20260727_071448/reviews/rwkv7-g1h-1.5b-20260710-ctx10240/gaia_2023_level2.jsonl",
+      "prediction_path": "results/evalscope/local-gaia-1p5b-20260727/20260727_071448/predictions/rwkv7-g1h-1.5b-20260710-ctx10240/gaia_2023_level2.jsonl",
+      "review_path": "results/evalscope/local-gaia-1p5b-20260727/20260727_071448/reviews/rwkv7-g1h-1.5b-20260710-ctx10240/gaia_2023_level2.jsonl",
       "format_kind": "short_answer_direct",
       "reference_answer": "egalitarian",
       "official_sample_score": {
@@ -562,8 +562,8 @@
     {
       "dataset": "gaia",
       "index": 0,
-      "prediction_path": "/home/chase/GitHub/helicopter/results/evalscope/local-gaia-1p5b-20260727/20260727_071448/predictions/rwkv7-g1h-1.5b-20260710-ctx10240/gaia_2023_level3.jsonl",
-      "review_path": "/home/chase/GitHub/helicopter/results/evalscope/local-gaia-1p5b-20260727/20260727_071448/reviews/rwkv7-g1h-1.5b-20260710-ctx10240/gaia_2023_level3.jsonl",
+      "prediction_path": "results/evalscope/local-gaia-1p5b-20260727/20260727_071448/predictions/rwkv7-g1h-1.5b-20260710-ctx10240/gaia_2023_level3.jsonl",
+      "review_path": "results/evalscope/local-gaia-1p5b-20260727/20260727_071448/reviews/rwkv7-g1h-1.5b-20260710-ctx10240/gaia_2023_level3.jsonl",
       "format_kind": "short_answer_direct",
       "reference_answer": "86",
       "official_sample_score": {
@@ -839,7 +839,7 @@
   ],
   "official_reports": [
     {
-      "path": "/home/chase/GitHub/helicopter/results/evalscope/local-gaia-1p5b-20260727/20260727_071448/reports/rwkv7-g1h-1.5b-20260710-ctx10240/gaia.json",
+      "path": "results/evalscope/local-gaia-1p5b-20260727/20260727_071448/reports/rwkv7-g1h-1.5b-20260710-ctx10240/gaia.json",
       "report": {
         "name": "rwkv7-g1h-1.5b-20260710-ctx10240@gaia",
         "dataset_name": "gaia",

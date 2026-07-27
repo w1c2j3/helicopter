@@ -1,15 +1,15 @@
 {
-  "output_dir": "/home/chase/GitHub/helicopter/results/evalscope/forwarded-general-fc-2p9b-20260727/20260727_073359",
+  "output_dir": "results/evalscope/forwarded-general-fc-2p9b-20260727/20260727_073359",
   "exit_code": 0,
   "counts": {
-    "format_invalid": 1
+    "correct_no_tool_call": 1
   },
   "samples": [
     {
       "dataset": "general_fc",
       "index": 0,
-      "prediction_path": "/home/chase/GitHub/helicopter/results/evalscope/forwarded-general-fc-2p9b-20260727/20260727_073359/predictions/rwkv7-g1h-2.9b-20260710-ctx10240/general_fc_default.jsonl",
-      "review_path": "/home/chase/GitHub/helicopter/results/evalscope/forwarded-general-fc-2p9b-20260727/20260727_073359/reviews/rwkv7-g1h-2.9b-20260710-ctx10240/general_fc_default.jsonl",
+      "prediction_path": "results/evalscope/forwarded-general-fc-2p9b-20260727/20260727_073359/predictions/rwkv7-g1h-2.9b-20260710-ctx10240/general_fc_default.jsonl",
+      "review_path": "results/evalscope/forwarded-general-fc-2p9b-20260727/20260727_073359/reviews/rwkv7-g1h-2.9b-20260710-ctx10240/general_fc_default.jsonl",
       "format_kind": "function_calling",
       "reference_answer": null,
       "official_sample_score": {
@@ -371,12 +371,12 @@
         "format_kind": "function_calling",
         "raw_response": ">We have a conversation. The user is a person who is in a difficult situation: they have a debt of 60,000, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time,",
         "extracted_answer": null,
-        "status": "format_invalid",
-        "error": "model returned text without an OpenAI tool_calls object"
+        "status": "no_tool_call",
+        "error": "benchmark metadata explicitly expected no tool call; raw response retained"
       },
       "decision": {
-        "status": "format_invalid",
-        "reason": "model returned text without an OpenAI tool_calls object",
+        "status": "correct_no_tool_call",
+        "reason": "official GeneralFC scorer accepted the model's tool-call decision",
         "extracted_answer": null,
         "reference_answer": null,
         "raw_response": ">We have a conversation. The user is a person who is in a difficult situation: they have a debt of 60,000, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time, no money, no time,"
@@ -386,7 +386,7 @@
   ],
   "official_reports": [
     {
-      "path": "/home/chase/GitHub/helicopter/results/evalscope/forwarded-general-fc-2p9b-20260727/20260727_073359/reports/rwkv7-g1h-2.9b-20260710-ctx10240/general_fc.json",
+      "path": "results/evalscope/forwarded-general-fc-2p9b-20260727/20260727_073359/reports/rwkv7-g1h-2.9b-20260710-ctx10240/general_fc.json",
       "report": {
         "name": "rwkv7-g1h-2.9b-20260710-ctx10240@general_fc",
         "dataset_name": "general_fc",

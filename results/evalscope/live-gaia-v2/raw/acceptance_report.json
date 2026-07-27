@@ -1,15 +1,15 @@
 {
-  "output_dir": "/home/chase/GitHub/helicopter/results/evalscope/live-gaia-v2",
+  "output_dir": "results/evalscope/live-gaia-v2",
   "exit_code": 0,
   "counts": {
-    "extraction_failed": 1
+    "agent_incomplete": 1
   },
   "samples": [
     {
       "dataset": "gaia",
       "index": 0,
-      "prediction_path": "/home/chase/GitHub/helicopter/results/evalscope/live-gaia-v2/predictions/rwkv7-g1h-2.9b-20260710-ctx10240/gaia_2023_level1.jsonl",
-      "review_path": "/home/chase/GitHub/helicopter/results/evalscope/live-gaia-v2/reviews/rwkv7-g1h-2.9b-20260710-ctx10240/gaia_2023_level1.jsonl",
+      "prediction_path": "results/evalscope/live-gaia-v2/predictions/rwkv7-g1h-2.9b-20260710-ctx10240/gaia_2023_level1.jsonl",
+      "review_path": "results/evalscope/live-gaia-v2/reviews/rwkv7-g1h-2.9b-20260710-ctx10240/gaia_2023_level1.jsonl",
       "format_kind": "short_answer_direct",
       "reference_answer": "17",
       "official_sample_score": {
@@ -166,8 +166,8 @@
         "error": "direct short answer contains multiple lines; refusing to truncate reasoning"
       },
       "decision": {
-        "status": "extraction_failed",
-        "reason": "direct short answer contains multiple lines; refusing to truncate reasoning",
+        "status": "agent_incomplete",
+        "reason": "AgentLoop exceeded max_steps before submitting a final result",
         "extracted_answer": null,
         "reference_answer": "17",
         "raw_response": ">We need to answer the question: If Eliud Kipchoge could maintain his record-making marathon pace indefinitely, how many thousand hours would it take him to run the distance between the Earth and the Moon at its closest approach? Use the minimum perigee value on the Wikipedia page for the Moon. Round to nearest 1000 hours and do not use any comma separators if necessary.\nWe need to compute distance between Earth and Moon at perigee. Then compute time = distance / speed. Then convert to thousand hours.\nWe need to use the minimum perigee value on the Wikipedia page for the Moon. So we need to find the perigee distance from Wikipedia.\nWe need to compute speed: marathon pace = 26.2 miles per hour (standard marathon pace). So speed = 26.2 miles per hour.\nDistance: Earth-Moon distance at perigee. Need to get that from Wikipedia.\nWe need to compute time in hours: distance (km) / speed (km/h). Then convert to thousand hours: (distance / speed) / 1000.\nRound to nearest 1000.\nWe need to ensure we use the minimum perigee value. So we need to find the perigee distance from Wikipedia.\nLet's search for \"Earth-Moon distance at perigee\". Use the sandbox environment.\nWe can use bash to fetch the page.\nWe need to get the distance.\nWe can use the command:\n```\nbash -c \"curl -s https://en.wikipedia.org/wiki/Earth-Moon_distance\"\n```\nBut we need to parse the HTML.\nAlternatively, we can use the \"search\" tool to find the page.\nLet's try to search for \"Earth-Moon distance at perigee\".\nWe can use the command:\n```\nbash -c \"curl -s https://en.wikipedia.org/w/api.php?action=query&format=json&list=search&srsearch=Earth-Moon+distance+at+perigee&srlimit=1\"\n```\nBut we need to parse the JSON.\nAlternatively, we can use the \"read\" tool to read the page.\nLet's try to fetch the page.\nWe can use the command:\n```\nbash -c \"curl -s https://en.wikipedia.org/wiki/Earth-Moon_distance\"\n```\nBut we need to parse the HTML.\nWe can use the \"read\" tool to read the page.\nLet's try to fetch the page.\nWe can use the command:\n```\nbash -c \"curl -s https://en.wikipedia.org/wiki/Earth-Moon_distance\"\n```\nBut we need to parse the HTML.\nWe can use the \"read\" tool to read the page.\nLet's try to fetch the page.\nWe can use the command:\n```\nbash -c \"curl -s https://en.wikipedia.org/wiki/Earth-Moon_distance\"\n```\nBut we need to parse the HTML.\nWe can use the \"read\" tool to read the page.\nLet's try to fetch the page.\nWe can use the command:\n```\nbash -c \"curl -s https://en.wikipedia.org/wiki/Earth-Moon_distance\"\n```\nBut we need to parse the HTML.\nWe can use the \"read\" tool to read the page.\nLet's try to fetch the page.\nWe can use the command:\n```\nbash -c \"curl -s https://en.wikipedia.org/wiki/Earth-Moon_distance\"\n```\nBut we need to parse the HTML.\nWe can use the \"read\" tool to read the page.\nLet's try to fetch the page.\nWe can use the command:\n```\nbash -c \"curl -s https://en.wikipedia.org/wiki/Earth-Moon_distance\"\n```\nBut we need to parse the HTML.\nWe can use the \"read\" tool to read the page.\nLet's try to fetch the page.\nWe can use the command:\n```\nbash -c \"curl -s https://en.wikipedia.org/wiki/Earth-Moon_distance\"\n```\nBut we need to parse the HTML.\nWe can use the \"read\" tool to read the page.\nLet's try to fetch the page.\nWe can use the command:\n```\nbash -c \"curl -s https://en.wikipedia.org/wiki/Earth-Moon_distance\"\n```\nBut we need to parse the HTML.\nWe can use the \"read\" tool to read the page.\nLet's try to fetch the page.\nWe can use the command:\n```\nbash -c \""
@@ -259,7 +259,7 @@
   ],
   "official_reports": [
     {
-      "path": "/home/chase/GitHub/helicopter/results/evalscope/live-gaia-v2/reports/rwkv7-g1h-2.9b-20260710-ctx10240/gaia.json",
+      "path": "results/evalscope/live-gaia-v2/reports/rwkv7-g1h-2.9b-20260710-ctx10240/gaia.json",
       "report": {
         "name": "rwkv7-g1h-2.9b-20260710-ctx10240@gaia",
         "dataset_name": "gaia",
