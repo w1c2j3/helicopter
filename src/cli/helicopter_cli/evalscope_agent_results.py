@@ -345,7 +345,7 @@ def _dataset_format(dataset: str, *, prediction: dict[str, Any], review: dict[st
     return "short_answer"
 
 
-def _model_output_parts(prediction: dict[str, Any]) -> tuple[str, list[dict[str, Any]] | None, str | None]:
+def _model_output_parts(prediction: dict[str, Any]) -> tuple[str, Any, str | None]:
     output = prediction.get("model_output")
     if not isinstance(output, dict):
         return "", None, None
@@ -357,9 +357,12 @@ def _model_output_parts(prediction: dict[str, Any]) -> tuple[str, list[dict[str,
     if not isinstance(message, dict):
         return "", None, str(choice.get("finish_reason") or output.get("error") or "missing message")
     content = message.get("content")
-    tool_calls = message.get("tool_calls")
     finish_reason = choice.get("finish_reason") or output.get("stop_reason")
-    return str(content or ""), tool_calls if isinstance(tool_calls, list) else None, str(finish_reason) if finish_reason else None
+    return (
+        str(content or ""),
+        message.get("tool_calls") if "tool_calls" in message else None,
+        str(finish_reason) if finish_reason else None,
+    )
 
 
 def _expected_tool_call(prediction: dict[str, Any], review: dict[str, Any]) -> bool | None:
@@ -384,6 +387,10 @@ def _function_call_decision(
     if extraction.format_kind not in {"function_calling", "tool_call", "tool_calls"}:
         return decision
     if expected_tool_call is None:
+        return decision
+    if extraction.status not in {"ok", "no_tool_call"}:
+        # Preserve a transport/format/extraction failure. The official
+        # benchmark score must not turn malformed wire data into a pass.
         return decision
 
     value = sample_score.get("score", {}).get("value", {}) if isinstance(sample_score, dict) else {}
