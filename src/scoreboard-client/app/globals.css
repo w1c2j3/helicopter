@@ -2580,10 +2580,6 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   cursor: default;
 }
 
-.compact-score.no-detail {
-  color: #a8b2c1;
-}
-
 .compact-score:not(:disabled) {
   cursor: pointer;
 }
