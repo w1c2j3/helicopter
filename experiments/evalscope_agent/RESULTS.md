@@ -123,8 +123,11 @@ the same model, when served independently with
 `--enable-auto-tool-choice --tool-call-parser rwkv`, returns native OpenAI
 tool calls. EvalScope then sends and receives native calls without the naive
 proxy. Its official F1 remains zero on the fixed five-sample benchmark because
-the model emits a call on only one sample; the successful-call and schema
-metrics are retained separately so this is not misclassified as an adapter
+the model emits a call on only one sample. The official sample metadata makes
+the failure concrete: sample 2 has `should_call_tool=true` but no call was
+emitted, while sample 4 has `should_call_tool=false` but the model emitted a
+schema-valid `search` call. The successful-call and schema metrics are retained
+separately so these model decision errors are not misclassified as an adapter
 failure.
 
 ## Failure classification

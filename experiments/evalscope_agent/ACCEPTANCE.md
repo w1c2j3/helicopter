@@ -90,7 +90,9 @@ modified:
   with `tool_call_f1=0`, `count_finish_reason_tool_call=1`,
   `count_successful_tool_call=1`, `schema_accuracy=1`, mean latency 6.6388s,
   and output throughput 148.94 tok/s. The raw predictions show four model
-  failures and one valid native tool call; no client-side repair was used.
+  failures and one valid native tool call; sample 2 required a call but did not
+  emit one, while sample 4 emitted a valid call despite `should_call_tool=false`.
+  No client-side repair was used.
 - `results/evalscope/forwarded-native-gaia-2p9b-gpu1-20260727-function-calling/`:
   corrected native GAIA attempt. EvalScope entered the AgentLoop, but Docker
   could not pull `python:3.11`; the run is not scored.
