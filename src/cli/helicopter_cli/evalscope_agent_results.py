@@ -93,6 +93,14 @@ def extract_agent_answer(
                 or "arguments" not in function
             ):
                 return _failed(kind, raw, "OpenAI tool_calls contain an invalid function object", status="format_invalid")
+            arguments = function["arguments"]
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except json.JSONDecodeError:
+                    return _failed(kind, raw, "OpenAI tool_calls contain invalid JSON arguments", status="format_invalid")
+            if not isinstance(arguments, dict):
+                return _failed(kind, raw, "OpenAI tool_calls arguments must be a JSON object", status="format_invalid")
         return ExtractionResult(
             kind,
             raw,
