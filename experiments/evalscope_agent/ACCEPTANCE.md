@@ -167,3 +167,12 @@ does not embed the local machine's checkout directory. The saved GPU1
 `general_fc` acceptance report was regenerated with an absolute work directory
 and had no content diff. The focused `uv` regression suite is **52 passed**;
 this is an engineering fix and does not change the no-go quality decision above.
+
+## Live endpoint evidence
+
+The current fixed probe confirms the endpoint boundary: 19329 rejects the
+tool-call request because its running server lacks the native parser flags,
+while the existing GPU1/19331 forward returns a native OpenAI tool call. Both
+raw request/response records are saved under
+`experiments/evalscope_agent/post-audit/`. The repository does not modify the
+inference engine or repair the 19329 response.
