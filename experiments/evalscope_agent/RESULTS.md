@@ -288,3 +288,18 @@ into passing results.
 - Re-running `--report-only` against the saved GPU1 `general_fc` run with an
   absolute work directory produced no report diff. The focused regression suite
   is **52 passed**, and `uv lock --check` passed.
+
+## Live endpoint audit (2026-07-27)
+
+- `experiments/evalscope_agent/post-audit/live-tool-probe-19329-20260727.json`
+  records a fixed tool-call request to the existing 19329 endpoint. It returned
+  HTTP 400 with the server's explicit requirement for
+  `--enable-auto-tool-choice` and `--tool-call-parser`; the endpoint was not
+  restarted or reconfigured.
+- `experiments/evalscope_agent/post-audit/live-tool-probe-19331-20260727.json`
+  records the same request through the existing GPU1/19331 forward. It returned
+  HTTP 200, `finish_reason=tool_calls`, and a structured
+  `calculate_triangle_area` call with valid JSON-object arguments.
+- The 19331 response also retains the model's prose and `</think>` text in the
+  raw content. The pipeline keeps that content unchanged and extracts only the
+  native tool-call field; no answer or tag is added by the client.
