@@ -1,0 +1,169 @@
+diff --git a/tests/tool_parsers/test_rwkv_tool_parser.py b/tests/tool_parsers/test_rwkv_tool_parser.py
+index d18c0b127..0a490e492 100644
+--- a/tests/tool_parsers/test_rwkv_tool_parser.py
++++ b/tests/tool_parsers/test_rwkv_tool_parser.py
+@@ -61,6 +61,25 @@ def _tool_call(name: str, arguments: dict[str, Any]) -> str:
+     )
+ 
+ 
++def _tool_calls(name: str, arguments: dict[str, Any]) -> str:
++    return (
++        "<tool_calls>\n"
++        + json.dumps(
++            [
++                {
++                    "type": "function",
++                    "function": {
++                        "name": name,
++                        "arguments": json.dumps(arguments),
++                    },
++                }
++            ],
++            indent=2,
++        )
++        + "\n</tool_calls>"
++    )
++
++
+ def _stream(
+     parser: ToolParser,
+     text: str,
+@@ -171,6 +190,14 @@ def test_non_tool_output_remains_content(
+             {"command": "python /tmp/calculator.py"},
+             id="bash-json",
+         ),
++        pytest.param(
++            [_tool("bash")],
++            _tool_calls("bash", {"command": "pwd"}),
++            None,
++            "bash",
++            {"command": "pwd"},
++            id="rwkv-tool-calls-array",
++        ),
+     ],
+ )
+ def test_extracts_supported_single_tool_call(
+@@ -268,6 +295,14 @@ def test_normalizes_legacy_edit_call(text: str) -> None:
+             {"path": "calculator.py"},
+             id="legacy-xml",
+         ),
++        pytest.param(
++            [_tool("bash")],
++            "Thinking.\n" + _tool_calls("bash", {"command": "pwd"}),
++            "Thinking.\n",
++            "bash",
++            {"command": "pwd"},
++            id="rwkv-tool-calls-array",
++        ),
+     ],
+ )
+ def test_streams_supported_tool_calls(
+diff --git a/vllm/tool_parsers/rwkv_tool_parser.py b/vllm/tool_parsers/rwkv_tool_parser.py
+index 7646f831d..1c4f30663 100644
+--- a/vllm/tool_parsers/rwkv_tool_parser.py
++++ b/vllm/tool_parsers/rwkv_tool_parser.py
+@@ -30,6 +30,8 @@ from vllm.tool_parsers.utils import partial_tag_overlap
+ 
+ _TOOL_CALL_MARKER = "**Tool Call:**"
+ _LEGACY_TOOL_CALL_MARKER = "<tool_call>"
++_TOOL_CALLS_START = "<tool_calls>"
++_TOOL_CALLS_END = "</tool_calls>"
+ _JSON_FENCE_START = "```json"
+ _FENCED_JSON_RE = re.compile(
+     r"\*\*Tool Call:\*\*\s*```json\s*(?P<json>.*?)\s*```",
+@@ -39,6 +41,10 @@ _STANDALONE_FENCED_JSON_RE = re.compile(
+     r"```json\s*(?P<json>.*?)\s*```",
+     re.DOTALL,
+ )
++_TOOL_CALLS_RE = re.compile(
++    rf"{re.escape(_TOOL_CALLS_START)}\s*(?P<json>.*?)\s*{re.escape(_TOOL_CALLS_END)}",
++    re.DOTALL,
++)
+ 
+ 
+ @dataclass(frozen=True)
+@@ -175,12 +181,65 @@ class RWKVToolParser(ToolParser):
+             return None
+         return parsed
+ 
++    def _parse_tool_calls_payload(self, payload: str) -> list[dict[str, Any]] | None:
++        """Parse the RWKV model's ``<tool_calls>`` JSON array format."""
++        try:
++            parsed = json.loads(payload)
++        except json.JSONDecodeError:
++            try:
++                parsed = ast.literal_eval(payload)
++            except (SyntaxError, ValueError):
++                return None
++
++        if not isinstance(parsed, list):
++            return None
++
++        normalized: list[dict[str, Any]] = []
++        for item in parsed:
++            if not isinstance(item, dict):
++                return None
++            function = item.get("function", item)
++            if not isinstance(function, dict):
++                return None
++            name = function.get("name")
++            arguments = function.get("arguments")
++            if not isinstance(name, str) or arguments is None:
++                return None
++            if isinstance(arguments, str):
++                try:
++                    arguments = json.loads(arguments)
++                except json.JSONDecodeError:
++                    try:
++                        arguments = ast.literal_eval(arguments)
++                    except (SyntaxError, ValueError):
++                        return None
++            if not isinstance(arguments, dict):
++                return None
++            normalized_payload = self._parse_tool_call_payload(
++                json.dumps({"name": name, "arguments": arguments}, ensure_ascii=False)
++            )
++            if normalized_payload is None:
++                return None
++            normalized.append(normalized_payload)
++        return normalized
++
+     def _iter_tool_call_matches(
+         self,
+         text: str,
+     ) -> Sequence[_ToolCallMatch]:
++        matches: list[_ToolCallMatch] = []
++        for match in _TOOL_CALLS_RE.finditer(text):
++            payloads = self._parse_tool_calls_payload(match.group("json"))
++            if payloads is None:
++                return []
++            matches.extend(
++                _ToolCallMatch(match.start(), payload) for payload in payloads
++            )
++        if matches:
++            return matches
++
+         if _TOOL_CALL_MARKER in text:
+-            matches: list[_ToolCallMatch] = []
++            matches = []
+             for match in _FENCED_JSON_RE.finditer(text):
+                 payload = self._parse_tool_call_payload(match.group("json"))
+                 if payload is None:
+@@ -251,6 +310,7 @@ class RWKVToolParser(ToolParser):
+         marker_starts = [
+             current_text.find(_TOOL_CALL_MARKER),
+             current_text.find(_LEGACY_TOOL_CALL_MARKER),
++            current_text.find(_TOOL_CALLS_START),
+         ]
+         if self.tools:
+             marker_starts.append(current_text.find(_JSON_FENCE_START))
+@@ -263,6 +323,7 @@ class RWKVToolParser(ToolParser):
+             overlap = max(
+                 overlap,
+                 partial_tag_overlap(current_text, _LEGACY_TOOL_CALL_MARKER),
++                partial_tag_overlap(current_text, _TOOL_CALLS_START),
+             )
+             if self.tools:
+                 overlap = max(
+                     overlap,
+                     partial_tag_overlap(current_text, _JSON_FENCE_START),

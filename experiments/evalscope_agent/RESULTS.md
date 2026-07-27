@@ -41,6 +41,9 @@ All runs use API key `rwkv-skills` and a 10240-token context limit.
   trace, external `general_fc` run, GAIA sandbox-blocked run, and audit records.
 - `ad84822` / `evalscope/reproducible-runner`: uv dependency-group selection in
   the local runner and the corrected 22-test acceptance count.
+- The pending server-side SWE-bench checkpoint records the exact remote image,
+  the patched `<tool_calls>` parser artifact, and the round-4 native run before
+  the GPU was released for reassignment.
 - `5f7171d`: regression boundary and the distinction between Agent-specific
   passes and unrelated LightEval compatibility failures are recorded.
 - The timestamped-workdir fix is validated by the v3 reruns below: the inner
@@ -62,6 +65,14 @@ All runs use API key `rwkv-skills` and a 10240-token context limit.
 - `post-audit/forwarded-2p9b-native-tools-gpu1-20260727.screen.log` is the
   captured vLLM startup, request, and normal SIGTERM shutdown log for that
   temporary GPU1 service.
+- `vllm-rwkv-tool-calls.patch` records the isolated vllm-rwkv parser/test change
+  applied to the server checkout: accept the `<tool_calls>` JSON-array form
+  emitted by this RWKV checkpoint while retaining strict tool-name and
+  argument validation. The server checkout also contains unrelated pre-existing
+  changes, so the patch is kept as a standalone rollback artifact rather than
+  committed there.
+- `post-audit/forwarded-2p9b-native-tools-gpu1-round3.screen.log` records the
+  restarted GPU1/19331 service with that parser patch loaded.
 - `post-audit/forwarded-2p9b-naive-proxy-20260727.json` and its JSONL trace
   record a successful 19329 request through the naive Chat proxy. The model
   returned prose and no `tool_calls`; the proxy preserved that response.
@@ -95,6 +106,8 @@ model response. See `naive-proxy-trace.jsonl`.
 | `results/evalscope/forwarded-gaia-2p9b-20260727/20260727_073310` | `gaia`, 3 (one per level) | forwarded 19329 2.9B, external mock bridge + naive proxy | not scored | EvalScope entered the external bridge, but all samples were blocked before model calls by Docker failing to pull `python:3.11`; task config and acceptance report are retained |
 | `results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727/20260727_081019` | `general_fc`, 5 | remote GPU1/19331 2.9B, native vllm-rwkv tool parser, no proxy, `max_tokens=1024`, `temperature=0`, `max_steps=3` | `tool_call_f1=0`, `count_finish_reason_tool_call=1`, `count_successful_tool_call=1`, `schema_accuracy=1` | exit code 0; all five raw predictions retained; mean latency 6.6388s, output throughput 148.94 tok/s. The zero F1 is a model decision/answer-quality failure, not a transport or extraction failure |
 | `results/evalscope/forwarded-native-gaia-2p9b-gpu1-20260727-function-calling/20260727_081217` | `gaia`, 3 (one per level) | remote GPU1/19331 2.9B, native AgentLoop, `function_calling`, `max_steps=3` | not scored | the corrected run entered the AgentLoop but Docker timed out pulling `python:3.11`, then the temporary 19331 service received SIGTERM. No GAIA score is claimed |
+| `results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server/20260727_092121` | `swe_bench_verified_agentic`, 1 | server `/home/rwkv/chase/EvalScope`, remote Docker image, native 19331, `max_tokens=1024`, `max_steps=5` | `mean_acc=0` | full container and EvalScope path completed; raw response used an invalid mini-swe-agent JSON action and patch application failed; no environment blocker |
+| `results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server-round4/20260727_093947` | `swe_bench_verified_agentic`, 1 | server `/home/rwkv/chase/EvalScope`, patched RWKV parser, remote Docker image, native 19331, `max_tokens=2048`, `max_steps=5` | `mean_acc=0` | end-to-end pipeline path passed: native `bash` calls executed in the container and raw/review/report/HTML/acceptance artifacts generated; score 0 because the model requested unavailable `str_replace_editor/view` tools and did not submit a patch |
 
 The second run proves the complete path: ModelScope dataset loading, proxy
 serialization, local model call, unchanged response, EvalScope report, and
@@ -129,6 +142,17 @@ emitted, while sample 4 has `should_call_tool=false` but the model emitted a
 schema-valid `search` call. The successful-call and schema metrics are retained
 separately so these model decision errors are not misclassified as an adapter
 failure.
+
+The server-side SWE-bench rounds close the environment question. The
+`swebench==4.1.0` dependency is now a reproducible `uv` group, the exact
+Astropy image was transferred to the server Docker registry, and the server
+copy of the project ran EvalScope with the same 2.9B endpoint. Round 4 also
+validated the vllm-rwkv `<tool_calls>` parser extension: the model's native
+calls were parsed and executed, and the sandbox container was created and
+cleaned up normally. The remaining zero score is a model/tool-contract
+failure—after a valid `bash` call the checkpoint requested `view` and
+`str_replace_editor`, which this benchmark intentionally does not expose—and
+is not converted into a pass.
 
 ## Failure classification
 
@@ -167,8 +191,16 @@ failure.
   to model behavior on the fixed dataset. The service later shut down on an
   external SIGTERM after the GAIA Docker pull timeout; this was not an OOM or
   vLLM parser crash.
-- GAIA sandbox: the corrected native run still cannot be scored in this
-  environment because Docker cannot pull `python:3.11` from the registry.
+- RWKV native parser: the direct long-context request produced the model's
+  `<tool_calls>` array. vllm-rwkv originally ignored that wrapper; the
+  standalone parser patch adds strict parsing and streaming coverage. The
+  patched parser passed direct non-streaming and streaming regression checks.
+- SWE-bench environment: the server-side run uses the existing exact Astropy
+  image and has no dependency, Docker, or interface blocker. The sample still
+  scores zero because the model did not finish a patch.
+- GAIA sandbox: the earlier GAIA run remains environment-blocked when it needs
+  `python:3.11`; the SWE-bench image transfer does not claim to fix that
+  separate image requirement.
 
 ## Regression boundary (2026-07-27)
 
@@ -185,13 +217,15 @@ failure.
 
 ## Remaining formal-evaluation limits
 
-`swe_bench_verified_agentic` was not scored because EvalScope 1.9.1 requires
-the optional `swebench` package; its extra installation exceeded the bounded
-experiment window. The current local 19316 process has an actual native
-tool-call parser, but the available local checkpoint is the 1.5B variant. The
-forwarded 19329 remains the existing 2.9B service and was not restarted; it
-lacks native parser flags. A separate GPU1/19331 instance proved that the
-requested 2.9B checkpoint can return native tool calls, but the fixed native
-`general_fc` score is still zero. GAIA can enter the AgentLoop, but this run
-was blocked by Docker image availability. These are recorded limits, not
-silently converted into passing results.
+`swe_bench_verified_agentic` now has a complete server-side one-sample run,
+including dependency installation, exact Docker image, native tool parsing,
+sandbox execution, scoring, and report generation. Its score is zero because
+the model did not finish a patch; this is a quality result, not a blocked run.
+The current local 19316 process has an actual native tool-call parser, but the
+available local checkpoint is the 1.5B variant. The forwarded 19329 remains
+the existing 2.9B service and was not restarted; it lacks native parser flags.
+A separate GPU1/19331 instance now proves both the requested 2.9B native
+transport and the `<tool_calls>` parser path, but the fixed native
+`general_fc` and SWE-bench scores remain zero. GAIA still has its separate
+Docker registry limitation. These are recorded limits, not silently converted
+into passing results.
