@@ -34,7 +34,7 @@ modified:
 | Full repository regression | CONDITIONAL | full run: 292 passed, 6 skipped, 22 failures in existing LightEval/Famous120/benchmark compatibility tests; no EvalScope Agent test failed. Excluding the two LightEval test files leaves 23 passed and one pre-existing sampling-budget failure |
 | No blocking pipeline error | PASS (local path); PASS (forwarded external FC path) | local 19316 health check, native preflight, no-proxy EvalScope run, and forwarded 19329 external `general_fc` run all complete; forwarded GAIA is separately blocked by Docker image pull |
 | Server-side SWE-bench environment | PASS | `/home/rwkv/chase/EvalScope`, `swebench==4.1.0`, exact Astropy image, GPU1/19331, patched RWKV parser, container creation/cleanup, scoring and HTML report all completed in round 4 |
-| Key benchmark metrics meet the project threshold | NOT MET | local v3 `general_fc tool_call_f1=0`, local GAIA `mean_acc=0`, forwarded 19329 `general_fc tool_call_f1=0`, and native remote GPU1 `general_fc tool_call_f1=0`; the GPU1 preflight proves native transport, but the fixed benchmark still has a model decision/quality failure |
+| Key benchmark metrics meet the project threshold | NOT MET | local v3 `general_fc tool_call_f1=0`, local GAIA `mean_acc=0`, forwarded 19329 `general_fc tool_call_f1=0`, and native remote GPU1 `general_fc tool_call_f1=0`; GPU1 round 7 removes the 2048-token truncation with `max_tokens=4096` but still returns no tool call, confirming a model decision/quality failure |
 | Code, logs, reports, and checkpoints uploaded | PASS | branch `updata/supported-dataset` contains the integration, native/local, forwarded comparison, reproducibility, and server-side SWE-bench evidence commits; tags `evalscope/native-local-code`, `evalscope/native-local-benchmark`, `evalscope/native-local-gaia`, `evalscope/forwarded-external-code`, and `evalscope/reproducible-runner` provide rollback points |
 | Every major phase has a rollback checkpoint | PASS | `baseline/*` and `evalscope/*` annotated tags |
 | Input-to-report pipeline is automatic | PASS | `helicopter eval evalscope ...` produces EvalScope reports, predictions, reviews, traces, and `acceptance_report.json`; `--report-only` rebuilds evidence |
@@ -97,6 +97,13 @@ modified:
 - `results/evalscope/forwarded-native-gaia-2p9b-gpu1-20260727-function-calling/`:
   corrected native GAIA attempt. EvalScope entered the AgentLoop, but Docker
   could not pull `python:3.11`; the run is not scored.
+- `results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727-round6/20260727_100621/`:
+  one-sample GPU1 rerun with `max_tokens=2048`; the original response reached
+  the output cap and the acceptance report records `format_invalid=1`.
+- `results/evalscope/forwarded-native-general-fc-2p9b-gpu1-20260727-round7-max4096/20260727_100812/`:
+  identical sample and endpoint with `max_tokens=4096`; the response ended
+  after about 390 tokens without a native tool call, so the score remained 0.
+  This controlled comparison rules out output truncation as the sole cause.
 - `results/evalscope/forwarded-native-swebench-2p9b-gpu1-20260727-server/20260727_092121/`:
   first server-side SWE-bench run after adding the reproducible `swebench`
   dependency group. The exact Astropy image ran, but the model's invalid JSON
@@ -113,6 +120,9 @@ modified:
 - `uv run --no-default-groups --group agent --group eval --with pytest pytest -q tests/test_naive_chat.py tests/test_evalscope_agent.py tests/test_evalscope_agent_results.py`: **22 passed**.
 - Server-side `uv sync --no-default-groups --group agent --group eval --group swe-bench`: completed; `swebench==4.1.0` installed.
 - Server-side SWE-bench round 4: exit code 0, 1 sample, 5 model requests, native tool calls executed, `mean_acc=0`, full HTML/JSON/trace artifacts.
+- GPU1 `general_fc` rounds 6 and 7: both exit code 0; round 7 used
+  `max_tokens=4096`, kept the raw response unchanged, and still recorded
+  `format_invalid=1` with official `tool_call_f1=0`.
 
 ## Go/no-go decision
 
