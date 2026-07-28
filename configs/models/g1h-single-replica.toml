@@ -42,4 +42,4 @@ api_key_env = "HELICOPTER_EVAL_API_KEY"
 
 [[models."g1h-13.3b".replicas]]
 name = "8222-gpu1-via-157"
-base_url = "http://127.0.0.1:29533/v1"
+base_url = "http://127.0.0.1:29534/v1"

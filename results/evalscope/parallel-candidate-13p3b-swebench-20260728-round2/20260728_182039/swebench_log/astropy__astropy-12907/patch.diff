@@ -1,0 +1,5 @@
+{
+  "name": "bash",
+  "arguments": "{\"command\": \"find /testbed -type f -name \\\"*.py\\\" | xargs grep -l \\\"separability_matrix\\\" | head -20\"}",
+  "id": "f2e9b9e7-c9e5-4e9b-b0e5-f8d8b9c9e5a1"
+}

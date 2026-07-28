@@ -1,0 +1,480 @@
+{
+  "output_dir": "results/evalscope/parallel-candidate-13p3b-swebench-20260728-round2/20260728_182039",
+  "exit_code": 0,
+  "counts": {
+    "agent_incomplete": 1
+  },
+  "samples": [
+    {
+      "dataset": "swe_bench",
+      "index": 0,
+      "prediction_path": "results/evalscope/parallel-candidate-13p3b-swebench-20260728-round2/20260728_182039/predictions/rwkv7-g1h-13.3b-20260710-ctx10240/swe_bench_verified_agentic_default.jsonl",
+      "review_path": "results/evalscope/parallel-candidate-13p3b-swebench-20260728-round2/20260728_182039/reviews/rwkv7-g1h-13.3b-20260710-ctx10240/swe_bench_verified_agentic_default.jsonl",
+      "format_kind": "function_calling",
+      "reference_answer": null,
+      "official_sample_score": {
+        "score": {
+          "value": {
+            "acc": 0.0
+          },
+          "extracted_prediction": "{\n  \"name\": \"bash\",\n  \"arguments\": \"{\\\"command\\\": \\\"find /testbed -type f -name \\\\\\\"*.py\\\\\\\" | xargs grep -l \\\\\\\"separability_matrix\\\\\\\" | head -20\\\"}\",\n  \"id\": \"f2e9b9e7-c9e5-4e9b-b0e5-f8d8b9c9e5a1\"\n}\n",
+          "prediction": "{\n  \"name\": \"bash\",\n  \"arguments\": \"{\\\"command\\\": \\\"find /testbed -type f -name \\\\\\\"*.py\\\\\\\" | xargs grep -l \\\\\\\"separability_matrix\\\\\\\" | head -20\\\"}\",\n  \"id\": \"f2e9b9e7-c9e5-4e9b-b0e5-f8d8b9c9e5a1\"\n}\n",
+          "explanation": null,
+          "metadata": {
+            "completed": false,
+            "resolved": false,
+            "report": {
+              "error": "Error in evaluating model for astropy__astropy-12907: astropy__astropy-12907 >>>>> Patch Apply Failed:\npatch: **** Only garbage was found in the patch input.\n\nTraceback (most recent call last):\n  File \"/home/chase/GitHub/helicopter/.venv/lib/python3.12/site-packages/evalscope/benchmarks/swe_bench/utils.py\", line 133, in eval_instance\n    raise Exception(f'{instance_id} {APPLY_PATCH_FAIL}:\\n{val.output.decode(UTF8)}')\nException: astropy__astropy-12907 >>>>> Patch Apply Failed:\npatch: **** Only garbage was found in the patch input.\n\n"
+            }
+          },
+          "main_score_name": null
+        },
+        "sample_id": 0,
+        "group_id": 0,
+        "sample_metadata": {
+          "problem_statement": "Modeling's `separability_matrix` does not compute separability correctly for nested CompoundModels\nConsider the following model:\r\n\r\n```python\r\nfrom astropy.modeling import models as m\r\nfrom astropy.modeling.separable import separability_matrix\r\n\r\ncm = m.Linear1D(10) & m.Linear1D(5)\r\n```\r\n\r\nIt's separability matrix as you might expect is a diagonal:\r\n\r\n```python\r\n>>> separability_matrix(cm)\r\narray([[ True, False],\r\n       [False,  True]])\r\n```\r\n\r\nIf I make the model more complex:\r\n```python\r\n>>> separability_matrix(m.Pix2Sky_TAN() & m.Linear1D(10) & m.Linear1D(5))\r\narray([[ True,  True, False, False],\r\n       [ True,  True, False, False],\r\n       [False, False,  True, False],\r\n       [False, False, False,  True]])\r\n```\r\n\r\nThe output matrix is again, as expected, the outputs and inputs to the linear models are separable and independent of each other.\r\n\r\nIf however, I nest these compound models:\r\n```python\r\n>>> separability_matrix(m.Pix2Sky_TAN() & cm)\r\narray([[ True,  True, False, False],\r\n       [ True,  True, False, False],\r\n       [False, False,  True,  True],\r\n       [False, False,  True,  True]])\r\n```\r\nSuddenly the inputs and outputs are no longer separable?\r\n\r\nThis feels like a bug to me, but I might be missing something?\n",
+          "instance_id": "astropy__astropy-12907",
+          "base_commit": "d16bfe05a744909de4b27f5875fe0d4ed41ce607",
+          "patch": "diff --git a/astropy/modeling/separable.py b/astropy/modeling/separable.py\n--- a/astropy/modeling/separable.py\n+++ b/astropy/modeling/separable.py\n@@ -242,7 +242,7 @@ def _cstack(left, right):\n         cright = _coord_matrix(right, 'right', noutp)\n     else:\n         cright = np.zeros((noutp, right.shape[1]))\n-        cright[-right.shape[0]:, -right.shape[1]:] = 1\n+        cright[-right.shape[0]:, -right.shape[1]:] = right\n \n     return np.hstack([cleft, cright])\n \n",
+          "PASS_TO_PASS": [
+            "astropy/modeling/tests/test_separable.py::test_coord_matrix",
+            "astropy/modeling/tests/test_separable.py::test_cdot",
+            "astropy/modeling/tests/test_separable.py::test_cstack",
+            "astropy/modeling/tests/test_separable.py::test_arith_oper",
+            "astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]",
+            "astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]",
+            "astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]",
+            "astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]",
+            "astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]",
+            "astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]",
+            "astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]",
+            "astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]",
+            "astropy/modeling/tests/test_separable.py::test_custom_model_separable"
+          ],
+          "FAIL_TO_PASS": [
+            "astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]",
+            "astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]"
+          ],
+          "test_patch": "diff --git a/astropy/modeling/tests/test_separable.py b/astropy/modeling/tests/test_separable.py\n--- a/astropy/modeling/tests/test_separable.py\n+++ b/astropy/modeling/tests/test_separable.py\n@@ -28,6 +28,13 @@\n p1 = models.Polynomial1D(1, name='p1')\n \n \n+cm_4d_expected = (np.array([False, False, True, True]),\n+                  np.array([[True,  True,  False, False],\n+                            [True,  True,  False, False],\n+                            [False, False, True,  False],\n+                            [False, False, False, True]]))\n+\n+\n compound_models = {\n     'cm1': (map3 & sh1 | rot & sh1 | sh1 & sh2 & sh1,\n             (np.array([False, False, True]),\n@@ -52,7 +59,17 @@\n     'cm7': (map2 | p2 & sh1,\n             (np.array([False, True]),\n              np.array([[True, False], [False, True]]))\n-            )\n+            ),\n+    'cm8': (rot & (sh1 & sh2), cm_4d_expected),\n+    'cm9': (rot & sh1 & sh2, cm_4d_expected),\n+    'cm10': ((rot & sh1) & sh2, cm_4d_expected),\n+    'cm11': (rot & sh1 & (scl1 & scl2),\n+             (np.array([False, False, True, True, True]),\n+              np.array([[True,  True,  False, False, False],\n+                        [True,  True,  False, False, False],\n+                        [False, False, True,  False, False],\n+                        [False, False, False, True,  False],\n+                        [False, False, False, False, True]]))),\n }\n \n \n",
+          "version": "4.3",
+          "repo": "astropy/astropy",
+          "environment_setup_commit": "298ccb478e6bf092953bca67a3d29dc6c35f6752",
+          "hints_text": "",
+          "created_at": "2022-03-03T15:14:54Z",
+          "docker_image": "swebench/sweb.eval.x86_64.astropy_1776_astropy-12907:latest"
+        }
+      },
+      "messages": [
+        {
+          "id": "11bf4185",
+          "content": "You are a helpful assistant that can interact with a computer shell to solve programming tasks.",
+          "source": null,
+          "metadata": null,
+          "internal": null,
+          "perf_metrics": null,
+          "role": "system"
+        },
+        {
+          "id": "028a11d8",
+          "content": "<pr_description>\nConsider the following PR description:\nModeling's `separability_matrix` does not compute separability correctly for nested CompoundModels\nConsider the following model:\r\n\r\n```python\r\nfrom astropy.modeling import models as m\r\nfrom astropy.modeling.separable import separability_matrix\r\n\r\ncm = m.Linear1D(10) & m.Linear1D(5)\r\n```\r\n\r\nIt's separability matrix as you might expect is a diagonal:\r\n\r\n```python\r\n>>> separability_matrix(cm)\r\narray([[ True, False],\r\n       [False,  True]])\r\n```\r\n\r\nIf I make the model more complex:\r\n```python\r\n>>> separability_matrix(m.Pix2Sky_TAN() & m.Linear1D(10) & m.Linear1D(5))\r\narray([[ True,  True, False, False],\r\n       [ True,  True, False, False],\r\n       [False, False,  True, False],\r\n       [False, False, False,  True]])\r\n```\r\n\r\nThe output matrix is again, as expected, the outputs and inputs to the linear models are separable and independent of each other.\r\n\r\nIf however, I nest these compound models:\r\n```python\r\n>>> separability_matrix(m.Pix2Sky_TAN() & cm)\r\narray([[ True,  True, False, False],\r\n       [ True,  True, False, False],\r\n       [False, False,  True,  True],\r\n       [False, False,  True,  True]])\r\n```\r\nSuddenly the inputs and outputs are no longer separable?\r\n\r\nThis feels like a bug to me, but I might be missing something?\n\n</pr_description>\n\n<instructions>\n# Task Instructions\n\n## Overview\n\nYou're a software engineer interacting continuously with a computer by submitting commands.\nYou'll be helping implement necessary changes to meet requirements in the PR description.\nYour task is specifically to make changes to non-test files in the current directory in order to fix the issue described in the PR description in a way that is general and consistent with the codebase.\n<IMPORTANT>This is an interactive process where you will think and issue AT LEAST ONE command, see the result, then think and issue your next command(s).</important>\n\nFor each response:\n\n1. Include a THOUGHT section explaining your reasoning and what you're trying to accomplish\n2. Provide one or more bash tool calls to execute\n\n## Important Boundaries\n\n- MODIFY: Regular source code files in /testbed (this is the working directory for all your subsequent commands)\n- DO NOT MODIFY: Tests, configuration files (pyproject.toml, setup.cfg, etc.)\n\n## Recommended Workflow\n\n1. Analyze the codebase by finding and reading relevant files\n2. Create a script to reproduce the issue\n3. Edit the source code to resolve the issue\n4. Verify your fix works by running your script again\n5. Test edge cases to ensure your fix is robust\n\n## Command Execution Rules\n\nYou are operating in an environment where\n\n1. You issue at least one command\n2. The system executes the command(s) in a subshell\n3. You see the result(s)\n4. You write your next command(s)\n\nEach response should include:\n\n1. **Reasoning text** where you explain your analysis and plan\n2. At least one tool call with your command\n\n**CRITICAL REQUIREMENTS:**\n\n- Your response SHOULD include reasoning text explaining what you're doing\n- Your response MUST include AT LEAST ONE bash tool call. You can make MULTIPLE tool calls in a single response when the commands are independent (e.g., searching multiple files, reading different parts of the codebase).\n- Directory or environment variable changes are not persistent. Every action is executed in a new subshell.\n- However, you can prefix any action with `MY_ENV_VAR=MY_VALUE cd /path/to/working/dir && ...` or write/load environment variables from files\n\nExample of a CORRECT response:\n<example_response>\nI need to understand the Builder-related code. Let me find relevant files and check the project structure.\n\n[Makes multiple bash tool calls: {\"command\": \"ls -la\"}, {\"command\": \"find src -name '*.java' | grep -i builder\"}, {\"command\": \"cat README.md | head -50\"}]\n</example_response>\n\n## Environment Details\n\n- You have a full Linux shell environment\n- Always use non-interactive flags (-y, -f) for commands\n- Avoid interactive tools like vi, nano, or any that require user input\n- You can use bash commands or invoke any tool that is available in the environment\n- You can also create new tools or scripts to help you with the task\n- If a tool isn't available, you can also install it\n\n## Submission\n\nWhen you've completed your work, you MUST submit your changes as a git patch.\nFollow these steps IN ORDER, with SEPARATE commands:\n\nStep 1: Create the patch file\nRun `git diff -- path/to/file1 path/to/file2 > patch.txt` listing only the source files you modified.\nDo NOT commit your changes.\n\n<IMPORTANT>\nThe patch must only contain changes to the specific source files you modified to fix the issue.\nDo not submit file creations or changes to any of the following files:\n\n- test and reproduction files\n- helper scripts, tests, or tools that you created\n- installation, build, packaging, configuration, or setup scripts unless they are directly part of the issue you were fixing (you can assume that the environment is already set up for your client)\n- binary or compiled files\n</IMPORTANT>\n\nStep 2: Verify your patch\nInspect patch.txt to confirm it only contains your intended changes and headers show `--- a/` and `+++ b/` paths.\n\nStep 3: Submit (EXACT command required)\nYou MUST use this EXACT command to submit:\n\n```bash\necho COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT && cat patch.txt\n```\n\nIf the command fails (nonzero exit status), it will not submit.\n\n<CRITICAL>\n- Creating/viewing the patch and submitting it MUST be separate commands (not combined with &&).\n- If you modify patch.txt after verifying, you SHOULD verify again before submitting.\n- You CANNOT continue working (reading, editing, testing) in any way on this task after submitting.\n</CRITICAL>\n</instructions>\n",
+          "source": null,
+          "metadata": null,
+          "internal": null,
+          "perf_metrics": null,
+          "role": "user",
+          "tool_call_id": null
+        },
+        {
+          "id": "57b1cd02",
+          "content": ">Let me start by understanding the issue. The problem is that `separability_matrix` doesn't compute separability correctly for nested CompoundModels.\nFrom the PR description:\n- `cm = m.Linear1D(10) & m.Linear1D(5)` gives a diagonal matrix (correct)\n- `m.Pix2Sky_TAN() & m.Linear1D(10) & m.Linear1D(5)` gives a matrix with some True/False values (correct)\n- `m.Pix2Sky_TAN() & cm` gives a matrix with unexpected True values (incorrect)\nThe issue seems to be that when nesting CompoundModels, the separability matrix doesn't properly account for the nested structure.\nLet me first explore the codebase to understand how `separability_matrix` works and where the bug might be.\nI'll start by looking at the structure of the codebase and finding the relevant files.</think>\nI'll start by exploring the codebase to understand the structure and find the relevant files for the `separability_matrix` function.\n```json\n{\n  \"name\": \"bash\",\n  \"arguments\": \"{\\\"command\\\": \\\"find /testbed -type f -name \\\\\\\"*.py\\\\\\\" | xargs grep -l \\\\\\\"separability_matrix\\\\\\\" | head -20\\\"}\",\n  \"id\": \"f2e9b9e7-c9e5-4e9b-b0e5-f8d8b9c9e5a1\"\n}\n```\n",
+          "source": "generate",
+          "metadata": null,
+          "internal": null,
+          "perf_metrics": {
+            "latency": 4.971963474992663,
+            "ttft": null,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "tpot": null
+          },
+          "role": "assistant",
+          "tool_calls": null,
+          "model": "rwkv7-g1h-13.3b-20260710-ctx10240"
+        },
+        {
+          "id": "1b091306",
+          "content": "No tool was called. Please use an available tool or call the submit tool with your final answer.",
+          "source": null,
+          "metadata": null,
+          "internal": null,
+          "perf_metrics": null,
+          "role": "user",
+          "tool_call_id": null
+        },
+        {
+          "id": "23e409a6",
+          "content": ">I need to use the bash tool to search for files containing \"separability_matrix\".</think>\n```json\n{\n  \"name\": \"bash\",\n  \"arguments\": \"{\\\"command\\\": \\\"find /testbed -type f -name \\\\\\\"*.py\\\\\\\" | xargs grep -l \\\\\\\"separability_matrix\\\\\\\" | head -20\\\"}\",\n  \"id\": \"f2e9b9e7-c9e5-4e9b-b0e5-f8d8b9c9e5a1\"\n}\n```\n",
+          "source": "generate",
+          "metadata": null,
+          "internal": null,
+          "perf_metrics": {
+            "latency": 2.1013177310233004,
+            "ttft": null,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "tpot": null
+          },
+          "role": "assistant",
+          "tool_calls": null,
+          "model": "rwkv7-g1h-13.3b-20260710-ctx10240"
+        },
+        {
+          "id": "fb1fd24d",
+          "content": "No tool was called. Please use an available tool or call the submit tool with your final answer.",
+          "source": null,
+          "metadata": null,
+          "internal": null,
+          "perf_metrics": null,
+          "role": "user",
+          "tool_call_id": null
+        },
+        {
+          "id": "f0cc6111",
+          "content": ">I need to use the bash tool to search for files containing \"separability_matrix\".</think>\n```json\n{\n  \"name\": \"bash\",\n  \"arguments\": \"{\\\"command\\\": \\\"find /testbed -type f -name \\\\\\\"*.py\\\\\\\" | xargs grep -l \\\\\\\"separability_matrix\\\\\\\" | head -20\\\"}\",\n  \"id\": \"f2e9b9e7-c9e5-4e9b-b0e5-f8d8b9c9e5a1\"\n}\n```",
+          "source": "generate",
+          "metadata": null,
+          "internal": null,
+          "perf_metrics": {
+            "latency": 2.1054979659966193,
+            "ttft": null,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "tpot": null
+          },
+          "role": "assistant",
+          "tool_calls": null,
+          "model": "rwkv7-g1h-13.3b-20260710-ctx10240"
+        },
+        {
+          "id": "952089c3",
+          "content": "No tool was called. Please use an available tool or call the submit tool with your final answer.",
+          "source": null,
+          "metadata": null,
+          "internal": null,
+          "perf_metrics": {
+            "latency": 2.1054979659966193,
+            "ttft": null,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "tpot": null
+          },
+          "role": "user",
+          "tool_call_id": null
+        }
+      ],
+      "raw_model_output": {
+        "id": "parallel-candidate-2a1a78b375ae4e308f6d87ba8b1d0802",
+        "model": "rwkv7-g1h-13.3b-20260710-ctx10240",
+        "choices": [
+          {
+            "message": {
+              "id": "f0cc6111",
+              "content": "{\n  \"name\": \"bash\",\n  \"arguments\": \"{\\\"command\\\": \\\"find /testbed -type f -name \\\\\\\"*.py\\\\\\\" | xargs grep -l \\\\\\\"separability_matrix\\\\\\\" | head -20\\\"}\",\n  \"id\": \"f2e9b9e7-c9e5-4e9b-b0e5-f8d8b9c9e5a1\"\n}\n",
+              "source": "generate",
+              "metadata": null,
+              "internal": null,
+              "perf_metrics": {
+                "latency": 2.1054979659966193,
+                "ttft": null,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "tpot": null
+              },
+              "role": "assistant",
+              "tool_calls": null,
+              "model": "rwkv7-g1h-13.3b-20260710-ctx10240"
+            },
+            "stop_reason": "stop",
+            "logprobs": null
+          }
+        ],
+        "usage": null,
+        "time": 2.1054979659966193,
+        "metadata": null,
+        "error": null,
+        "perf_metrics": {
+          "latency": 2.1054979659966193,
+          "ttft": null,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "tpot": null
+        }
+      },
+      "extraction": {
+        "format_kind": "function_calling",
+        "raw_response": "{\n  \"name\": \"bash\",\n  \"arguments\": \"{\\\"command\\\": \\\"find /testbed -type f -name \\\\\\\"*.py\\\\\\\" | xargs grep -l \\\\\\\"separability_matrix\\\\\\\" | head -20\\\"}\",\n  \"id\": \"f2e9b9e7-c9e5-4e9b-b0e5-f8d8b9c9e5a1\"\n}\n",
+        "extracted_answer": null,
+        "status": "format_invalid",
+        "error": "model returned text without an OpenAI tool_calls object"
+      },
+      "decision": {
+        "status": "agent_incomplete",
+        "reason": "AgentLoop exceeded max_steps before submitting a final result",
+        "extracted_answer": null,
+        "reference_answer": null,
+        "raw_response": "{\n  \"name\": \"bash\",\n  \"arguments\": \"{\\\"command\\\": \\\"find /testbed -type f -name \\\\\\\"*.py\\\\\\\" | xargs grep -l \\\\\\\"separability_matrix\\\\\\\" | head -20\\\"}\",\n  \"id\": \"f2e9b9e7-c9e5-4e9b-b0e5-f8d8b9c9e5a1\"\n}\n"
+      },
+      "agent_trace": {
+        "framework": null,
+        "strategy": "swe_bench_toolcall",
+        "environment": "enclave",
+        "max_steps": 3,
+        "trial_id": null,
+        "total_usage": null,
+        "events": [
+          {
+            "step": 0,
+            "timestamp": 1785234045.631957,
+            "type": "model_generate",
+            "message_id": "57b1cd02",
+            "latency_ms": 5252.678875986021,
+            "token_usage": null,
+            "payload": {
+              "stop_reason": "stop"
+            }
+          },
+          {
+            "step": 0,
+            "timestamp": 1785234045.6320226,
+            "type": "nudge",
+            "message_id": "1b091306",
+            "latency_ms": null,
+            "token_usage": null,
+            "payload": {
+              "source": "nudge",
+              "message": "no_tool_call_reminder"
+            }
+          },
+          {
+            "step": 1,
+            "timestamp": 1785234047.7336001,
+            "type": "model_generate",
+            "message_id": "23e409a6",
+            "latency_ms": 2101.5110290027224,
+            "token_usage": null,
+            "payload": {
+              "stop_reason": "stop"
+            }
+          },
+          {
+            "step": 1,
+            "timestamp": 1785234047.733636,
+            "type": "nudge",
+            "message_id": "fb1fd24d",
+            "latency_ms": null,
+            "token_usage": null,
+            "payload": {
+              "source": "nudge",
+              "message": "no_tool_call_reminder"
+            }
+          },
+          {
+            "step": 2,
+            "timestamp": 1785234049.8393476,
+            "type": "model_generate",
+            "message_id": "f0cc6111",
+            "latency_ms": 2105.672735022381,
+            "token_usage": null,
+            "payload": {
+              "stop_reason": "stop"
+            }
+          },
+          {
+            "step": 2,
+            "timestamp": 1785234049.839373,
+            "type": "nudge",
+            "message_id": "952089c3",
+            "latency_ms": null,
+            "token_usage": null,
+            "payload": {
+              "source": "nudge",
+              "message": "no_tool_call_reminder"
+            }
+          },
+          {
+            "step": 3,
+            "timestamp": 1785234049.8397353,
+            "type": "error",
+            "message_id": null,
+            "latency_ms": null,
+            "token_usage": null,
+            "payload": {
+              "source": "loop",
+              "message": "max_steps_exceeded"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "official_reports": [
+    {
+      "path": "results/evalscope/parallel-candidate-13p3b-swebench-20260728-round2/20260728_182039/reports/rwkv7-g1h-13.3b-20260710-ctx10240/swe_bench_verified_agentic.json",
+      "report": {
+        "name": "rwkv7-g1h-13.3b-20260710-ctx10240@swe_bench_verified_agentic",
+        "dataset_name": "swe_bench_verified_agentic",
+        "dataset_pretty_name": "SWE-bench_Verified_Agentic",
+        "dataset_description": "\n## Overview\n\nSWE-bench Verified Agentic is the agentic-mode evaluation of SWE-bench Verified, a human-validated subset of 500 samples from SWE-bench. Unlike the oracle single-turn variant, the model must autonomously explore the repository, run shell commands, edit source files, and submit a patch through a multi-turn agent loop driven inside a per-instance Docker container.\n\n## Task Description\n\n- **Task Type**: Automated Software Engineering / Bug Fixing (Agentic)\n- **Input**: GitHub issue description (no oracle file context)\n- **Output**: Code patch (diff format) collected from `git diff` after autonomous editing\n- **Repositories**: 12 popular Python projects (Django, Flask, Requests, etc.)\n\n## Key Features\n\n- 500 human-validated Issue-Pull Request pairs\n- Multi-turn agent loop (mini-swe-agent `swebench.yaml` compatible)\n- Per-instance SWE-bench Docker container as the execution sandbox\n- Sentinel-based patch submission protocol (`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`)\n- Supports both function-calling (`toolcall`) and text-based (`backticks`) action protocols\n\n## Evaluation Notes\n\n- Requires `pip install swebench==4.1.0` before evaluation\n- Docker images are built/pulled automatically for each repository\n- Timeout of 1800 seconds (30 min) per instance for final patch validation\n- See the [usage documentation](https://evalscope.readthedocs.io/en/latest/third_party/swe_bench.html) for detailed setup instructions\n- Supports both local image building and remote image pulling\n\n## Agentic Mode\n\nThis benchmark drives a multi-turn agent loop (mirrors mini-swe-agent's\n`swebench.yaml`) inside a per-instance SWE-bench Docker container. The\nmodel issues `bash` commands to explore `/testbed`, edit source files,\nand finally submits its `git diff` patch by printing the sentinel\n`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` followed by the patch contents.\n\nThe default `swe_bench_toolcall` strategy uses OpenAI function calling with\na single `bash` tool. Models without function-calling support can select\n`swe_bench_backticks` through `NativeAgentConfig.strategy`; that strategy\nexpects one ` ```mswea_bash_command ``` ` block per turn.\n",
+        "model_name": "rwkv7-g1h-13.3b-20260710-ctx10240",
+        "score": 0.0,
+        "metrics": [
+          {
+            "name": "mean_acc",
+            "num": 1,
+            "score": 0.0,
+            "macro_score": 0.0,
+            "categories": [
+              {
+                "name": [
+                  "default"
+                ],
+                "num": 1,
+                "score": 0.0,
+                "macro_score": 0.0,
+                "subsets": [
+                  {
+                    "name": "default",
+                    "score": 0.0,
+                    "num": 1,
+                    "is_aggregate": false
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "analysis": "N/A",
+        "perf_metrics": {
+          "summary": {
+            "n_samples": 3,
+            "latency": {
+              "mean": 3.059593,
+              "std": 1.656163,
+              "min": 2.101318,
+              "25%": 2.103408,
+              "50%": 2.105498,
+              "75%": 3.538731,
+              "90%": 4.39867,
+              "99%": 4.914634,
+              "max": 4.971963
+            },
+            "throughput": {
+              "avg_output_tps": 0.0,
+              "avg_req_ps": 0.3268
+            },
+            "usage": {
+              "input_tokens": {
+                "mean": 0.0,
+                "std": 0.0,
+                "min": 0.0,
+                "25%": 0.0,
+                "50%": 0.0,
+                "75%": 0.0,
+                "90%": 0.0,
+                "99%": 0.0,
+                "max": 0.0
+              },
+              "output_tokens": {
+                "mean": 0.0,
+                "std": 0.0,
+                "min": 0.0,
+                "25%": 0.0,
+                "50%": 0.0,
+                "75%": 0.0,
+                "90%": 0.0,
+                "99%": 0.0,
+                "max": 0.0
+              },
+              "total_tokens": {
+                "mean": 0.0,
+                "std": 0.0,
+                "min": 0.0,
+                "25%": 0.0,
+                "50%": 0.0,
+                "75%": 0.0,
+                "90%": 0.0,
+                "99%": 0.0,
+                "max": 0.0
+              },
+              "total_input_tokens": 0,
+              "total_output_tokens": 0,
+              "total_tokens_count": 0
+            }
+          }
+        },
+        "num": 1
+      }
+    }
+  ],
+  "trace_report": {
+    "trace_path": "/home/chase/GitHub/helicopter/results/evalscope/parallel-candidate-13p3b-swebench-20260728-round2/raw/parallel_candidate.jsonl",
+    "exit_code": 0,
+    "records": 3,
+    "counts": {
+      "format_invalid": 3
+    },
+    "items": [
+      {
+        "path": "/v1/chat/completions",
+        "decision": {
+          "status": "format_invalid",
+          "reason": "model returned text without an OpenAI tool_calls object",
+          "extracted_answer": null,
+          "reference_answer": null,
+          "raw_response": ">Let me start by understanding the issue. The problem is that `separability_matrix` doesn't compute separability correctly for nested CompoundModels.\nFrom the PR description:\n- `cm = m.Linear1D(10) & m.Linear1D(5)` gives a diagonal matrix (correct)\n- `m.Pix2Sky_TAN() & m.Linear1D(10) & m.Linear1D(5)` gives a matrix with some True/False values (correct)\n- `m.Pix2Sky_TAN() & cm` gives a matrix with unexpected True values (incorrect)\nThe issue seems to be that when nesting CompoundModels, the separability matrix doesn't properly account for the nested structure.\nLet me first explore the codebase to understand how `separability_matrix` works and where the bug might be.\nI'll start by looking at the structure of the codebase and finding the relevant files.</think>\nI'll start by exploring the codebase to understand the structure and find the relevant files for the `separability_matrix` function.\n```json\n{\n  \"name\": \"bash\",\n  \"arguments\": \"{\\\"command\\\": \\\"find /testbed -type f -name \\\\\\\"*.py\\\\\\\" | xargs grep -l \\\\\\\"separability_matrix\\\\\\\" | head -20\\\"}\",\n  \"id\": \"f2e9b9e7-c9e5-4e9b-b0e5-f8d8b9c9e5a1\"\n}\n```\n"
+        },
+        "extraction": {
+          "format_kind": "function_calling",
+          "raw_response": ">Let me start by understanding the issue. The problem is that `separability_matrix` doesn't compute separability correctly for nested CompoundModels.\nFrom the PR description:\n- `cm = m.Linear1D(10) & m.Linear1D(5)` gives a diagonal matrix (correct)\n- `m.Pix2Sky_TAN() & m.Linear1D(10) & m.Linear1D(5)` gives a matrix with some True/False values (correct)\n- `m.Pix2Sky_TAN() & cm` gives a matrix with unexpected True values (incorrect)\nThe issue seems to be that when nesting CompoundModels, the separability matrix doesn't properly account for the nested structure.\nLet me first explore the codebase to understand how `separability_matrix` works and where the bug might be.\nI'll start by looking at the structure of the codebase and finding the relevant files.</think>\nI'll start by exploring the codebase to understand the structure and find the relevant files for the `separability_matrix` function.\n```json\n{\n  \"name\": \"bash\",\n  \"arguments\": \"{\\\"command\\\": \\\"find /testbed -type f -name \\\\\\\"*.py\\\\\\\" | xargs grep -l \\\\\\\"separability_matrix\\\\\\\" | head -20\\\"}\",\n  \"id\": \"f2e9b9e7-c9e5-4e9b-b0e5-f8d8b9c9e5a1\"\n}\n```\n",
+          "extracted_answer": null,
+          "status": "format_invalid",
+          "error": "model returned text without an OpenAI tool_calls object"
+        }
+      },
+      {
+        "path": "/v1/chat/completions",
+        "decision": {
+          "status": "format_invalid",
+          "reason": "model returned text without an OpenAI tool_calls object",
+          "extracted_answer": null,
+          "reference_answer": null,
+          "raw_response": ">I need to use the bash tool to search for files containing \"separability_matrix\".</think>\n```json\n{\n  \"name\": \"bash\",\n  \"arguments\": \"{\\\"command\\\": \\\"find /testbed -type f -name \\\\\\\"*.py\\\\\\\" | xargs grep -l \\\\\\\"separability_matrix\\\\\\\" | head -20\\\"}\",\n  \"id\": \"f2e9b9e7-c9e5-4e9b-b0e5-f8d8b9c9e5a1\"\n}\n```\n"
+        },
+        "extraction": {
+          "format_kind": "function_calling",
+          "raw_response": ">I need to use the bash tool to search for files containing \"separability_matrix\".</think>\n```json\n{\n  \"name\": \"bash\",\n  \"arguments\": \"{\\\"command\\\": \\\"find /testbed -type f -name \\\\\\\"*.py\\\\\\\" | xargs grep -l \\\\\\\"separability_matrix\\\\\\\" | head -20\\\"}\",\n  \"id\": \"f2e9b9e7-c9e5-4e9b-b0e5-f8d8b9c9e5a1\"\n}\n```\n",
+          "extracted_answer": null,
+          "status": "format_invalid",
+          "error": "model returned text without an OpenAI tool_calls object"
+        }
+      },
+      {
+        "path": "/v1/chat/completions",
+        "decision": {
+          "status": "format_invalid",
+          "reason": "model returned text without an OpenAI tool_calls object",
+          "extracted_answer": null,
+          "reference_answer": null,
+          "raw_response": ">I need to use the bash tool to search for files containing \"separability_matrix\".</think>\n```json\n{\n  \"name\": \"bash\",\n  \"arguments\": \"{\\\"command\\\": \\\"find /testbed -type f -name \\\\\\\"*.py\\\\\\\" | xargs grep -l \\\\\\\"separability_matrix\\\\\\\" | head -20\\\"}\",\n  \"id\": \"f2e9b9e7-c9e5-4e9b-b0e5-f8d8b9c9e5a1\"\n}\n```"
+        },
+        "extraction": {
+          "format_kind": "function_calling",
+          "raw_response": ">I need to use the bash tool to search for files containing \"separability_matrix\".</think>\n```json\n{\n  \"name\": \"bash\",\n  \"arguments\": \"{\\\"command\\\": \\\"find /testbed -type f -name \\\\\\\"*.py\\\\\\\" | xargs grep -l \\\\\\\"separability_matrix\\\\\\\" | head -20\\\"}\",\n  \"id\": \"f2e9b9e7-c9e5-4e9b-b0e5-f8d8b9c9e5a1\"\n}\n```",
+          "extracted_answer": null,
+          "status": "format_invalid",
+          "error": "model returned text without an OpenAI tool_calls object"
+        }
+      }
+    ]
+  }
+}

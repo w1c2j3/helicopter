@@ -427,6 +427,44 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="send EvalScope requests directly without the local RWKV naive Chat adapter",
     )
+    evalscope.add_argument(
+        "--parallel-candidate-router",
+        dest="parallel_candidate_router",
+        action="store_true",
+        default=None,
+        help="route native Agent tool decisions through a local parallel-candidate proxy",
+    )
+    evalscope.add_argument(
+        "--no-parallel-candidate-router",
+        dest="parallel_candidate_router",
+        action="store_false",
+        help="disable the local parallel-candidate Agent router",
+    )
+    evalscope.add_argument("--candidate-chunk-tools", type=int, help="tools per parallel candidate shard")
+    evalscope.add_argument("--candidate-batch-size", type=int, help="maximum parallel candidate requests")
+    evalscope.add_argument("--candidate-context-chars", type=int, help="maximum conversation characters per route prompt")
+    evalscope.add_argument("--candidate-prompt-max-chars", type=int, help="maximum candidate or aggregate prompt characters")
+    evalscope.add_argument("--candidate-max-tokens", type=int, help="candidate request output token cap")
+    evalscope.add_argument("--aggregate-max-tokens", type=int, help="aggregate request output token cap")
+    evalscope.add_argument("--candidate-max-candidates", type=int, help="maximum candidates shown to the aggregator")
+    evalscope.add_argument("--long-doc-min-chars", type=int, help="compact individual route messages at or above this size")
+    evalscope.add_argument("--long-doc-max-chars", type=int, help="maximum characters per long-document chunk")
+    evalscope.add_argument("--long-doc-overlap-lines", type=int, help="overlap lines between long-document chunks")
+    evalscope.add_argument("--long-doc-max-evidence-chunks", type=int, help="maximum selected long-document chunks")
+    evalscope.add_argument("--long-doc-max-evidence-chars", type=int, help="maximum selected evidence characters")
+    evalscope.add_argument(
+        "--parallel-candidate-fallback",
+        dest="parallel_candidate_fallback",
+        action="store_true",
+        default=None,
+        help="fallback to the highest-confidence validated shard candidate",
+    )
+    evalscope.add_argument(
+        "--no-parallel-candidate-fallback",
+        dest="parallel_candidate_fallback",
+        action="store_false",
+        help="return no tool call when aggregation fails",
+    )
     evalscope.add_argument("--no-server", action="store_true", help="reuse an existing endpoint")
     evalscope.add_argument("--keep-server", action="store_true", help="leave the managed vLLM server running")
     evalscope.add_argument("--server-timeout", type=float, default=DEFAULT_SERVER_TIMEOUT_S)

@@ -313,3 +313,46 @@ into passing results.
   records `null` rather than claiming success.
 - The new regression creates a saved trace with exit code 17 and verifies that
   report-only preserves 17. The focused `uv` suite now passes **53 tests**.
+
+## rwkv-skills FC context audit and parallel-candidate rerun
+
+The local `rwkv-skills` FC implementation was audited before changing the
+candidate route. Its protocol is role-labelled naive Chat, not a JSON dump of
+the OpenAI messages array: the upstream prompt uses `System:`, `User:`,
+`Assistant:`, and `User: Function output:` blocks and ends at
+`Assistant: ```json`. History is retained newest-first under a character
+budget, with an explicit truncation marker. Long messages are lexically
+chunked with line overlap and selected against the latest short user query;
+the selected chunk IDs and evidence-window metadata are traceable. See
+`RWKV_FC_CONTEXT.md` for the exact reference paths and contract.
+
+The local parallel-candidate adapter now follows that contract. The raw
+EvalScope request is preserved unchanged; only the outbound model prompt is
+role-rendered. It applies deterministic long-document compaction before
+history trimming and records both traces. The candidate parser accepts only a
+complete leading JSON object (plus an optional closing fence), preserves raw
+transport `id` and stringified `arguments` compatibility, and rejects prose
+prefixes, trailing repeated objects, unknown tool fields, and missing required
+arguments.
+
+Focused regression tests after this change: **29 passed** via the documented
+`uv run` command in `RWKV_FC_CONTEXT.md`.
+
+Controlled post-audit run:
+
+| Run | Configuration | Result | Classification |
+| --- | --- | --- | --- |
+| `results/evalscope/parallel-candidate-13p3b-swebench-20260728-round2/20260728_182039/` | 13.3B at `29534`, `swe_bench_verified_agentic`, one sample, `max_steps=3`, candidate/aggregate caps `2048/1024`, local x86_64 image config | EvalScope, Docker setup/cleanup, reports and trace completed; `mean_acc=0` | 3 model completions were prose-prefixed; strict parser returned `candidate_count=0`, so no tool was executed or fabricated |
+
+This rerun deliberately does not reinterpret an embedded fenced object as a
+valid call. The model must emit the required JSON call contract directly; the
+raw completion and parser reason remain in `raw/parallel_candidate.jsonl`.
+
+The post-audit `general_fc` controls used the same adapter and fixed
+`max_tokens=4096` on both forwarded endpoints. The 7.2B/29572 run is at
+`results/evalscope/parallel-candidate-7p2b-general-fc-20260728-post-audit/20260728_182529/`;
+the 13.3B/29534 run is at
+`results/evalscope/parallel-candidate-13p3b-general-fc-20260728-post-audit/20260728_182529/`.
+Both completed with official `tool_call_f1=0`, one strict parser failure, and
+no candidate selected. The raw completions are retained; this is a model
+output-contract result, not a successful extraction.

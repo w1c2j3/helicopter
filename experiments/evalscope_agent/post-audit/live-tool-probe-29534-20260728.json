@@ -1,0 +1,75 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "http://127.0.0.1:29534/v1/chat/completions",
+    "headers": {
+      "Authorization": "Bearer [redacted]",
+      "Content-Type": "application/json"
+    },
+    "json": {
+      "model": "rwkv7-g1h-13.3b-20260710-ctx10240",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are solving a function-calling benchmark. Choose the tool call or calls needed to satisfy the user request. Return calls through the tool calling interface."
+        },
+        {
+          "role": "user",
+          "content": "User: Find the area of a triangle with a base of 10 units and height of 5 units."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "calculate_triangle_area",
+            "description": "Calculate the area of a triangle given its base and height.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "base": {
+                  "type": "integer",
+                  "description": "The base of the triangle."
+                },
+                "height": {
+                  "type": "integer",
+                  "description": "The height of the triangle."
+                },
+                "unit": {
+                  "type": "string",
+                  "description": "The unit of measure (defaults to 'units' if not specified)"
+                }
+              },
+              "required": [
+                "base",
+                "height"
+              ]
+            }
+          }
+        }
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true,
+      "temperature": 0,
+      "max_tokens": 768
+    }
+  },
+  "started_at": "2026-07-28T09:38:07Z",
+  "status": 400,
+  "response_headers": {
+    "date": "Tue, 28 Jul 2026 09:38:06 GMT",
+    "server": "uvicorn",
+    "content-length": "161",
+    "content-type": "application/json"
+  },
+  "response_body": {
+    "error": {
+      "message": "\"auto\" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set",
+      "type": "BadRequestError",
+      "param": null,
+      "code": 400
+    }
+  },
+  "error": null,
+  "duration_ms": 79.57
+}

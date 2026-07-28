@@ -23,6 +23,7 @@ from .eval_run import (
     wait_for_server,
 )
 from .naive_chat_proxy import NaiveChatProxy
+from .parallel_candidate_proxy import ParallelCandidateConfig, ParallelCandidateProxy
 from .evalscope_agent_results import write_acceptance_report, write_trace_report
 from .paths import resolve_path
 from .runner import run_command
@@ -350,7 +351,8 @@ def _infer_plan(args: Any, *, root: Path, env: dict[str, str], config: dict[str,
     settings = table(config, "evalscope")
     mode = str(pick(getattr(args, "mode", None), settings.get("mode"), "native")).strip().lower()
     infer_args = infer_args_namespace(args, port=port_from_base_url(base_url))
-    if mode == "native" and getattr(args, "enable_auto_tool_choice", None) is None:
+    candidate_router = _parallel_candidate_enabled(args, settings)
+    if mode == "native" and not candidate_router and getattr(args, "enable_auto_tool_choice", None) is None:
         # EvalScope Agent sends OpenAI tools.  Let vllm-rwkv render its native
         # RWKV tool template and expose the parser output as message.tool_calls.
         infer_args.enable_auto_tool_choice = True
@@ -359,6 +361,77 @@ def _infer_plan(args: Any, *, root: Path, env: dict[str, str], config: dict[str,
         root=root,
         env=env,
         config=config,
+    )
+
+
+def _parallel_candidate_enabled(args: Any, settings: dict[str, Any]) -> bool:
+    value = pick(
+        getattr(args, "parallel_candidate_router", None),
+        settings.get("parallel_candidate_router"),
+        False,
+    )
+    if isinstance(value, dict):
+        return bool(value.get("enabled", True))
+    return bool(value)
+
+
+def _parallel_candidate_config(args: Any, settings: dict[str, Any]) -> ParallelCandidateConfig:
+    raw = settings.get("parallel_candidate_router")
+    configured = raw if isinstance(raw, dict) else {}
+    extra = settings.get("parallel_candidate_router_config")
+    if isinstance(extra, dict):
+        configured = {**configured, **extra}
+
+    def positive(name: str, config_name: str, default: int) -> int:
+        value = pick(getattr(args, name, None), configured.get(config_name), default)
+        try:
+            result = int(value)
+        except (TypeError, ValueError) as error:
+            raise SystemExit(f"parallel candidate {name} must be a positive integer") from error
+        if result < 1:
+            raise SystemExit(f"parallel candidate {name} must be a positive integer")
+        return result
+
+    def nonnegative(name: str, config_name: str, default: int) -> int:
+        value = pick(getattr(args, name, None), configured.get(config_name), default)
+        try:
+            result = int(value)
+        except (TypeError, ValueError) as error:
+            raise SystemExit(f"parallel candidate {name} must be a non-negative integer") from error
+        if result < 0:
+            raise SystemExit(f"parallel candidate {name} must be a non-negative integer")
+        return result
+
+    defaults = ParallelCandidateConfig()
+    fallback = pick(
+        getattr(args, "parallel_candidate_fallback", None),
+        configured.get("fallback_to_highest_confidence"),
+        True,
+    )
+    return ParallelCandidateConfig(
+        chunk_tools=positive("candidate_chunk_tools", "chunk_tools", 2),
+        batch_size=positive("candidate_batch_size", "batch_size", 16),
+        context_chars=positive("candidate_context_chars", "context_chars", 6000),
+        prompt_max_chars=positive("candidate_prompt_max_chars", "prompt_max_chars", 12288),
+        candidate_max_tokens=positive("candidate_max_tokens", "candidate_max_tokens", 192),
+        aggregate_max_tokens=positive("aggregate_max_tokens", "aggregate_max_tokens", 192),
+        max_candidates=positive("candidate_max_candidates", "max_candidates", 12),
+        fallback_to_highest_confidence=bool(fallback),
+        long_doc_min_chars=positive("long_doc_min_chars", "long_doc_min_chars", defaults.long_doc_min_chars),
+        long_doc_max_chars=positive("long_doc_max_chars", "long_doc_max_chars", defaults.long_doc_max_chars),
+        long_doc_overlap_lines=nonnegative(
+            "long_doc_overlap_lines", "long_doc_overlap_lines", defaults.long_doc_overlap_lines
+        ),
+        long_doc_max_evidence_chunks=positive(
+            "long_doc_max_evidence_chunks",
+            "long_doc_max_evidence_chunks",
+            defaults.long_doc_max_evidence_chunks,
+        ),
+        long_doc_max_evidence_chars=positive(
+            "long_doc_max_evidence_chars",
+            "long_doc_max_evidence_chars",
+            defaults.long_doc_max_evidence_chars,
+        ),
     )
 
 
@@ -392,11 +465,16 @@ def run_evalscope(args: Any, *, root: Path, env: dict[str, str], config: dict[st
         )
     )
     mode = str(pick(getattr(args, "mode", None), settings.get("mode"), "native")).strip().lower()
+    use_candidate_proxy = _parallel_candidate_enabled(args, settings)
     if mode == "native" and use_naive_proxy:
         raise SystemExit(
             "native EvalScope Agent mode requires the OpenAI tools/tool_choice fields to reach "
             "vllm-rwkv; use --no-naive-chat-proxy (or set [evalscope].naive_chat_proxy = false)"
         )
+    if use_candidate_proxy and mode != "native":
+        raise SystemExit("parallel-candidate routing is only supported for native EvalScope Agent mode")
+    if use_candidate_proxy and use_naive_proxy:
+        raise SystemExit("parallel-candidate routing and naive Chat proxy are mutually exclusive")
     plan = build_evalscope_plan(args, root=root, env=env, config=config)
     infer_plan = _infer_plan(args, root=root, env=env, config=config, base_url=base_url)
     if getattr(args, "dry_run", False):
@@ -407,7 +485,7 @@ def run_evalscope(args: Any, *, root: Path, env: dict[str, str], config: dict[st
 
     server_process: subprocess.Popen[bytes] | None = None
     server_log: Path | None = None
-    proxy: NaiveChatProxy | None = None
+    proxy: NaiveChatProxy | ParallelCandidateProxy | None = None
     run_exit_code: int | None = None
     trace_report_path: Path | None = None
     if infer_plan is not None:
@@ -455,6 +533,30 @@ def run_evalscope(args: Any, *, root: Path, env: dict[str, str], config: dict[st
                 api_url=proxy.base_url,
             )
             print(f"evalscope: naive Chat proxy listening at {proxy.base_url}; upstream {base_url}")
+        elif use_candidate_proxy:
+            model = resolve_model_entry(config, args.model)
+            api_key = pick(
+                getattr(args, "api_key", None),
+                model.get("api_key"),
+                env_value(env, "HELICOPTER_EVAL_API_KEY", "OPENAI_API_KEY"),
+                settings.get("api_key"),
+                "EMPTY",
+            )
+            proxy = ParallelCandidateProxy(
+                base_url,
+                api_key=str(api_key),
+                trace_path=output_dir / "raw" / "parallel_candidate.jsonl",
+                config=_parallel_candidate_config(args, settings),
+            )
+            proxy.start()
+            plan = build_evalscope_plan(
+                args,
+                root=root,
+                env=env,
+                config=config,
+                api_url=proxy.base_url,
+            )
+            print(f"evalscope: parallel-candidate proxy listening at {proxy.base_url}; upstream {base_url}")
         run_exit_code = run_command(plan.command, cwd=plan.cwd, env=plan.env, shown_env=plan.shown_env, dry_run=False)
         return run_exit_code
     finally:

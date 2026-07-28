@@ -182,3 +182,18 @@ The report-only path also preserves the saved run status: it reads
 when no trustworthy prior status exists. This prevents report regeneration
 from masking an earlier transport or runtime failure; the regression is
 covered by the current **53-test** focused `uv` suite.
+
+## FC context audit and current candidate-route gate
+
+The `rwkv-skills` FC implementation is now recorded in
+`RWKV_FC_CONTEXT.md`. The local candidate adapter follows its role-labelled
+naive Chat serialization, `Assistant: ```json` suffix, newest-history budget,
+and lexical long-document evidence window. The adapter retains source
+messages and raw completions and does not extract an embedded JSON object from
+prose or prune unknown semantic arguments.
+
+The post-audit 13.3B SWE-bench run completed the EvalScope/Docker/reporting
+path, but the model emitted prose before its fenced JSON object in all three
+decision requests. The strict parser therefore recorded zero valid candidates
+and executed no fabricated tool call. This is a model output-contract failure;
+the formal quality gate remains **not met**.
