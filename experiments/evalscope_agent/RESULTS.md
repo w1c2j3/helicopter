@@ -356,3 +356,20 @@ the 13.3B/29534 run is at
 Both completed with official `tool_call_f1=0`, one strict parser failure, and
 no candidate selected. The raw completions are retained; this is a model
 output-contract result, not a successful extraction.
+
+## Simple environment-free benchmark
+
+For a benchmark without Docker, browser, MCP, or repository setup, the
+recommended smoke test is `general_fc`. The fixed 5-sample run used the 7.2B
+endpoint at `http://127.0.0.1:29572/v1`, `temperature=0`, `max_tokens=1024`,
+candidate/aggregate caps `1024/512`, and the parallel-candidate route:
+
+`results/evalscope/simple-general-fc-7p2b-20260728/20260728_184744/`
+
+EvalScope completed normally and generated predictions, reviews, reports,
+raw proxy traces, and an acceptance report. The official metrics were
+`tool_call_f1=0`, `count_finish_reason_tool_call=0`,
+`count_successful_tool_call=0`, and `schema_accuracy=0` for 5 samples. The
+proxy trace records five strict parser failures (`length` for samples 1, 2,
+and 5; `stop` for samples 3 and 4); no candidate was selected and no tool
+call was fabricated.
