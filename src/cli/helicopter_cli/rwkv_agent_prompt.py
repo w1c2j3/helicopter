@@ -349,7 +349,7 @@ def build_rwkv_json_call_prompt(
     *,
     history_max_chars: int,
     prompt_max_chars: int,
-    assistant_prefix: str = "Assistant: ```json\n",
+    assistant_prefix: str = "Assistant: <think></think>\n```json\n",
 ) -> tuple[str, dict[str, Any]]:
     bounded, history_truncated = trim_message_history(messages, max_chars=max(0, int(history_max_chars)))
     parts = [f"System: {normalize_rwkv_text(system_prompt)}".rstrip()]

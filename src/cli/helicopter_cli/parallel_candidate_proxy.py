@@ -68,6 +68,12 @@ class Candidate:
     evidence: str
 
 
+# Match the RWKV NoCoT function-calling prefill used by rwkv-skills.  The
+# empty think block is part of the request-time serialization only; source
+# messages and their semantics remain unchanged.
+_NO_COT_JSON_ASSISTANT_PREFIX = "Assistant: <think></think>\n```json\n"
+
+
 def _redact_headers(headers: Mapping[str, str]) -> dict[str, str]:
     return {
         key: ("Bearer [redacted]" if key.lower() == "authorization" else value)
@@ -261,7 +267,7 @@ def _candidate_prompt(
         messages,
         history_max_chars=config.context_chars,
         prompt_max_chars=config.prompt_max_chars,
-        assistant_prefix="Assistant: ```json\n",
+        assistant_prefix=_NO_COT_JSON_ASSISTANT_PREFIX,
     )
 
 
@@ -300,7 +306,7 @@ def _aggregate_prompt(
         messages,
         history_max_chars=config.context_chars,
         prompt_max_chars=config.prompt_max_chars,
-        assistant_prefix="Assistant: ```json\n",
+        assistant_prefix=_NO_COT_JSON_ASSISTANT_PREFIX,
     )
 
 

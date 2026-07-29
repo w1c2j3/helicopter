@@ -117,8 +117,8 @@ def test_rwkv_prompt_uses_role_transcript_and_newest_history_budget() -> None:
     assert "System: Router instructions" in prompt
     assert "System: Original system prompt: never change this text." in prompt
     assert "User: Function output:" in prompt
-    assert "Assistant: ```json" in prompt
-    assert prompt.endswith("Assistant: ```json\n")
+    assert "Assistant: <think></think>\n```json" in prompt
+    assert prompt.endswith("Assistant: <think></think>\n```json\n")
     assert prompt_trace["prompt_chars"] == len(prompt)
 
 
@@ -203,7 +203,10 @@ def test_parallel_candidate_proxy_returns_validated_tool_call_and_trace(tmp_path
     assert all("tools" not in payload for payload in received)
     assert all("Keep this system message unchanged." in payload["messages"][0]["content"] for payload in received)
     assert all("Conversation transcript JSON:" not in payload["messages"][0]["content"] for payload in received)
-    assert all("Assistant: ```json" in payload["messages"][0]["content"] for payload in received)
+    assert all(
+        "Assistant: <think></think>\n```json" in payload["messages"][0]["content"]
+        for payload in received
+    )
     assert all("User: Run the requested command." in payload["messages"][0]["content"] for payload in received)
 
     record = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
