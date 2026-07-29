@@ -143,6 +143,86 @@ def _schema_by_name(tools: list[Any]) -> dict[str, dict[str, Any]]:
     return {schema["name"]: schema for schema in _schemas(tools)}
 
 
+def _json_schema_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, Mapping):
+        return "object"
+    return type(value).__name__
+
+
+def _validate_json_schema(value: Any, schema: Mapping[str, Any], *, path: str) -> None:
+    """Validate generated arguments without coercing or filling values."""
+
+    enum = schema.get("enum")
+    if isinstance(enum, list) and value not in enum:
+        raise ValueError(f"{path} must be one of {enum!r}")
+
+    alternatives = schema.get("anyOf") or schema.get("oneOf")
+    if isinstance(alternatives, list) and alternatives:
+        errors: list[str] = []
+        for alternative in alternatives:
+            if not isinstance(alternative, Mapping):
+                continue
+            try:
+                _validate_json_schema(value, alternative, path=path)
+            except ValueError as error:
+                errors.append(str(error))
+            else:
+                break
+        else:
+            raise ValueError(f"{path} does not match any allowed schema: {errors[-1] if errors else 'no schema'}")
+        return
+
+    expected = schema.get("type")
+    expected_types = [expected] if isinstance(expected, str) else expected if isinstance(expected, list) else []
+    if expected_types:
+        compatible = any(
+            _json_schema_type(value) == item
+            or (item == "number" and _json_schema_type(value) == "integer")
+            for item in expected_types
+        )
+        if not compatible:
+            label = expected_types[0] if len(expected_types) == 1 else expected_types
+            raise ValueError(f"{path} must be {label}, got {_json_schema_type(value)}")
+
+    if isinstance(value, Mapping):
+        properties = schema.get("properties")
+        properties = properties if isinstance(properties, Mapping) else {}
+        additional = schema.get("additionalProperties", False if properties else True)
+        if additional is False:
+            unknown = set(value).difference(str(key) for key in properties)
+            if unknown:
+                if path == "candidate arguments":
+                    raise ValueError(f"candidate arguments contain unknown fields: {sorted(unknown)}")
+                raise ValueError(f"{path} contains unknown fields: {sorted(unknown)}")
+        required = schema.get("required")
+        if isinstance(required, list):
+            missing = [str(key) for key in required if key not in value]
+            if missing:
+                if path == "candidate arguments":
+                    raise ValueError(f"candidate is missing required arguments: {missing}")
+                raise ValueError(f"{path} is missing required fields: {missing}")
+        for key, child_schema in properties.items():
+            if key in value and isinstance(child_schema, Mapping):
+                _validate_json_schema(value[key], child_schema, path=f"{path}.{key}")
+    elif isinstance(value, list):
+        items = schema.get("items")
+        if isinstance(items, Mapping):
+            for index, item in enumerate(value):
+                _validate_json_schema(item, items, path=f"{path}[{index}]")
+
+
 def _message_content(message: Any) -> str:
     if not isinstance(message, Mapping):
         return str(message or "")
@@ -223,16 +303,7 @@ def parse_candidate(text: str, *, tools: list[Any]) -> Candidate:
         raise ValueError("candidate arguments must be a JSON object")
     parameters = schemas[name].get("parameters")
     if isinstance(parameters, Mapping):
-        properties = parameters.get("properties")
-        if isinstance(properties, Mapping):
-            unknown_arguments = set(arguments).difference(str(key) for key in properties)
-            if unknown_arguments:
-                raise ValueError(f"candidate arguments contain unknown fields: {sorted(unknown_arguments)}")
-        required = parameters.get("required")
-        if isinstance(required, list):
-            missing = [str(key) for key in required if key not in arguments]
-            if missing:
-                raise ValueError(f"candidate is missing required arguments: {missing}")
+        _validate_json_schema(arguments, parameters, path="candidate arguments")
     confidence = value.get("confidence", 0.0)
     if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
         raise ValueError("candidate confidence must be numeric")

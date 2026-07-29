@@ -73,6 +73,27 @@ def test_parse_candidate_is_strict_and_schema_bound() -> None:
     with pytest.raises(ValueError, match="must start"):
         parse_candidate('reasoning first\n{"name":"bash","arguments":{"command":"echo hi"}}', tools=TOOLS)
 
+    search_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "search",
+                "description": "Search.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"queries": {"type": "array", "items": {"type": "string"}}},
+                    "required": ["queries"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+    ]
+    with pytest.raises(ValueError, match=r"queries\[0\] must be string"):
+        parse_candidate(
+            '{"name":"search","arguments":{"queries":[{"query":"wrong shape"}]}}',
+            tools=search_tools,
+        )
+
 
 @pytest.mark.parametrize(
     "completion",
