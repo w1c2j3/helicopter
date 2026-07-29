@@ -8,6 +8,7 @@ trace and in the strict parser.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -64,11 +65,127 @@ def _message_content(message: Mapping[str, object]) -> str:
     return ""
 
 
+_EVALSCOPE_MESSAGE_REPR = re.compile(r"ChatMessage(?P<role>System|User|Assistant|Tool)\(")
+
+
+def _repr_string_at(text: str, start: int) -> str | None:
+    """Read one quoted Python repr value without evaluating surrounding text."""
+
+    if start >= len(text) or text[start] not in {"'", '"'}:
+        return None
+    quote = text[start]
+    escaped = False
+    for index in range(start + 1, len(text)):
+        char = text[index]
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char != quote:
+            continue
+        try:
+            value = ast.literal_eval(text[start : index + 1])
+        except (SyntaxError, ValueError):
+            return None
+        return value if isinstance(value, str) else None
+    return None
+
+
+def _evalscope_message_calls(value: str) -> list[tuple[int, int, str, str]]:
+    """Return ``(start, end, role, content)`` for complete ChatMessage repr calls."""
+
+    calls: list[tuple[int, int, str, str]] = []
+    for match in _EVALSCOPE_MESSAGE_REPR.finditer(value):
+        open_paren = match.end() - 1
+        depth = 0
+        quote: str | None = None
+        escaped = False
+        end: int | None = None
+        for index in range(open_paren, len(value)):
+            char = value[index]
+            if quote is not None:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = None
+                continue
+            if char in {"'", '"'}:
+                quote = char
+            elif char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    end = index + 1
+                    break
+        if end is None:
+            continue
+        call = value[match.start() : end]
+        content_match = re.search(r"\bcontent\s*=\s*", call)
+        if content_match is None:
+            continue
+        content = _repr_string_at(call, content_match.end())
+        if content is None:
+            continue
+        calls.append((match.start(), end, match.group("role").lower(), content))
+    return calls
+
+
+def _recover_evalscope_message_repr(value: str) -> list[dict[str, str]] | None:
+    """Recover text from EvalScope's accidental ``str(list[ChatMessage])``.
+
+    EvalScope 1.9.1 post-processes generic agent samples into ``ChatMessage``
+    objects, while some AgentLoop adapters still interpolate ``sample.input``
+    as if it were a string.  The resulting wire payload contains a Python repr
+    such as ``[ChatMessageUser(..., content='question', ...)]``.  This narrow,
+    lossless compatibility path restores only the already-present role and
+    content before constructing the RWKV transcript.  It never invents text,
+    fields, tool calls, or prompt instructions.
+    """
+
+    stripped = value.strip()
+    if not stripped.startswith("[") or not stripped.endswith("]") or "ChatMessage" not in value:
+        return None
+    calls = _evalscope_message_calls(value)
+    if not calls:
+        return None
+    return [{"role": role, "content": content} for _start, _end, role, content in calls]
+
+
+def _replace_evalscope_message_repr(value: str) -> str | None:
+    """Replace only embedded ChatMessage repr calls, retaining surrounding text."""
+
+    calls = _evalscope_message_calls(value)
+    if not calls:
+        return None
+    pieces: list[str] = []
+    cursor = 0
+    for start, end, _role, content in calls:
+        bracketed_start = start - 1 if start > cursor and value[start - 1] == "[" else start
+        bracketed_end = end + 1 if end < len(value) and value[end] == "]" else end
+        pieces.extend((value[cursor:bracketed_start], content))
+        cursor = bracketed_end
+    pieces.append(value[cursor:])
+    return "".join(pieces)
+
+
 def normalize_messages(messages: Sequence[Mapping[str, object]]) -> list[dict[str, str]]:
     normalized: list[dict[str, str]] = []
     for message in messages:
         role = str(message.get("role") or "user").strip().lower() or "user"
         content = _message_content(message)
+        if isinstance(content, str):
+            recovered = _recover_evalscope_message_repr(content)
+            if recovered is not None:
+                normalized.extend(recovered)
+                continue
+            replaced = _replace_evalscope_message_repr(content)
+            if replaced is not None:
+                content = replaced
         if content:
             normalized.append({"role": role, "content": content})
     return normalized

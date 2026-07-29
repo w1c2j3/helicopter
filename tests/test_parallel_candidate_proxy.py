@@ -18,6 +18,7 @@ from helicopter_cli.rwkv_agent_prompt import (
     RWKV_FLOWER_JSON_PROMPT_STYLE,
     build_rwkv_json_call_prompt,
     compact_messages_for_long_context,
+    normalize_messages,
     trim_message_history,
 )
 
@@ -142,6 +143,71 @@ def test_rwkv_prompt_uses_role_transcript_and_newest_history_budget() -> None:
     assert "Assistant: <think></think>\n```json" in prompt
     assert prompt.endswith("Assistant: <think></think>\n```json\n")
     assert prompt_trace["prompt_chars"] == len(prompt)
+
+
+def test_normalize_messages_recovers_evalscope_chat_message_repr() -> None:
+    malformed_wire_content = (
+        "[ChatMessageUser(id='abc123', content='Find the answer\\nfrom the corpus.', "
+        "source=None, metadata=None, internal=None, perf_metrics=None, role='user', "
+        "tool_call_id=None)]"
+    )
+    source = [{"role": "user", "content": malformed_wire_content}]
+
+    normalized = normalize_messages(source)
+
+    assert normalized == [{"role": "user", "content": "Find the answer\nfrom the corpus."}]
+    assert source[0]["content"] == malformed_wire_content
+
+    embedded = [{"role": "user", "content": "Question: " + malformed_wire_content + "\nKeep this."}]
+    assert normalize_messages(embedded) == [
+        {"role": "user", "content": "Question: Find the answer\nfrom the corpus.\nKeep this."}
+    ]
+
+
+def test_parallel_candidate_route_preserves_recovered_agent_question(tmp_path: Path) -> None:
+    malformed_wire_content = (
+        "[ChatMessageUser(id='abc123', content='Find the answer from the corpus.', "
+        "source=None, metadata=None, internal=None, perf_metrics=None, role='user', "
+        "tool_call_id=None)]"
+    )
+    seen_prompts: list[str] = []
+    proxy = ParallelCandidateProxy(
+        "http://127.0.0.1:1/v1",
+        api_key="secret",
+        trace_path=tmp_path / "parallel-repr.jsonl",
+    )
+
+    def fake_request(payload: dict[str, object]) -> tuple[int, dict[str, str], dict[str, object], dict[str, object]]:
+        seen_prompts.append(str(payload["messages"][0]["content"]))  # type: ignore[index]
+        body = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": '{"name":"bash","arguments":{"command":"grep answer corpus"},"confidence":0.9}',
+                    },
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+        return 200, {}, body, {}
+
+    proxy._request_upstream = fake_request  # type: ignore[method-assign]
+    result, trace = proxy._route(
+        {
+            "model": "rwkv",
+            "messages": [{"role": "user", "content": malformed_wire_content}],
+            "tools": [TOOLS[0]],
+            "tool_choice": "auto",
+            "max_tokens": 2048,
+        }
+    )
+
+    assert result["choices"][0]["finish_reason"] == "tool_calls"
+    assert trace["candidate_count"] == 1
+    assert seen_prompts
+    assert "User: Find the answer from the corpus." in seen_prompts[0]
+    assert "ChatMessageUser" not in seen_prompts[0]
 
 
 def test_rwkv_flower_json_prompt_uses_g1h_nocot_transcript() -> None:
