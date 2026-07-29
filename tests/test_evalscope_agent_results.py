@@ -226,6 +226,27 @@ def test_acceptance_report_respects_general_fc_no_call_labels(tmp_path) -> None:
     assert malformed["decision"]["status"] == "format_invalid"
 
 
+def test_acceptance_report_respects_evalscope_expected_tool_call_metadata(tmp_path) -> None:
+    prediction_dir = tmp_path / "predictions" / "model"
+    review_dir = tmp_path / "reviews" / "model"
+    prediction_dir.mkdir(parents=True)
+    review_dir.mkdir(parents=True)
+    prediction = {
+        "index": 0,
+        "model_output": {
+            "choices": [{"finish_reason": "stop", "message": {"content": "No action needed.", "tool_calls": None}}]
+        },
+        "metadata": {"expected_tool_call": False},
+    }
+    review = {"index": 0, "target": "", "sample_score": {"score": {"value": {"passed": True}}}}
+    (prediction_dir / "minimax_verifier_default.jsonl").write_text(json.dumps(prediction) + "\n", encoding="utf-8")
+    (review_dir / "minimax_verifier_default.jsonl").write_text(json.dumps(review) + "\n", encoding="utf-8")
+
+    output = write_acceptance_report(tmp_path, exit_code=0)
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["counts"] == {"correct_no_tool_call": 1}
+
+
 def test_acceptance_report_uses_native_swebench_toolcall_strategy(tmp_path) -> None:
     prediction_dir = tmp_path / "predictions" / "model"
     review_dir = tmp_path / "reviews" / "model"

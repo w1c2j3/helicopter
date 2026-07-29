@@ -401,8 +401,10 @@ def _expected_tool_call(prediction: dict[str, Any], review: dict[str, Any]) -> b
     if not isinstance(metadata, dict):
         sample_score = review.get("sample_score")
         metadata = sample_score.get("sample_metadata", {}) if isinstance(sample_score, dict) else {}
-    if isinstance(metadata, dict) and "should_call_tool" in metadata:
-        return bool(metadata["should_call_tool"])
+    if isinstance(metadata, dict):
+        for key in ("expected_tool_call", "should_call_tool"):
+            if key in metadata and metadata[key] is not None:
+                return bool(metadata[key])
     return None
 
 
