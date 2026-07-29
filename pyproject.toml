@@ -23,7 +23,7 @@ eval = [
 ]
 
 agent = [
-  "evalscope[mcp,sandbox]>=1.9.1,<2.0.0",
+  "evalscope[bfcl,mcp,sandbox]>=1.9.1,<2.0.0",
 ]
 
 swe-bench = [
@@ -143,6 +143,16 @@ full = [
 
 [tool.uv]
 package = true
+conflicts = [
+  [
+    { group = "agent" },
+    { group = "eval" },
+  ],
+  [
+    { group = "agent" },
+    { group = "rwkv" },
+  ],
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
