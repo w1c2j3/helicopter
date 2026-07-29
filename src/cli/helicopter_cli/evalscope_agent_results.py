@@ -319,6 +319,29 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def _dataset_format(dataset: str, *, prediction: dict[str, Any], review: dict[str, Any]) -> str:
     name = dataset.casefold()
+    # These Agent benchmarks expose tools to the model and return native
+    # tool-call messages during the AgentLoop.  Keep them on the strict
+    # function-calling path even when their prediction filename does not
+    # contain ``tool`` and the row metadata omits a top-level ``tools`` key.
+    if name in {
+        "acebench",
+        "bfcl",
+        "bfcl_v3",
+        "bfcl_v4",
+        "claw_eval",
+        "general_fc",
+        "k2_verifier",
+        "kimi_verifier",
+        "mcp_atlas",
+        "minimax_verifier",
+        "officeqa",
+        "tau2_bench",
+        "tau3_bench",
+        "tau_bench",
+        "toolathlon",
+        "tool_bench",
+    }:
+        return "function_calling"
     metadata = prediction.get("metadata")
     if not isinstance(metadata, dict):
         sample_score = review.get("sample_score")

@@ -269,6 +269,43 @@ def test_acceptance_report_uses_native_swebench_toolcall_strategy(tmp_path) -> N
     assert report["samples"][0]["extraction"]["status"] == "ok"
 
 
+def test_acceptance_report_classifies_acebench_prose_as_wire_format_failure(tmp_path) -> None:
+    prediction_dir = tmp_path / "predictions" / "model"
+    review_dir = tmp_path / "reviews" / "model"
+    prediction_dir.mkdir(parents=True)
+    review_dir.mkdir(parents=True)
+    prediction = {
+        "index": 0,
+        "model_output": {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": "I should call send_message.", "tool_calls": None},
+                }
+            ]
+        },
+        "metadata": {},
+        "agent_trace": {"strategy": "function_calling", "events": []},
+    }
+    review = {
+        "index": 0,
+        "target": "{\"ground_truth\": []}",
+        "sample_score": {
+            "score": {"value": {"acc": 0.0}},
+            "sample_metadata": {"functions": [{"name": "send_message"}]},
+        },
+    }
+    (prediction_dir / "acebench_agent.jsonl").write_text(json.dumps(prediction) + "\n", encoding="utf-8")
+    (review_dir / "acebench_agent.jsonl").write_text(json.dumps(review) + "\n", encoding="utf-8")
+
+    output = write_acceptance_report(tmp_path, exit_code=0)
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["counts"] == {"format_invalid": 1}
+    assert report["samples"][0]["format_kind"] == "function_calling"
+    assert report["samples"][0]["extraction"]["status"] == "format_invalid"
+    assert report["samples"][0]["extraction"]["raw_response"] == "I should call send_message."
+
+
 def test_acceptance_report_can_use_trace_report_from_an_outer_proxy_dir(tmp_path) -> None:
     run_dir = tmp_path / "20260726_120000"
     prediction_dir = run_dir / "predictions" / "model"
