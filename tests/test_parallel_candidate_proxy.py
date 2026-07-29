@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.request import Request, urlopen
 
 import pytest
@@ -70,6 +71,21 @@ def test_parse_candidate_is_strict_and_schema_bound() -> None:
         parse_candidate('{"name":"python","arguments":{}}', tools=TOOLS)
     with pytest.raises(ValueError, match="must start"):
         parse_candidate('reasoning first\n{"name":"bash","arguments":{"command":"echo hi"}}', tools=TOOLS)
+
+
+@pytest.mark.parametrize(
+    "completion",
+    [
+        '</think>{"name":"bash","arguments":{"command":"echo hi"}}',
+        '</think>```json\n{"name":"bash","arguments":{"command":"echo hi"}}\n```',
+        'reasoning first\n</think>```json\n{"name":"bash","arguments":{"command":"echo hi"}}\n```',
+    ],
+)
+def test_parse_candidate_accepts_json_after_explicit_think_close(completion: str) -> None:
+    candidate = parse_candidate(completion, tools=TOOLS)
+
+    assert candidate.name == "bash"
+    assert candidate.arguments == {"command": "echo hi"}
 
 
 def test_rwkv_prompt_uses_role_transcript_and_newest_history_budget() -> None:
@@ -195,3 +211,48 @@ def test_parallel_candidate_proxy_returns_validated_tool_call_and_trace(tmp_path
     assert record["router"]["mode"] == "parallel_candidate"
     assert record["router"]["candidate_count"] == 1
     assert record["response"]["body"]["choices"][0]["message"]["tool_calls"]
+
+
+def test_parallel_candidate_proxy_trace_encodes_bytes_without_breaking_response(tmp_path) -> None:
+    trace = tmp_path / "parallel-bytes.jsonl"
+    proxy = ParallelCandidateProxy(
+        "http://127.0.0.1:1/v1",
+        api_key="secret",
+        trace_path=trace,
+    )
+    proxy._route = lambda _source: (  # type: ignore[method-assign]
+        {"choices": []},
+        {"mode": "test", "raw": b"\x00\xff"},
+    )
+    try:
+        proxy.start()
+        request = Request(
+            f"{proxy.base_url}/chat/completions",
+            data=json.dumps({"model": "rwkv", "messages": [], "tools": TOOLS}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=10) as response:  # noqa: S310 - test-only local server
+            assert response.status == 200
+            assert json.loads(response.read()) == {"choices": []}
+    finally:
+        proxy.close()
+
+    record = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
+    assert record["router"]["raw"] == {"__type__": "bytes", "base64": "AP8="}
+
+
+def test_parallel_candidate_proxy_direct_route_parses_upstream_json() -> None:
+    proxy = ParallelCandidateProxy("http://127.0.0.1:1/v1", api_key="secret", trace_path=Path("trace.jsonl"))
+    proxy._forward = lambda *_args, **_kwargs: (  # type: ignore[method-assign]
+        200,
+        {"Content-Type": "application/json"},
+        b'{"id":"upstream","model":"rwkv","choices":[]}',
+    )
+
+    result, route_trace = proxy._route({"model": "rwkv", "messages": []})
+
+    assert result["model"] == "rwkv"
+    assert result["id"] == "upstream"
+    assert route_trace["mode"] == "direct"
+    assert route_trace["upstream_response"]["model"] == "rwkv"

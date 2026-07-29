@@ -13,6 +13,7 @@ unvalidated candidate is never turned into a tool call.
 
 from __future__ import annotations
 
+import base64
 import json
 import threading
 import uuid
@@ -48,8 +49,8 @@ class ParallelCandidateConfig:
     batch_size: int = 16
     context_chars: int = 6000
     prompt_max_chars: int = 12288
-    candidate_max_tokens: int = 192
-    aggregate_max_tokens: int = 192
+    candidate_max_tokens: int = 2048
+    aggregate_max_tokens: int = 2048
     max_candidates: int = 12
     fallback_to_highest_confidence: bool = True
     long_doc_min_chars: int = DEFAULT_LONG_DOC_MIN_CHARS
@@ -79,6 +80,17 @@ def _json_or_text(body: bytes) -> Any:
         return json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         return body.decode("utf-8", "replace")
+
+
+def _json_default(value: Any) -> Any:
+    """Keep non-JSON upstream trace values losslessly serializable."""
+
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return {
+            "__type__": "bytes",
+            "base64": base64.b64encode(bytes(value)).decode("ascii"),
+        }
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 def _function_schema(tool: Any) -> dict[str, Any] | None:
@@ -124,9 +136,20 @@ def _message_content(message: Any) -> str:
 
 
 def _json_object(text: str) -> dict[str, Any]:
-    """Extract one complete leading JSON object without repairing it."""
+    """Extract one complete model-generated JSON object without repairing it.
+
+    RWKV may emit a reasoning segment followed by an explicit ``</think>``
+    delimiter and the requested JSON object.  The delimiter is part of the
+    model output; using only the suffix after that delimiter keeps extraction
+    deterministic while preserving strict schema validation below.
+    """
 
     source = str(text or "").strip()
+    closing_think = source.rfind("</think>")
+    if closing_think >= 0:
+        suffix = source[closing_think + len("</think>") :].strip()
+        if suffix:
+            source = suffix
     if source.startswith("```"):
         lines = source.splitlines()
         if lines and lines[0].lstrip().startswith("```"):
@@ -368,7 +391,7 @@ class ParallelCandidateProxy:
                 }
                 with proxy._lock:
                     with proxy.trace_path.open("a", encoding="utf-8") as stream:
-                        stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+                        stream.write(json.dumps(record, ensure_ascii=False, default=_json_default) + "\n")
 
                 self.send_response(response_status)
                 for key, value in response_headers.items():
@@ -486,11 +509,12 @@ class ParallelCandidateProxy:
     def _route(self, source: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
         tools = source.get("tools")
         if not isinstance(tools, list) or not _schemas(tools):
-            status, headers, body = self._forward(
+            status, headers, body_bytes = self._forward(
                 "/v1/chat/completions",
                 json.dumps(source, ensure_ascii=False).encode("utf-8"),
                 method="POST",
             )
+            body = _json_or_text(body_bytes)
             return body if isinstance(body, dict) else {"choices": []}, {
                 "mode": "direct",
                 "upstream_status": status,
