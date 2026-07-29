@@ -1132,6 +1132,46 @@ class RawCompletionTests(unittest.TestCase):
         self.assertIn("User✿{{ message['content'] }}✿", payload["chat_template"])
         self.assertIn("Bot✿<think", payload["chat_template"])
 
+    def test_chat_request_uses_closed_think_wrapper_for_normal_nocot(self) -> None:
+        response = mock.Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "answer"},
+                "finish_reason": "stop",
+            }],
+            "usage": {},
+        }
+        client = SimpleNamespace(
+            model="openai/model",
+            base_url="http://127.0.0.1:19315/v1",
+            api_key="key",
+            timeout=10,
+            API_MAX_RETRY=1,
+            API_RETRY_SLEEP=0,
+            API_RETRY_MULTIPLIER=1,
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"HELICOPTER_PROMPT_MODE": "normal_nocot"},
+            clear=False,
+        ):
+            with mock.patch.object(lighteval_raw_completion, "load_sampling_overrides", return_value={}):
+                with mock.patch.object(lighteval_raw_completion.requests, "post", return_value=response) as post:
+                    lighteval_raw_completion._request(
+                        client,
+                        "ignored wrapper",
+                        32,
+                        1,
+                        ["\nUser:"],
+                        problem="official instruction plus question",
+                    )
+
+        payload = post.call_args.kwargs["json"]
+        self.assertNotIn("chat_template_kwargs", payload)
+        self.assertTrue(payload["chat_template"].endswith("Bot✿<think></think>{% endif %}"))
+
     def test_raw_request_forwards_every_configured_vllm_sampling_field(self) -> None:
         response = mock.Mock()
         response.raise_for_status.return_value = None
