@@ -280,3 +280,22 @@ def test_parallel_candidate_proxy_direct_route_parses_upstream_json() -> None:
     assert result["id"] == "upstream"
     assert route_trace["mode"] == "direct"
     assert route_trace["upstream_response"]["model"] == "rwkv"
+
+
+def test_upstream_candidate_payload_has_flower_response_stops() -> None:
+    proxy = ParallelCandidateProxy("http://127.0.0.1:1/v1", api_key="secret", trace_path=Path("trace.jsonl"))
+
+    payload = proxy._upstream_payload(
+        {"model": "rwkv", "temperature": 0.0},
+        "Bot\u273f<think></think>\n```json\n",
+        max_tokens=2048,
+    )
+
+    assert payload["stop"][:2] == ["\n```", "```"]
+    assert "\u273f" in payload["stop"]
+    preserved = proxy._upstream_payload(
+        {"model": "rwkv", "stop": ["CUSTOM"]},
+        "prompt",
+        max_tokens=128,
+    )
+    assert preserved["stop"] == ["CUSTOM"]

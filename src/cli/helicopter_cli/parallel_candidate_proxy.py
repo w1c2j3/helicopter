@@ -73,6 +73,18 @@ class Candidate:
 # empty think block is part of the request-time serialization only; source
 # messages and their semantics remain unchanged.
 _FLOWER_NO_COT_JSON_ASSISTANT_PREFIX = "Bot\u273f<think></think>\n```json\n"
+_FLOWER_JSON_STOP_SUFFIXES = [
+    "\n```",
+    "```",
+    "\nUser:",
+    "\nSystem:",
+    "\nAssistant:",
+    "\nUser\u273f",
+    "User\u273f",
+    "\nBot\u273f",
+    "Bot\u273f",
+    "\u273f",
+]
 
 
 def _redact_headers(headers: Mapping[str, str]) -> dict[str, str]:
@@ -512,6 +524,10 @@ class ParallelCandidateProxy:
         payload = {key: source[key] for key in allowed if key in source}
         payload["messages"] = [{"role": "user", "content": prompt}]
         payload["max_tokens"] = int(max_tokens)
+        # The model-generated JSON must stop at the first response boundary.
+        # These are transport stops, not answer repair: strict extraction below
+        # still rejects malformed, incomplete, or schema-invalid JSON.
+        payload.setdefault("stop", list(_FLOWER_JSON_STOP_SUFFIXES))
         payload["stream"] = False
         return payload
 
