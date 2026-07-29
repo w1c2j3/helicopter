@@ -73,8 +73,10 @@ class NaiveChatProxy:
                 response_headers: dict[str, str] = {}
                 response_body = b""
                 error: dict[str, str] | None = None
+                is_chat_request = self.command == "POST" and self.path.split("?", 1)[0].endswith("/chat/completions")
+                upstream_path = "/v1/completions" if is_chat_request else self.path
                 try:
-                    if self.command == "POST" and self.path.split("?", 1)[0].endswith("/chat/completions"):
+                    if is_chat_request:
                         if not isinstance(source_payload, dict):
                             raise ValueError("chat completion body must be a JSON object")
                         forwarded_payload = serialize_openai_request(source_payload)
@@ -82,7 +84,7 @@ class NaiveChatProxy:
                     else:
                         outgoing_body = body
 
-                    upstream_url = proxy._upstream_url(self.path)
+                    upstream_url = proxy._upstream_url(upstream_path)
                     outgoing_headers = {
                         "Content-Type": self.headers.get("Content-Type", "application/json"),
                         "Accept": self.headers.get("Accept", "application/json"),
@@ -90,6 +92,8 @@ class NaiveChatProxy:
                     }
                     response = proxy._request(upstream_url, outgoing_body, outgoing_headers)
                     response_status, response_headers, response_body = response
+                    if is_chat_request and response_status == 200:
+                        response_body = proxy._adapt_completion_response(response_body)
                 except HTTPError as exc:
                     response_status = exc.code
                     response_headers = {key: value for key, value in exc.headers.items()}
@@ -112,7 +116,7 @@ class NaiveChatProxy:
                         "json": source_payload,
                     },
                     "forwarded_request": {
-                        "url": proxy._upstream_url(self.path),
+                        "url": proxy._upstream_url(upstream_path),
                         "headers": {"Authorization": "Bearer [redacted]", "Content-Type": "application/json"},
                         "json": forwarded_payload,
                     },
@@ -156,6 +160,33 @@ class NaiveChatProxy:
             suffix = suffix[len(base_path) :]
         url = f"{upstream.scheme}://{upstream.netloc}{base_path}{suffix}"
         return f"{url}?{incoming.query}" if incoming.query else url
+
+    @staticmethod
+    def _adapt_completion_response(body: bytes) -> bytes:
+        """Wrap raw completion text in the chat response shape EvalScope expects."""
+
+        payload = _json_or_text(body)
+        if not isinstance(payload, dict) or not isinstance(payload.get("choices"), list):
+            return body
+        changed = False
+        choices: list[Any] = []
+        for choice in payload["choices"]:
+            if not isinstance(choice, dict) or "text" not in choice:
+                choices.append(choice)
+                continue
+            adapted = dict(choice)
+            message = adapted.get("message")
+            message = dict(message) if isinstance(message, dict) else {}
+            message.setdefault("role", "assistant")
+            message["content"] = adapted.pop("text") or ""
+            adapted["message"] = message
+            choices.append(adapted)
+            changed = True
+        if not changed:
+            return body
+        output = dict(payload)
+        output["choices"] = choices
+        return json.dumps(output, ensure_ascii=False).encode("utf-8")
 
     @staticmethod
     def _request(url: str, body: bytes, headers: dict[str, str]) -> tuple[int, dict[str, str], bytes]:

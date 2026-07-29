@@ -178,7 +178,7 @@ def test_parallel_candidate_route_preserves_recovered_agent_question(tmp_path: P
     )
 
     def fake_request(payload: dict[str, object]) -> tuple[int, dict[str, str], dict[str, object], dict[str, object]]:
-        seen_prompts.append(str(payload["messages"][0]["content"]))  # type: ignore[index]
+        seen_prompts.append(str(payload["prompt"]))
         body = {
             "choices": [
                 {
@@ -230,6 +230,7 @@ def test_rwkv_flower_json_prompt_uses_g1h_nocot_transcript() -> None:
 
 def test_parallel_candidate_proxy_returns_validated_tool_call_and_trace(tmp_path) -> None:
     received: list[dict[str, object]] = []
+    received_paths: list[str] = []
 
     class UpstreamHandler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
@@ -239,7 +240,8 @@ def test_parallel_candidate_proxy_returns_validated_tool_call_and_trace(tmp_path
             body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
             payload = json.loads(body)
             received.append(payload)
-            prompt = payload["messages"][0]["content"].lower()
+            received_paths.append(self.path)
+            prompt = payload["prompt"].lower()
             if "aggregator for a parallel" in prompt:
                 content = '{"name":"bash","arguments":{"command":"echo hi"},"confidence":0.95,"evidence":"validated candidate"}'
             elif '"name":"bash"' in prompt:
@@ -252,7 +254,7 @@ def test_parallel_candidate_proxy_returns_validated_tool_call_and_trace(tmp_path
                     "model": payload["model"],
                     "choices": [
                         {
-                            "message": {"role": "assistant", "content": content},
+                            "text": content,
                             "finish_reason": "stop",
                         }
                     ],
@@ -306,17 +308,21 @@ def test_parallel_candidate_proxy_returns_validated_tool_call_and_trace(tmp_path
     assert tool_calls[0]["function"]["name"] == "bash"
     assert json.loads(tool_calls[0]["function"]["arguments"]) == {"command": "echo hi"}
     assert received
+    assert all(payload["prompt"].endswith("Assistant: <think></think>\n```json\n") for payload in received)
     assert all("tools" not in payload for payload in received)
-    assert all("Keep this system message unchanged." in payload["messages"][0]["content"] for payload in received)
-    assert all("Conversation transcript JSON:" not in payload["messages"][0]["content"] for payload in received)
-    assert all("Assistant: <think></think>\n```json" in payload["messages"][0]["content"] for payload in received)
-    assert all("Bot\u273f<think></think>\n```json" not in payload["messages"][0]["content"] for payload in received)
+    assert all("messages" not in payload for payload in received)
+    assert all("Keep this system message unchanged." in payload["prompt"] for payload in received)
+    assert all("Conversation transcript JSON:" not in payload["prompt"] for payload in received)
+    assert all("Assistant: <think></think>\n```json" in payload["prompt"] for payload in received)
+    assert all("Bot\u273f<think></think>\n```json" not in payload["prompt"] for payload in received)
     assert all(
         "System: Keep this system message unchanged."
-        in payload["messages"][0]["content"]
+        in payload["prompt"]
         for payload in received
     )
-    assert all("User: Run the requested command." in payload["messages"][0]["content"] for payload in received)
+    assert all("User: Run the requested command." in payload["prompt"] for payload in received)
+    assert received_paths
+    assert all(path == "/v1/completions" for path in received_paths)
 
     record = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
     assert record["request"]["json"]["messages"][0]["content"] == "Keep this system message unchanged."
@@ -379,6 +385,8 @@ def test_upstream_candidate_payload_has_flower_response_stops() -> None:
         max_tokens=2048,
     )
 
+    assert payload["prompt"] == "Bot\u273f<think></think>\n```json\n"
+    assert "messages" not in payload
     assert payload["stop"][:2] == ["\n```", "```"]
     assert "\u273f" in payload["stop"]
     preserved = proxy._upstream_payload(
@@ -387,3 +395,4 @@ def test_upstream_candidate_payload_has_flower_response_stops() -> None:
         max_tokens=128,
     )
     assert preserved["stop"] == ["CUSTOM"]
+    assert preserved["prompt"] == "prompt"

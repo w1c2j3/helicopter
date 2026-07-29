@@ -22,6 +22,7 @@ ROLE_LABELS = {
     "tool": "Tool",
 }
 _TOOL_REQUEST_KEYS = ("tools", "tool_choice", "parallel_tool_calls")
+NAIVE_CHAT_ASSISTANT_PREFIX = "Assistant: <think></think>\n```json\n"
 
 
 def _json(value: Any) -> str:
@@ -81,11 +82,19 @@ def serialize_openai_request(request: Mapping[str, Any]) -> dict[str, Any]:
     transcript = "\n\n".join(sections)
     if transcript:
         transcript += "\n\n"
-    transcript += "Assistant:"
+    transcript += NAIVE_CHAT_ASSISTANT_PREFIX
 
-    forwarded = {key: value for key, value in request.items() if key not in _TOOL_REQUEST_KEYS}
-    forwarded["messages"] = [{"role": "user", "content": transcript}]
+    forwarded = {
+        key: value
+        for key, value in request.items()
+        if key not in _TOOL_REQUEST_KEYS and key != "messages"
+    }
+    # vllm-rwkv applies its chat template to /chat/completions.  The naive
+    # Chat transcript must therefore be sent as a raw prompt to
+    # /completions, otherwise the Assistant prefill is duplicated.
+    forwarded["prompt"] = transcript
+    forwarded["stream"] = False
     return forwarded
 
 
-__all__ = ["serialize_messages", "serialize_openai_request"]
+__all__ = ["NAIVE_CHAT_ASSISTANT_PREFIX", "serialize_messages", "serialize_openai_request"]

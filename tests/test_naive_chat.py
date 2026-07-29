@@ -42,13 +42,14 @@ def test_serialize_openai_request_moves_tool_metadata_into_transcript() -> None:
     }
 
     forwarded = serialize_openai_request(request)
-    transcript = forwarded["messages"][0]["content"]
+    transcript = forwarded["prompt"]
 
     assert forwarded["model"] == "rwkv"
     assert forwarded["temperature"] == 0
-    assert forwarded.keys() >= {"model", "messages", "temperature"}
+    assert forwarded.keys() >= {"model", "prompt", "temperature", "stream"}
+    assert "messages" not in forwarded
     assert not ({"tools", "tool_choice", "parallel_tool_calls"} & forwarded.keys())
-    assert transcript.endswith("Assistant:")
+    assert transcript.endswith("Assistant: <think></think>\n```json\n")
     assert "System: S" in transcript
     assert "User: U" in transcript
     assert "OpenAI tools:" in transcript
@@ -74,7 +75,7 @@ def test_proxy_serializes_request_preserves_response_and_records_trace(tmp_path)
         def do_POST(self) -> None:  # noqa: N802
             body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
             received.append(json.loads(body))
-            response = b'{"id":"upstream","choices":[{"message":{"content":"raw model output"}}]}'
+            response = b'{"id":"upstream","choices":[{"text":"raw model output","finish_reason":"stop"}]}'
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(response)))
@@ -103,15 +104,21 @@ def test_proxy_serializes_request_preserves_response_and_records_trace(tmp_path)
         )
         with urlopen(request, timeout=10) as response:  # noqa: S310 - test-only local server
             assert response.status == 200
-            assert response.read() == b'{"id":"upstream","choices":[{"message":{"content":"raw model output"}}]}'
+            response_body = json.loads(response.read())
+            assert response_body["choices"][0]["message"] == {
+                "role": "assistant",
+                "content": "raw model output",
+            }
     finally:
         proxy.close()
         upstream.shutdown()
         upstream.server_close()
         thread.join(timeout=5)
 
-    assert received[0]["messages"][0]["content"].endswith("Assistant:")
+    assert received[0]["prompt"].endswith("Assistant: <think></think>\n```json\n")
+    assert "messages" not in received[0]
     assert "tools" not in received[0]
     trace_record = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
     assert trace_record["response"]["body"]["choices"][0]["message"]["content"] == "raw model output"
+    assert trace_record["forwarded_request"]["url"].endswith("/v1/completions")
     assert trace_record["request"]["headers"]["Authorization"] == "Bearer [redacted]"

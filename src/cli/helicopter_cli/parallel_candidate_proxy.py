@@ -517,7 +517,11 @@ class ParallelCandidateProxy:
         started = perf_counter()
         outgoing_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         request = Request(
-            self._upstream_url("/v1/chat/completions"),
+            # vllm-rwkv's naive Chat contract is exposed through the raw
+            # completions endpoint.  Sending the already-rendered transcript
+            # to /chat/completions would apply the server chat template a
+            # second time and produces the observed `></think>` completion.
+            self._upstream_url("/v1/completions"),
             data=outgoing_body,
             headers={
                 "Content-Type": "application/json",
@@ -545,7 +549,7 @@ class ParallelCandidateProxy:
             error = {"type": type(exc).__name__, "message": str(exc)}
             body = {"error": error}
         return status, headers, body, {
-            "url": self._upstream_url("/v1/chat/completions"),
+            "url": self._upstream_url("/v1/completions"),
             "headers": {"Authorization": "Bearer [redacted]", "Content-Type": "application/json"},
             "json": payload,
             "status": status,
@@ -575,6 +579,9 @@ class ParallelCandidateProxy:
         choices = response.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
             return ""
+        text = choices[0].get("text")
+        if isinstance(text, str):
+            return text
         message = choices[0].get("message")
         return _message_content(message)
 
@@ -592,7 +599,7 @@ class ParallelCandidateProxy:
             "top_logprobs",
         }
         payload = {key: source[key] for key in allowed if key in source}
-        payload["messages"] = [{"role": "user", "content": prompt}]
+        payload["prompt"] = prompt
         payload["max_tokens"] = int(max_tokens)
         # The model-generated JSON must stop at the first response boundary.
         # These are transport stops, not answer repair: strict extraction below
