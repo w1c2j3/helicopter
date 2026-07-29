@@ -1168,11 +1168,17 @@ def run_batch(
     report_path: Path | None = None
     slots = resolve_slots(args, config, env)
     report_path = resolve_batch_report_path(args, config, root, started_at=started_at)
-    batch_run_dir = (
-        report_path.with_suffix("")
-        if report_path is not None
-        else root / "results/eval_batch" / f"dry_run_{_stamp_from_iso(started_at)}"
-    )
+    requested_output_dir = getattr(args, "output_dir", None)
+    if requested_output_dir:
+        requested_output_dir = Path(str(requested_output_dir)).expanduser()
+        if not requested_output_dir.is_absolute():
+            requested_output_dir = root / requested_output_dir
+    if report_path is not None:
+        batch_run_dir = report_path.with_suffix("")
+    elif requested_output_dir is not None:
+        batch_run_dir = requested_output_dir
+    else:
+        batch_run_dir = root / "results/eval_batch" / f"dry_run_{_stamp_from_iso(started_at)}"
     setattr(args, "_batch_run_dir", str(batch_run_dir))
 
     lighteval_tasks_override = None

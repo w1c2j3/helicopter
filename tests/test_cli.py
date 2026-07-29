@@ -6635,6 +6635,34 @@ class EvalBatchTests(unittest.TestCase):
         self.assertEqual(len(set(output_dirs)), 2)
         self.assertTrue(all(str(report_path.with_suffix("")) in path for path in output_dirs))
 
+    def test_run_batch_honors_output_dir_without_batch_report(self) -> None:
+        loaded = load_example_config()
+        output_dirs = []
+        with tempfile.TemporaryDirectory() as tmp:
+            requested_dir = Path(tmp) / "nocot-results"
+
+            def successful_runner(args, *, root, env, config):
+                output_dirs.append(args.output_dir)
+                return 0
+
+            with mock.patch.object(eval_batch, "run_eval", successful_runner):
+                exit_code = eval_batch.run_batch(
+                    batch_args(
+                        models=["g1d-0.4b"],
+                        tasks=["gsm8k|0"],
+                        output_dir=str(requested_dir),
+                        dry_run=False,
+                        no_server=True,
+                    ),
+                    root=ROOT,
+                    env={"WEIGHT_PATH": "/weights/RWKV"},
+                    config=loaded,
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(output_dirs), 2)
+        self.assertTrue(all(str(requested_dir) in path for path in output_dirs))
+
     def test_run_batch_writes_report_for_real_run(self) -> None:
         loaded = load_example_config()
         loaded["eval"] = {"batch": {"models": ["g1d-0.4b"], "tasks": ["gsm8k|0"]}}
