@@ -243,13 +243,14 @@ def test_parallel_candidate_proxy_returns_validated_tool_call_and_trace(tmp_path
     assert all("tools" not in payload for payload in received)
     assert all("Keep this system message unchanged." in payload["messages"][0]["content"] for payload in received)
     assert all("Conversation transcript JSON:" not in payload["messages"][0]["content"] for payload in received)
-    assert all("Bot\u273f<think></think>\n```json" in payload["messages"][0]["content"] for payload in received)
+    assert all("Assistant: <think></think>\n```json" in payload["messages"][0]["content"] for payload in received)
+    assert all("Bot\u273f<think></think>\n```json" not in payload["messages"][0]["content"] for payload in received)
     assert all(
-        "User\u273fSystem:\nKeep this system message unchanged.\u273f"
+        "System: Keep this system message unchanged."
         in payload["messages"][0]["content"]
         for payload in received
     )
-    assert all("User\u273fRun the requested command.\u273f" in payload["messages"][0]["content"] for payload in received)
+    assert all("User: Run the requested command." in payload["messages"][0]["content"] for payload in received)
 
     record = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
     assert record["request"]["json"]["messages"][0]["content"] == "Keep this system message unchanged."

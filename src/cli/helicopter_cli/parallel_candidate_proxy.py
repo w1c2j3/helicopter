@@ -35,7 +35,6 @@ from .rwkv_agent_prompt import (
     DEFAULT_LONG_DOC_MIN_CHARS,
     DEFAULT_LONG_DOC_OVERLAP_LINES,
     LongContextConfig,
-    RWKV_FLOWER_JSON_PROMPT_STYLE,
     build_rwkv_json_call_prompt,
     compact_messages_for_long_context,
     normalize_messages,
@@ -69,10 +68,10 @@ class Candidate:
     evidence: str
 
 
-# Match the RWKV NoCoT function-calling prefill used by rwkv-skills.  The
-# empty think block is part of the request-time serialization only; source
+# Match the official RWKV NoCoT function-calling prefill used by rwkv-skills.
+# The empty think block is part of request-time serialization only; source
 # messages and their semantics remain unchanged.
-_FLOWER_NO_COT_JSON_ASSISTANT_PREFIX = "Bot\u273f<think></think>\n```json\n"
+_NO_COT_JSON_ASSISTANT_PREFIX = "Assistant: <think></think>\n```json\n"
 _FLOWER_JSON_STOP_SUFFIXES = [
     "\n```",
     "```",
@@ -351,8 +350,8 @@ def _candidate_prompt(
         messages,
         history_max_chars=config.context_chars,
         prompt_max_chars=config.prompt_max_chars,
-        assistant_prefix=_FLOWER_NO_COT_JSON_ASSISTANT_PREFIX,
-        prompt_style=RWKV_FLOWER_JSON_PROMPT_STYLE,
+        assistant_prefix=_NO_COT_JSON_ASSISTANT_PREFIX,
+        prompt_style="assistant",
     )
 
 
@@ -391,8 +390,8 @@ def _aggregate_prompt(
         messages,
         history_max_chars=config.context_chars,
         prompt_max_chars=config.prompt_max_chars,
-        assistant_prefix=_FLOWER_NO_COT_JSON_ASSISTANT_PREFIX,
-        prompt_style=RWKV_FLOWER_JSON_PROMPT_STYLE,
+        assistant_prefix=_NO_COT_JSON_ASSISTANT_PREFIX,
+        prompt_style="assistant",
     )
 
 
