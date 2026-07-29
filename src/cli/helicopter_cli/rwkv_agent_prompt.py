@@ -21,6 +21,9 @@ DEFAULT_LONG_DOC_MAX_CHARS = 1000
 DEFAULT_LONG_DOC_OVERLAP_LINES = 3
 DEFAULT_LONG_DOC_MAX_EVIDENCE_CHUNKS = 4
 DEFAULT_LONG_DOC_MAX_EVIDENCE_CHARS = 6000
+RWKV_FLOWER_JSON_PROMPT_STYLE = "rwkv_flower_json"
+_FLOWER = "\u273f"
+_FLOWER_ASSISTANT_PREFIX = f"Bot{_FLOWER}<think></think>\n```json\n"
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,30 +346,82 @@ def _render_assistant(content: str, *, assistant_prefix: str) -> str:
     return f"Assistant: {normalized}".rstrip()
 
 
+def _render_flower_user(content: str) -> str:
+    return f"User{_FLOWER}{_strip_role_prefix(content, 'User:')}{_FLOWER}".rstrip()
+
+
+def _render_flower_system(content: str) -> str:
+    return f"User{_FLOWER}System:\n{normalize_rwkv_text(content)}{_FLOWER}".rstrip()
+
+
+def _render_flower_assistant(content: str, *, assistant_prefix: str) -> str:
+    normalized = _strip_role_prefix(content, "Assistant:")
+    if _looks_like_json(normalized):
+        if normalized.startswith("```"):
+            lines = normalized.splitlines()
+            if lines and lines[0].strip().startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            normalized = "\n".join(lines).strip()
+        return f"{assistant_prefix}{normalized}\n```{_FLOWER}"
+    return f"Bot{_FLOWER}{normalized}{_FLOWER}".rstrip()
+
+
 def build_rwkv_json_call_prompt(
     system_prompt: str,
     messages: Sequence[Mapping[str, object]],
     *,
     history_max_chars: int,
     prompt_max_chars: int,
-    assistant_prefix: str = "Assistant: <think></think>\n```json\n",
+    assistant_prefix: str | None = None,
+    prompt_style: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
+    style = str(prompt_style or "assistant").strip().lower()
+    if style not in {"assistant", RWKV_FLOWER_JSON_PROMPT_STYLE}:
+        raise ValueError(f"unsupported RWKV prompt style: {prompt_style!r}")
+    if assistant_prefix is None:
+        assistant_prefix = (
+            _FLOWER_ASSISTANT_PREFIX
+            if style == RWKV_FLOWER_JSON_PROMPT_STYLE
+            else "Assistant: <think></think>\n```json\n"
+        )
     bounded, history_truncated = trim_message_history(messages, max_chars=max(0, int(history_max_chars)))
-    parts = [f"System: {normalize_rwkv_text(system_prompt)}".rstrip()]
+    parts = [
+        _render_flower_system(system_prompt)
+        if style == RWKV_FLOWER_JSON_PROMPT_STYLE
+        else f"System: {normalize_rwkv_text(system_prompt)}".rstrip()
+    ]
     for message in bounded:
         content = normalize_rwkv_text(message["content"])
         if not content:
             continue
         role = message["role"]
         if role in {"tool", "function", "observation"}:
-            parts.append(_render_user("Function output:\n" + content))
+            parts.append(
+                _render_flower_user("Function output:\n" + content)
+                if style == RWKV_FLOWER_JSON_PROMPT_STYLE
+                else _render_user("Function output:\n" + content)
+            )
         elif role == "assistant":
-            parts.append(_render_assistant(content, assistant_prefix=assistant_prefix))
+            parts.append(
+                _render_flower_assistant(content, assistant_prefix=assistant_prefix)
+                if style == RWKV_FLOWER_JSON_PROMPT_STYLE
+                else _render_assistant(content, assistant_prefix=assistant_prefix)
+            )
         elif role == "system":
             # Keep source system content verbatim and in a System-labelled block.
-            parts.append(f"System: {content}".rstrip())
+            parts.append(
+                _render_flower_system(content)
+                if style == RWKV_FLOWER_JSON_PROMPT_STYLE
+                else f"System: {content}".rstrip()
+            )
         else:
-            parts.append(_render_user(content))
+            parts.append(
+                _render_flower_user(content)
+                if style == RWKV_FLOWER_JSON_PROMPT_STYLE
+                else _render_user(content)
+            )
     parts.append(assistant_prefix)
     prompt = "\n\n".join(parts)
     if len(prompt) > max(1, int(prompt_max_chars)) and history_max_chars > 1:
@@ -379,6 +434,7 @@ def build_rwkv_json_call_prompt(
                 history_max_chars=reduced_history,
                 prompt_max_chars=prompt_max_chars,
                 assistant_prefix=assistant_prefix,
+                prompt_style=style,
             )
     return prompt, {
         "history_max_chars": int(history_max_chars),
@@ -391,6 +447,7 @@ def build_rwkv_json_call_prompt(
 __all__ = [
     "DEFAULT_LONG_DOC_MAX_CHARS",
     "DEFAULT_LONG_DOC_MAX_EVIDENCE_CHARS",
+    "RWKV_FLOWER_JSON_PROMPT_STYLE",
     "DEFAULT_LONG_DOC_MAX_EVIDENCE_CHUNKS",
     "DEFAULT_LONG_DOC_MIN_CHARS",
     "DEFAULT_LONG_DOC_OVERLAP_LINES",

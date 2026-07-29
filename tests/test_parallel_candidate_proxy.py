@@ -15,6 +15,7 @@ from helicopter_cli.parallel_candidate_proxy import (
 )
 from helicopter_cli.rwkv_agent_prompt import (
     LongContextConfig,
+    RWKV_FLOWER_JSON_PROMPT_STYLE,
     build_rwkv_json_call_prompt,
     compact_messages_for_long_context,
     trim_message_history,
@@ -122,6 +123,24 @@ def test_rwkv_prompt_uses_role_transcript_and_newest_history_budget() -> None:
     assert prompt_trace["prompt_chars"] == len(prompt)
 
 
+def test_rwkv_flower_json_prompt_uses_g1h_nocot_transcript() -> None:
+    prompt, _ = build_rwkv_json_call_prompt(
+        "Keep the original system instruction.",
+        [
+            {"role": "system", "content": "Source system instruction."},
+            {"role": "user", "content": "Run the requested action."},
+        ],
+        history_max_chars=600,
+        prompt_max_chars=1200,
+        prompt_style=RWKV_FLOWER_JSON_PROMPT_STYLE,
+    )
+
+    assert "User\u273fSystem:\nKeep the original system instruction.\u273f" in prompt
+    assert "User\u273fSystem:\nSource system instruction.\u273f" in prompt
+    assert "User\u273fRun the requested action.\u273f" in prompt
+    assert prompt.endswith("Bot\u273f<think></think>\n```json\n")
+
+
 def test_parallel_candidate_proxy_returns_validated_tool_call_and_trace(tmp_path) -> None:
     received: list[dict[str, object]] = []
 
@@ -203,11 +222,13 @@ def test_parallel_candidate_proxy_returns_validated_tool_call_and_trace(tmp_path
     assert all("tools" not in payload for payload in received)
     assert all("Keep this system message unchanged." in payload["messages"][0]["content"] for payload in received)
     assert all("Conversation transcript JSON:" not in payload["messages"][0]["content"] for payload in received)
+    assert all("Bot\u273f<think></think>\n```json" in payload["messages"][0]["content"] for payload in received)
     assert all(
-        "Assistant: <think></think>\n```json" in payload["messages"][0]["content"]
+        "User\u273fSystem:\nKeep this system message unchanged.\u273f"
+        in payload["messages"][0]["content"]
         for payload in received
     )
-    assert all("User: Run the requested command." in payload["messages"][0]["content"] for payload in received)
+    assert all("User\u273fRun the requested command.\u273f" in payload["messages"][0]["content"] for payload in received)
 
     record = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
     assert record["request"]["json"]["messages"][0]["content"] == "Keep this system message unchanged."
