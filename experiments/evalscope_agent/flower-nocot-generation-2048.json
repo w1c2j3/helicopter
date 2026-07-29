@@ -1,0 +1,16 @@
+{
+  "max_tokens": 2048,
+  "temperature": 0.0,
+  "stop": [
+    "\n```",
+    "```",
+    "\nUser:",
+    "\nSystem:",
+    "\nAssistant:",
+    "\nUser\u273f",
+    "User\u273f",
+    "\nBot\u273f",
+    "Bot\u273f",
+    "\u273f"
+  ]
+}
