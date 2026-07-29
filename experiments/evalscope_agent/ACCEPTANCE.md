@@ -182,7 +182,6 @@ The report-only path also preserves the saved run status: it reads
 when no trustworthy prior status exists. This prevents report regeneration
 from masking an earlier transport or runtime failure; the regression is
 covered by the current **53-test** focused `uv` suite.
-
 ## FC context audit and current candidate-route gate
 
 The `rwkv-skills` FC implementation is now recorded in

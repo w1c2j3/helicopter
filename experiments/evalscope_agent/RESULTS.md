@@ -313,7 +313,6 @@ into passing results.
   records `null` rather than claiming success.
 - The new regression creates a saved trace with exit code 17 and verifies that
   report-only preserves 17. The focused `uv` suite now passes **53 tests**.
-
 ## rwkv-skills FC context audit and parallel-candidate rerun
 
 The local `rwkv-skills` FC implementation was audited before changing the
