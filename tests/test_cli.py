@@ -2742,7 +2742,7 @@ class CommandPlanTests(unittest.TestCase):
             naive_plan.env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"]
         )["tasks"]["math_500"]
         self.assertEqual(naive_request["prompt_mode"], "naive_nocot")
-        self.assertEqual(naive_request["prompt_template"], "User: {query}\n\nAssistant: <think></think")
+        self.assertEqual(naive_request["prompt_template"], "User: {query}\n\nAssistant: <think></think>")
         self.assertEqual(naive_request["stop"], ["\nUser:"])
         self.assertEqual(naive_plan.env["HELICOPTER_PROMPT_MODE"], "naive_nocot")
 
@@ -2770,9 +2770,9 @@ class CommandPlanTests(unittest.TestCase):
     def test_benchmark_mode_templates_decode_newline_as_0x0a(self) -> None:
         config_path = "configs/benchmarks/g1h/knowledge/073_mmlu_miscellaneous.toml"
         loaded_config, _ = config.load_config(ROOT, config_path)
-        template = commands.prompt_template_for_mode(loaded_config["prompt"])
+        template = commands.prompt_template_for_mode(loaded_config["prompt"], "normal_nocot")
 
-        self.assertEqual(template, "User✿{query}✿\nBot✿<think></think")
+        self.assertEqual(template, "User✿{query}✿\nBot✿<think></think>")
         self.assertIn("\n", template)
         self.assertNotIn("\\n", template)
 

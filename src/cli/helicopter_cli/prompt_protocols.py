@@ -13,9 +13,9 @@ PROMPT_MODES = ("naive_cot", "naive_nocot", "normal_cot", "normal_nocot")
 
 PROMPT_TEMPLATES = {
     "naive_cot": "User: {query}\n\nAssistant: <think",
-    "naive_nocot": "User: {query}\n\nAssistant: <think></think",
+    "naive_nocot": "User: {query}\n\nAssistant: <think></think>",
     "normal_cot": "User\u273f{query}\u273f\nBot\u273f<think",
-    "normal_nocot": "User\u273f{query}\u273f\nBot\u273f<think></think",
+    "normal_nocot": "User\u273f{query}\u273f\nBot\u273f<think></think>",
 }
 
 NORMAL_CHAT_TEMPLATES = {
@@ -31,7 +31,7 @@ NORMAL_CHAT_TEMPLATES = {
         "{% if message['role'] == 'user' %}User\u273f{{ message['content'] }}\u273f"
         "{% elif message['role'] == 'assistant' %}Bot\u273f{{ message['content'] }}\u273f"
         "{% endif %}{% endfor %}"
-        "{% if add_generation_prompt %}Bot\u273f<think></think{% endif %}"
+        "{% if add_generation_prompt %}Bot\u273f<think></think>{% endif %}"
     ),
 }
 
