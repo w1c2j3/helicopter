@@ -355,6 +355,14 @@ def build_evalscope_plan(
             raise SystemExit("EvalScope request timeout must be a positive number")
         generation_config["timeout"] = request_timeout
     _append_json(command, "--generation-config", generation_config)
+    model_args = _config_json(
+        args,
+        root=root,
+        settings=settings,
+        arg_name="model_args",
+        config_name="model_args",
+    )
+    _append_json(command, "--model-args", model_args)
     dataset_args = _config_json(
         args,
         root=root,

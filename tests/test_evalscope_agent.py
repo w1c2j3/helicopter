@@ -44,6 +44,7 @@ def evalscope_args(**overrides: object) -> Namespace:
         "limit": 2,
         "eval_batch_size": None,
         "generation_config": None,
+        "model_args": None,
         "dataset_args": None,
         "dataset_hub": None,
         "work_dir": None,
@@ -252,6 +253,19 @@ class EvalScopeAgentTests(unittest.TestCase):
             ["eval", "evalscope", "demo", "general_fc", "--request-timeout", "42"]
         )
         self.assertEqual(args.request_timeout, 42.0)
+
+    def test_model_args_are_forwarded(self) -> None:
+        config = {
+            "models": {"demo": {"served_model_name": "demo-served"}},
+            "evalscope": {"model_args": {"max_retries": 0}},
+        }
+
+        plan = build_evalscope_plan(evalscope_args(), root=ROOT, env={}, config=config)
+
+        self.assertEqual(
+            json.loads(plan.command[plan.command.index("--model-args") + 1]),
+            {"max_retries": 0},
+        )
 
     def test_build_plan_can_skip_global_agent_config(self) -> None:
         config = {

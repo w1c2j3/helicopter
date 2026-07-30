@@ -414,6 +414,7 @@ def build_parser() -> argparse.ArgumentParser:
     evalscope.add_argument("--limit", help="maximum samples per dataset; integer or fraction")
     evalscope.add_argument("--eval-batch-size", type=int)
     evalscope.add_argument("--generation-config", help="EvalScope generation config JSON string or JSON file")
+    evalscope.add_argument("--model-args", help="EvalScope model client args JSON string or JSON file")
     evalscope.add_argument("--dataset-args", help="EvalScope dataset args JSON string or JSON file")
     evalscope.add_argument("--dataset-hub", choices=("modelscope", "huggingface"))
     evalscope.add_argument("--work-dir", "--output-dir", dest="work_dir", help="EvalScope output directory")
