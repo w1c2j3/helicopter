@@ -13,6 +13,7 @@ from helicopter_cli.parallel_candidate_proxy import (
     ParallelCandidateConfig,
     ParallelCandidateProxy,
     _aggregate_prompt,
+    _candidate_prompt,
     parse_candidate,
 )
 from helicopter_cli.rwkv_agent_prompt import (
@@ -111,6 +112,61 @@ def test_parse_candidate_accepts_json_after_explicit_think_close(completion: str
 
     assert candidate.name == "bash"
     assert candidate.arguments == {"command": "echo hi"}
+
+
+def test_parse_candidate_accepts_one_strict_native_tool_call_envelope() -> None:
+    candidate = parse_candidate(
+        '{"tool_calls":[{"id":"call_1","type":"function",'
+        '"function":{"name":"bash","arguments":"{\\"command\\":\\"echo hi\\"}"}}]}',
+        tools=TOOLS,
+    )
+
+    assert candidate.name == "bash"
+    assert candidate.arguments == {"command": "echo hi"}
+
+
+def test_parse_candidate_rejects_multiple_native_tool_calls_without_selecting_one() -> None:
+    with pytest.raises(ValueError, match="exactly one call"):
+        parse_candidate(
+            '{"tool_calls":['
+            '{"function":{"name":"bash","arguments":"{\\"command\\":\\"pwd\\"}"}},'
+            '{"function":{"name":"submit","arguments":"{\\"answer\\":\\"done\\"}"}}'
+            ']}',
+            tools=TOOLS,
+        )
+
+
+def test_candidate_prompt_compacts_large_tool_schema() -> None:
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "large_tool",
+                "description": "tool description " * 400,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "parameter description " * 400,
+                        }
+                    },
+                    "required": ["command"],
+                },
+            },
+        }
+    ]
+    prompt, trace = _candidate_prompt(
+        tools,
+        [{"role": "user", "content": "Run the requested action."}],
+        config=ParallelCandidateConfig(prompt_max_chars=2048, context_chars=256),
+    )
+
+    assert trace["prompt_over_budget"] is False
+    assert len(prompt) < 2048
+    assert prompt.count("tool description") < 20
+    assert prompt.count("parameter description") < 20
+    assert '"command"' in prompt
 
 
 def test_rwkv_prompt_uses_role_transcript_and_newest_history_budget() -> None:
@@ -257,6 +313,21 @@ def test_aggregate_prompt_bounds_large_tool_catalog_after_candidate_validation()
     assert "Valid tool names:" in prompt
     assert '"tool_0"' in prompt
     assert '"properties"' not in prompt
+
+
+def test_aggregate_prompt_limits_candidates_by_confidence() -> None:
+    prompt, _trace = _aggregate_prompt(
+        [
+            Candidate(name="bash", arguments={"command": "echo high"}, confidence=0.9, evidence="high"),
+            Candidate(name="submit", arguments={"answer": "low"}, confidence=0.1, evidence="low"),
+        ],
+        TOOLS,
+        [{"role": "user", "content": "Run the requested action."}],
+        config=ParallelCandidateConfig(max_candidates=1),
+    )
+
+    assert '"command":"echo high"' in prompt
+    assert '"answer":"low"' not in prompt
 
 
 def test_parallel_candidate_proxy_returns_validated_tool_call_and_trace(tmp_path) -> None:

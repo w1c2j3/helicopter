@@ -38,6 +38,7 @@ from .rwkv_agent_prompt import (
     build_rwkv_json_call_prompt,
     compact_messages_for_long_context,
     normalize_messages,
+    normalize_rwkv_text,
 )
 
 
@@ -313,10 +314,92 @@ def _json_object(text: str) -> dict[str, Any]:
     return value
 
 
+def _parse_native_candidate_envelope(value: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Parse one model-emitted OpenAI-style tool-call envelope.
+
+    This is transport normalization only: a candidate router asks for one
+    action, so multiple native calls are rejected rather than selecting one.
+    The returned name and arguments are still validated against the supplied
+    tool schema by :func:`parse_candidate`.
+    """
+
+    extra_envelope_keys = sorted(str(key) for key in value if str(key) != "tool_calls")
+    if extra_envelope_keys:
+        raise ValueError(f"candidate native envelope has unsupported fields: {extra_envelope_keys}")
+    calls = value.get("tool_calls")
+    if not isinstance(calls, list) or len(calls) != 1:
+        raise ValueError("candidate native tool_calls must contain exactly one call")
+    call = calls[0]
+    if not isinstance(call, Mapping):
+        raise ValueError("candidate native tool call must be an object")
+    extra_call_keys = sorted(str(key) for key in call if str(key) not in {"id", "type", "index", "function"})
+    if extra_call_keys:
+        raise ValueError(f"candidate native tool call has unsupported fields: {extra_call_keys}")
+    function = call.get("function")
+    if not isinstance(function, Mapping):
+        raise ValueError("candidate native tool call must contain function")
+    extra_function_keys = sorted(str(key) for key in function if str(key) not in {"name", "arguments"})
+    if extra_function_keys:
+        raise ValueError(f"candidate native function has unsupported fields: {extra_function_keys}")
+    name = function.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("candidate native function name must be a non-empty string")
+    arguments = function.get("arguments")
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError as error:
+            raise ValueError("candidate native function arguments must contain a JSON object") from error
+    if not isinstance(arguments, Mapping):
+        raise ValueError("candidate native function arguments must be a JSON object")
+    return name.strip(), dict(arguments)
+
+
+def _compact_prompt_parameter_schema(value: Any) -> dict[str, Any]:
+    """Keep schema facts needed by the worker while bounding prompt size."""
+
+    if not isinstance(value, Mapping):
+        return {"type": "string"}
+    compact: dict[str, Any] = {"type": str(value.get("type") or "string")}
+    description = normalize_rwkv_text(str(value.get("description") or ""))
+    if description:
+        compact["description"] = description[:48]
+    enum = value.get("enum")
+    if isinstance(enum, list) and len(enum) <= 12:
+        compact["enum"] = list(enum)
+    items = value.get("items")
+    if isinstance(items, Mapping):
+        compact["items"] = _compact_prompt_parameter_schema(items)
+    properties = value.get("properties")
+    if isinstance(properties, Mapping):
+        compact["properties"] = {
+            str(name): _compact_prompt_parameter_schema(schema)
+            for name, schema in properties.items()
+        }
+    required = value.get("required")
+    if isinstance(required, list):
+        compact["required"] = [str(name) for name in required]
+    return compact
+
+
+def _compact_prompt_tool_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
+    parameters = schema.get("parameters")
+    if not isinstance(parameters, Mapping):
+        parameters = {}
+    return {
+        "name": str(schema.get("name") or ""),
+        "description": normalize_rwkv_text(str(schema.get("description") or ""))[:120],
+        "parameters": _compact_prompt_parameter_schema(parameters),
+    }
+
+
 def parse_candidate(text: str, *, tools: list[Any]) -> Candidate:
     """Strictly validate a candidate against the supplied tool schemas."""
 
     value = _json_object(text)
+    if "tool_calls" in value:
+        name, arguments = _parse_native_candidate_envelope(value)
+        value = {"name": name, "arguments": arguments}
     unknown = set(value).difference({"name", "arguments", "confidence", "evidence", "id", "tool_call_id"})
     if unknown:
         raise ValueError(f"candidate contains unknown fields: {sorted(unknown)}")
@@ -352,13 +435,7 @@ def parse_candidate(text: str, *, tools: list[Any]) -> Candidate:
 def _compact_prompt_tools(tools: list[Any]) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
     for schema in _schemas(tools):
-        output.append(
-            {
-                "name": schema["name"],
-                "description": schema["description"][:500],
-                "parameters": schema["parameters"],
-            }
-        )
+        output.append(_compact_prompt_tool_schema(schema))
     return output
 
 
@@ -409,6 +486,9 @@ def _aggregate_prompt(
     *,
     config: ParallelCandidateConfig,
 ) -> tuple[str, dict[str, Any]]:
+    ranked_candidates = sorted(candidates, key=lambda item: item.confidence, reverse=True)[
+        : max(1, int(config.max_candidates))
+    ]
     rows = [
         {
             "name": item.name,
@@ -416,7 +496,7 @@ def _aggregate_prompt(
             "confidence": item.confidence,
             "evidence": item.evidence,
         }
-        for item in sorted(candidates, key=lambda item: item.confidence, reverse=True)
+        for item in ranked_candidates
     ]
     system_prompt = "\n".join(
         [
