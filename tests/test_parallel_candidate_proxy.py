@@ -258,6 +258,7 @@ def test_parallel_candidate_proxy_returns_validated_tool_call_and_trace(tmp_path
                             "finish_reason": "stop",
                         }
                     ],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
                 }
             ).encode("utf-8")
             self.send_response(200)
@@ -307,6 +308,7 @@ def test_parallel_candidate_proxy_returns_validated_tool_call_and_trace(tmp_path
     assert result["choices"][0]["finish_reason"] == "tool_calls"
     assert tool_calls[0]["function"]["name"] == "bash"
     assert json.loads(tool_calls[0]["function"]["arguments"]) == {"command": "echo hi"}
+    assert result["usage"] == {"prompt_tokens": 30, "completion_tokens": 6, "total_tokens": 36}
     assert received
     assert all(payload["prompt"].endswith("Assistant: <think></think>\n```json\n") for payload in received)
     assert all("tools" not in payload for payload in received)
@@ -329,6 +331,7 @@ def test_parallel_candidate_proxy_returns_validated_tool_call_and_trace(tmp_path
     assert record["router"]["mode"] == "parallel_candidate"
     assert record["router"]["candidate_count"] == 1
     assert record["response"]["body"]["choices"][0]["message"]["tool_calls"]
+    assert record["response"]["body"]["usage"] == {"prompt_tokens": 30, "completion_tokens": 6, "total_tokens": 36}
 
 
 def test_parallel_candidate_proxy_trace_encodes_bytes_without_breaking_response(tmp_path) -> None:

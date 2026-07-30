@@ -100,6 +100,41 @@ def _json_or_text(body: bytes) -> Any:
         return body.decode("utf-8", "replace")
 
 
+def _usage_from_upstream(trace: Any) -> dict[str, int] | None:
+    """Read OpenAI usage metadata from one raw completion trace."""
+
+    if not isinstance(trace, Mapping):
+        return None
+    response = trace.get("response")
+    if not isinstance(response, Mapping):
+        return None
+    usage = response.get("usage")
+    if not isinstance(usage, Mapping):
+        return None
+    values: dict[str, int] = {}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        value = usage.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        values[key] = int(value)
+    return values
+
+
+def _sum_upstream_usage(traces: list[Any]) -> dict[str, int] | None:
+    """Aggregate usage for all hidden candidate and aggregate requests."""
+
+    total = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    found = False
+    for trace in traces:
+        usage = _usage_from_upstream(trace)
+        if usage is None:
+            continue
+        found = True
+        for key in total:
+            total[key] += usage[key]
+    return total if found else None
+
+
 def _json_default(value: Any) -> Any:
     """Keep non-JSON upstream trace values losslessly serializable."""
 
@@ -727,6 +762,12 @@ class ParallelCandidateProxy:
             fallback_used = True
 
         model = str(source.get("model") or "")
+        usage = _sum_upstream_usage(
+            [
+                *(trace.get("upstream") for trace in candidate_traces),
+                aggregate_trace.get("upstream"),
+            ]
+        )
         route_trace: dict[str, Any] = {
             "mode": "parallel_candidate",
             "config": asdict(self.config),
@@ -737,6 +778,8 @@ class ParallelCandidateProxy:
             "selected": asdict(selected) if selected is not None else None,
             "fallback_used": fallback_used,
         }
+        if usage is not None:
+            route_trace["usage"] = usage
         if selected is None:
             content = aggregate_completion or (candidate_traces[0].get("completion", "") if candidate_traces else "")
             response = {
@@ -752,6 +795,8 @@ class ParallelCandidateProxy:
                     }
                 ],
             }
+            if usage is not None:
+                response["usage"] = usage
             return response, route_trace
 
         response = {
@@ -780,6 +825,8 @@ class ParallelCandidateProxy:
                 }
             ],
         }
+        if usage is not None:
+            response["usage"] = usage
         return response, route_trace
 
     def close(self) -> None:
