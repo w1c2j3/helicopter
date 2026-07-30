@@ -125,6 +125,28 @@ def test_parse_candidate_accepts_one_strict_native_tool_call_envelope() -> None:
     assert candidate.arguments == {"command": "echo hi"}
 
 
+def test_parse_candidate_accepts_one_candidate_wrapped_in_json_array() -> None:
+    candidate = parse_candidate(
+        '[{"name":"bash","arguments":{"command":"echo hi"},'
+        '"confidence":1.0,"evidence":"single aggregate candidate"}]',
+        tools=TOOLS,
+    )
+
+    assert candidate.name == "bash"
+    assert candidate.arguments == {"command": "echo hi"}
+
+
+def test_parse_candidate_rejects_empty_or_multiple_candidate_arrays() -> None:
+    with pytest.raises(ValueError, match="exactly one candidate"):
+        parse_candidate("[]", tools=TOOLS)
+    with pytest.raises(ValueError, match="exactly one candidate"):
+        parse_candidate(
+            '[{"name":"bash","arguments":{"command":"pwd"}},'
+            '{"name":"submit","arguments":{"answer":"done"}}]',
+            tools=TOOLS,
+        )
+
+
 def test_parse_candidate_rejects_multiple_native_tool_calls_without_selecting_one() -> None:
     with pytest.raises(ValueError, match="exactly one call"):
         parse_candidate(

@@ -269,13 +269,17 @@ def _message_content(message: Any) -> str:
     return json.dumps(content, ensure_ascii=False, sort_keys=True)
 
 
-def _json_object(text: str) -> dict[str, Any]:
-    """Extract one complete model-generated JSON object without repairing it.
+def _json_value(text: str) -> dict[str, Any] | list[Any]:
+    """Extract one complete model-generated candidate JSON value.
 
     RWKV may emit a reasoning segment followed by an explicit ``</think>``
-    delimiter and the requested JSON object.  The delimiter is part of the
+    delimiter and the requested JSON value.  The delimiter is part of the
     model output; using only the suffix after that delimiter keeps extraction
-    deterministic while preserving strict schema validation below.
+    deterministic while preserving strict schema validation below.  A
+    single-element array is retained as an explicit transport normalization
+    because the aggregate model has been observed to wrap one candidate in
+    ``[{...}]``.  The caller still rejects empty/multi-element arrays and
+    validates the unwrapped object without filling or repairing fields.
     """
 
     source = str(text or "").strip()
@@ -297,8 +301,8 @@ def _json_object(text: str) -> dict[str, Any]:
             lines = source.splitlines()
             lines = lines[1:] if lines else lines
             source = "\n".join(lines).strip()
-    if not source.startswith("{"):
-        raise ValueError("completion must start with a JSON object")
+    if not source.startswith(("{", "[")):
+        raise ValueError("completion must start with a JSON object or array")
     decoder = json.JSONDecoder()
     try:
         value, end = decoder.raw_decode(source)
@@ -309,8 +313,8 @@ def _json_object(text: str) -> dict[str, Any]:
         trailing = trailing[3:].strip()
     if trailing:
         raise ValueError("completion contains text after the JSON object")
-    if not isinstance(value, dict):
-        raise ValueError("completion JSON value must be an object")
+    if not isinstance(value, (dict, list)):
+        raise ValueError("completion JSON value must be an object or array")
     return value
 
 
@@ -396,7 +400,13 @@ def _compact_prompt_tool_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
 def parse_candidate(text: str, *, tools: list[Any]) -> Candidate:
     """Strictly validate a candidate against the supplied tool schemas."""
 
-    value = _json_object(text)
+    value = _json_value(text)
+    if isinstance(value, list):
+        if len(value) != 1:
+            raise ValueError("completion JSON array must contain exactly one candidate")
+        value = value[0]
+        if not isinstance(value, dict):
+            raise ValueError("completion JSON array candidate must be an object")
     if "tool_calls" in value:
         name, arguments = _parse_native_candidate_envelope(value)
         value = {"name": name, "arguments": arguments}
