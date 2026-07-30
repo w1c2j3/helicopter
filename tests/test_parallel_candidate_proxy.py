@@ -176,6 +176,13 @@ def test_parse_candidates_accepts_strict_multi_call_array_and_native_envelope() 
     )
     assert [candidate.arguments for candidate in native] == [{"command": "pwd"}, {"command": "ls"}]
 
+    with pytest.raises(ValueError, match="unknown fields"):
+        parse_candidates(
+            '[{"name":"bash","arguments":{"command":"pwd"}},'
+            '{"name":"submit","arguments":{"answer":"done","duration":10}}]',
+            tools=TOOLS,
+        )
+
 
 def test_candidate_prompt_compacts_large_tool_schema() -> None:
     tools = [
@@ -519,6 +526,37 @@ def test_aggregate_prompt_limits_candidates_by_confidence() -> None:
 
     assert '"command":"echo high"' in prompt
     assert '"answer":"low"' not in prompt
+
+
+def test_aggregate_prompt_exposes_allowed_argument_keys_without_full_schemas() -> None:
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "create_player_profile",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "player_name": {"type": "string"},
+                        "_class": {"type": "string"},
+                    },
+                    "required": ["player_name", "_class"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+    ]
+    prompt, trace = _aggregate_prompt(
+        [Candidate(name="create_player_profile", arguments={"player_name": "StarPlayer", "_class": "Mage"}, confidence=1.0, evidence="validated")],
+        tools,
+        [{"role": "user", "content": "Create the player."}],
+        config=ParallelCandidateConfig(prompt_max_chars=2048),
+    )
+
+    assert trace["prompt_over_budget"] is False
+    assert '"allowed_argument_names":["_class","player_name"]' in prompt
+    assert '"required_argument_names":["player_name","_class"]' in prompt
+    assert '"properties"' not in prompt
 
 
 def test_parallel_candidate_proxy_returns_validated_tool_call_and_trace(tmp_path) -> None:

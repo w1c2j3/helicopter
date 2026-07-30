@@ -490,6 +490,50 @@ def _compact_prompt_tool_names(tools: list[Any]) -> list[str]:
     return [str(schema["name"]) for schema in _schemas(tools)]
 
 
+def _compact_aggregate_argument_catalog(
+    candidates: list[Candidate],
+    tools: list[Any],
+    *,
+    max_chars: int,
+) -> list[dict[str, Any]]:
+    """Bound the aggregate prompt's argument-key catalog.
+
+    The aggregate model may need to add an action that was not emitted by a
+    worker candidate.  Tool names alone are insufficient for that case: the
+    model can copy a valid-looking key from one tool to another.  Keep the
+    candidate tools first, then add the remaining tools until the explicit
+    prompt budget is reached.  This catalog is advisory only; every emitted
+    action is still validated by :func:`parse_candidates`.
+    """
+
+    schemas = _schema_by_name(tools)
+    ordered_names: list[str] = []
+    for name in [candidate.name for candidate in candidates] + list(schemas):
+        if name not in ordered_names:
+            ordered_names.append(name)
+    rows: list[dict[str, Any]] = []
+    used = 0
+    for name in ordered_names:
+        schema = schemas[name]
+        parameters = schema.get("parameters") if isinstance(schema.get("parameters"), Mapping) else {}
+        properties = parameters.get("properties") if isinstance(parameters.get("properties"), Mapping) else {}
+        row: dict[str, Any] = {
+            "name": name,
+            "allowed_argument_names": sorted(str(key) for key in properties),
+        }
+        required = parameters.get("required")
+        if isinstance(required, list):
+            row["required_argument_names"] = [str(key) for key in required]
+        if parameters.get("additionalProperties") is False:
+            row["additional_properties"] = False
+        encoded_length = len(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
+        if rows and used + encoded_length > max(1, int(max_chars)):
+            break
+        rows.append(row)
+        used += encoded_length
+    return rows
+
+
 def _candidate_prompt(
     tools: list[Any],
     messages: list[dict[str, str]],
@@ -543,12 +587,23 @@ def _aggregate_prompt(
             "Choose the best next action from the candidates for the original conversation.",
             "Return exactly one JSON array of one or more objects with only these fields:",
             '[{"name":"tool_name","arguments":{},"confidence":0.0,"evidence":"short reason"}]',
-            "Use only supplied tool names. Preserve each candidate argument object when selecting it; add another array item only for another independent action explicitly requested by the conversation.",
+            "Use only supplied tool names. Preserve each candidate argument object exactly when selecting it; add another array item only for another independent action explicitly requested by the conversation.",
+            "For every emitted item, use only the argument keys allowed for that tool. Never rename, borrow, or invent argument keys.",
             "Do not include id, type, tool_calls, function, analysis, markdown, or extra fields.",
             "Candidates:",
             json.dumps(rows, ensure_ascii=False, separators=(",", ":")),
             "Valid tool names:",
             json.dumps(_compact_prompt_tool_names(tools), ensure_ascii=False, separators=(",", ":")),
+            "Tool argument key catalog (bounded; final schema validation is authoritative):",
+            json.dumps(
+                _compact_aggregate_argument_catalog(
+                    ranked_candidates,
+                    tools,
+                    max_chars=max(512, int(config.prompt_max_chars) // 3),
+                ),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
         ]
     )
     return build_rwkv_json_call_prompt(
