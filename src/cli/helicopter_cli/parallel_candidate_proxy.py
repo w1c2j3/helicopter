@@ -318,45 +318,48 @@ def _json_value(text: str) -> dict[str, Any] | list[Any]:
     return value
 
 
-def _parse_native_candidate_envelope(value: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
-    """Parse one model-emitted OpenAI-style tool-call envelope.
+def _parse_native_candidate_envelope(value: Mapping[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Parse model-emitted OpenAI-style tool-call envelopes.
 
-    This is transport normalization only: a candidate router asks for one
-    action, so multiple native calls are rejected rather than selecting one.
-    The returned name and arguments are still validated against the supplied
-    tool schema by :func:`parse_candidate`.
+    This is transport normalization only.  Worker prompts still produce one
+    candidate, while the aggregate prompt may return several independent
+    calls for a multi-action user request.  Every returned call is validated
+    against the supplied tool schema by the caller; no call is selected or
+    repaired here.
     """
 
     extra_envelope_keys = sorted(str(key) for key in value if str(key) != "tool_calls")
     if extra_envelope_keys:
         raise ValueError(f"candidate native envelope has unsupported fields: {extra_envelope_keys}")
     calls = value.get("tool_calls")
-    if not isinstance(calls, list) or len(calls) != 1:
-        raise ValueError("candidate native tool_calls must contain exactly one call")
-    call = calls[0]
-    if not isinstance(call, Mapping):
-        raise ValueError("candidate native tool call must be an object")
-    extra_call_keys = sorted(str(key) for key in call if str(key) not in {"id", "type", "index", "function"})
-    if extra_call_keys:
-        raise ValueError(f"candidate native tool call has unsupported fields: {extra_call_keys}")
-    function = call.get("function")
-    if not isinstance(function, Mapping):
-        raise ValueError("candidate native tool call must contain function")
-    extra_function_keys = sorted(str(key) for key in function if str(key) not in {"name", "arguments"})
-    if extra_function_keys:
-        raise ValueError(f"candidate native function has unsupported fields: {extra_function_keys}")
-    name = function.get("name")
-    if not isinstance(name, str) or not name.strip():
-        raise ValueError("candidate native function name must be a non-empty string")
-    arguments = function.get("arguments")
-    if isinstance(arguments, str):
-        try:
-            arguments = json.loads(arguments)
-        except json.JSONDecodeError as error:
-            raise ValueError("candidate native function arguments must contain a JSON object") from error
-    if not isinstance(arguments, Mapping):
-        raise ValueError("candidate native function arguments must be a JSON object")
-    return name.strip(), dict(arguments)
+    if not isinstance(calls, list) or not calls:
+        raise ValueError("candidate native tool_calls must contain at least one call")
+    parsed: list[tuple[str, dict[str, Any]]] = []
+    for call in calls:
+        if not isinstance(call, Mapping):
+            raise ValueError("candidate native tool call must be an object")
+        extra_call_keys = sorted(str(key) for key in call if str(key) not in {"id", "type", "index", "function"})
+        if extra_call_keys:
+            raise ValueError(f"candidate native tool call has unsupported fields: {extra_call_keys}")
+        function = call.get("function")
+        if not isinstance(function, Mapping):
+            raise ValueError("candidate native tool call must contain function")
+        extra_function_keys = sorted(str(key) for key in function if str(key) not in {"name", "arguments"})
+        if extra_function_keys:
+            raise ValueError(f"candidate native function has unsupported fields: {extra_function_keys}")
+        name = function.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("candidate native function name must be a non-empty string")
+        arguments = function.get("arguments")
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError as error:
+                raise ValueError("candidate native function arguments must contain a JSON object") from error
+        if not isinstance(arguments, Mapping):
+            raise ValueError("candidate native function arguments must be a JSON object")
+        parsed.append((name.strip(), dict(arguments)))
+    return parsed
 
 
 def _compact_prompt_parameter_schema(value: Any) -> dict[str, Any]:
@@ -397,19 +400,23 @@ def _compact_prompt_tool_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def parse_candidate(text: str, *, tools: list[Any]) -> Candidate:
-    """Strictly validate a candidate against the supplied tool schemas."""
-
-    value = _json_value(text)
-    if isinstance(value, list):
-        if len(value) != 1:
-            raise ValueError("completion JSON array must contain exactly one candidate")
-        value = value[0]
-        if not isinstance(value, dict):
+def _candidate_values(value: dict[str, Any] | list[Any]) -> list[dict[str, Any]]:
+    values = value if isinstance(value, list) else [value]
+    output: list[dict[str, Any]] = []
+    for item in values:
+        if not isinstance(item, dict):
             raise ValueError("completion JSON array candidate must be an object")
-    if "tool_calls" in value:
-        name, arguments = _parse_native_candidate_envelope(value)
-        value = {"name": name, "arguments": arguments}
+        if "tool_calls" in item:
+            output.extend(
+                {"name": name, "arguments": arguments}
+                for name, arguments in _parse_native_candidate_envelope(item)
+            )
+        else:
+            output.append(item)
+    return output
+
+
+def _parse_candidate_value(value: dict[str, Any], *, tools: list[Any]) -> Candidate:
     unknown = set(value).difference({"name", "arguments", "confidence", "evidence", "id", "tool_call_id"})
     if unknown:
         raise ValueError(f"candidate contains unknown fields: {sorted(unknown)}")
@@ -440,6 +447,28 @@ def parse_candidate(text: str, *, tools: list[Any]) -> Candidate:
     if not isinstance(evidence, str):
         raise ValueError("candidate evidence must be a string")
     return Candidate(name=name, arguments=dict(arguments), confidence=float(confidence), evidence=evidence)
+
+
+def parse_candidates(text: str, *, tools: list[Any]) -> list[Candidate]:
+    """Strictly validate one or more model-generated tool-call candidates."""
+
+    value = _json_value(text)
+    values = _candidate_values(value)
+    if not values:
+        raise ValueError("completion JSON array must contain at least one candidate")
+    return [_parse_candidate_value(item, tools=tools) for item in values]
+
+
+def parse_candidate(text: str, *, tools: list[Any]) -> Candidate:
+    """Strictly validate exactly one candidate against the supplied schemas."""
+
+    value = _json_value(text)
+    if isinstance(value, list) and len(value) != 1:
+        raise ValueError("completion JSON array must contain exactly one candidate")
+    candidates = parse_candidates(text, tools=tools)
+    if len(candidates) != 1:
+        raise ValueError("candidate native tool_calls must contain exactly one call")
+    return candidates[0]
 
 
 def _compact_prompt_tools(tools: list[Any]) -> list[dict[str, Any]]:
@@ -512,9 +541,9 @@ def _aggregate_prompt(
         [
             "You are the aggregator for a parallel candidate tool-call router.",
             "Choose the best next action from the candidates for the original conversation.",
-            "Return exactly one JSON object with only these fields:",
-            '{"name":"tool_name","arguments":{},"confidence":0.0,"evidence":"short reason"}',
-            "Use only a supplied tool name and keep the selected arguments unless the conversation proves they are wrong.",
+            "Return exactly one JSON array of one or more objects with only these fields:",
+            '[{"name":"tool_name","arguments":{},"confidence":0.0,"evidence":"short reason"}]',
+            "Use only supplied tool names. Preserve each candidate argument object when selecting it; add another array item only for another independent action explicitly requested by the conversation.",
             "Do not include id, type, tool_calls, function, analysis, markdown, or extra fields.",
             "Candidates:",
             json.dumps(rows, ensure_ascii=False, separators=(",", ":")),
@@ -828,20 +857,10 @@ class ParallelCandidateProxy:
         candidate_traces.sort(key=lambda item: str(item.get("tools", [{}])[0].get("name", "")))
 
         aggregate_trace: dict[str, Any] = {}
-        selected: Candidate | None = None
+        selected_candidates: list[Candidate] = []
         fallback_used = False
         aggregate_completion = ""
-        if len(valid_candidates) == 1:
-            # There is no selection problem when exactly one candidate passed
-            # strict parsing and tool-schema validation.  Sending it through a
-            # second model call can only rewrite an already-valid argument
-            # object; BFCL has shown that this can drop required fields.  Keep
-            # the model-generated candidate verbatim and make the reason
-            # explicit in the trace instead of silently treating it as a
-            # fallback or repairing its arguments.
-            selected = valid_candidates[0]
-            aggregate_trace = {"skipped": "single valid candidate"}
-        elif valid_candidates:
+        if valid_candidates:
             aggregate, aggregate_prompt_trace = _aggregate_prompt(
                 valid_candidates,
                 tools,
@@ -866,11 +885,11 @@ class ParallelCandidateProxy:
                     "status": status,
                 }
                 try:
-                    selected = parse_candidate(aggregate_completion, tools=tools)
+                    selected_candidates = parse_candidates(aggregate_completion, tools=tools)
                 except ValueError as exc:
                     aggregate_trace["error"] = str(exc)
-        if selected is None and self.config.fallback_to_highest_confidence and valid_candidates:
-            selected = max(valid_candidates, key=lambda item: item.confidence)
+        if not selected_candidates and self.config.fallback_to_highest_confidence and valid_candidates:
+            selected_candidates = [max(valid_candidates, key=lambda item: item.confidence)]
             fallback_used = True
 
         model = str(source.get("model") or "")
@@ -887,12 +906,19 @@ class ParallelCandidateProxy:
             "candidate_count": len(valid_candidates),
             "candidate_shards": candidate_traces,
             "aggregate": aggregate_trace,
-            "selected": asdict(selected) if selected is not None else None,
+            "selected": (
+                asdict(selected_candidates[0])
+                if len(selected_candidates) == 1
+                else [asdict(item) for item in selected_candidates]
+                if selected_candidates
+                else None
+            ),
+            "selected_candidates": [asdict(item) for item in selected_candidates],
             "fallback_used": fallback_used,
         }
         if usage is not None:
             route_trace["usage"] = usage
-        if selected is None:
+        if not selected_candidates:
             content = aggregate_completion or (candidate_traces[0].get("completion", "") if candidate_traces else "")
             response = {
                 "id": f"parallel-candidate-{uuid.uuid4().hex}",
@@ -927,10 +953,11 @@ class ParallelCandidateProxy:
                                 "id": f"call_{uuid.uuid4().hex}",
                                 "type": "function",
                                 "function": {
-                                    "name": selected.name,
-                                    "arguments": json.dumps(selected.arguments, ensure_ascii=False, separators=(",", ":")),
+                                    "name": candidate.name,
+                                    "arguments": json.dumps(candidate.arguments, ensure_ascii=False, separators=(",", ":")),
                                 },
                             }
+                            for candidate in selected_candidates
                         ],
                     },
                     "finish_reason": "tool_calls",
@@ -952,4 +979,4 @@ class ParallelCandidateProxy:
         self._thread = None
 
 
-__all__ = ["Candidate", "ParallelCandidateConfig", "ParallelCandidateProxy", "parse_candidate"]
+__all__ = ["Candidate", "ParallelCandidateConfig", "ParallelCandidateProxy", "parse_candidate", "parse_candidates"]

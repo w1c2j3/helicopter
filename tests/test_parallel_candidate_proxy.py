@@ -15,6 +15,7 @@ from helicopter_cli.parallel_candidate_proxy import (
     _aggregate_prompt,
     _candidate_prompt,
     parse_candidate,
+    parse_candidates,
 )
 from helicopter_cli.rwkv_agent_prompt import (
     LongContextConfig,
@@ -158,6 +159,24 @@ def test_parse_candidate_rejects_multiple_native_tool_calls_without_selecting_on
         )
 
 
+def test_parse_candidates_accepts_strict_multi_call_array_and_native_envelope() -> None:
+    candidates = parse_candidates(
+        '[{"name":"bash","arguments":{"command":"pwd"}},'
+        '{"name":"bash","arguments":{"command":"ls"}}]',
+        tools=TOOLS,
+    )
+    assert [candidate.arguments for candidate in candidates] == [{"command": "pwd"}, {"command": "ls"}]
+
+    native = parse_candidates(
+        '{"tool_calls":['
+        '{"function":{"name":"bash","arguments":"{\\"command\\":\\"pwd\\"}"}},'
+        '{"function":{"name":"bash","arguments":"{\\"command\\":\\"ls\\"}"}}'
+        ']}',
+        tools=TOOLS,
+    )
+    assert [candidate.arguments for candidate in native] == [{"command": "pwd"}, {"command": "ls"}]
+
+
 def test_candidate_prompt_compacts_large_tool_schema() -> None:
     tools = [
         {
@@ -191,7 +210,7 @@ def test_candidate_prompt_compacts_large_tool_schema() -> None:
     assert '"command"' in prompt
 
 
-def test_proxy_keeps_single_valid_candidate_without_aggregate_rewrite(tmp_path: Path) -> None:
+def test_proxy_records_aggregate_error_before_strict_single_candidate_fallback(tmp_path: Path) -> None:
     received: list[dict[str, object]] = []
 
     class UpstreamHandler(BaseHTTPRequestHandler):
@@ -202,14 +221,16 @@ def test_proxy_keeps_single_valid_candidate_without_aggregate_rewrite(tmp_path: 
             payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
             received.append(payload)
             if "aggregator for a parallel" in payload["prompt"]:
-                raise AssertionError("a single valid candidate must not be rewritten")
+                content = '{"name":"bash","arguments":{}}'
+            else:
+                content = '{"name":"bash","arguments":{"command":"echo hi"}}'
             response = json.dumps(
                 {
                     "id": "upstream",
                     "model": payload["model"],
                     "choices": [
                         {
-                            "text": '{"name":"bash","arguments":{"command":"echo hi"}}',
+                            "text": content,
                             "finish_reason": "stop",
                         }
                     ],
@@ -255,12 +276,88 @@ def test_proxy_keeps_single_valid_candidate_without_aggregate_rewrite(tmp_path: 
         upstream.server_close()
         thread.join(timeout=5)
 
-    assert len(received) == 1
+    assert len(received) == 2
     assert result["choices"][0]["finish_reason"] == "tool_calls"
     assert result["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "bash"
     route = json.loads(trace.read_text(encoding="utf-8"))["router"]
+    assert route["fallback_used"] is True
+    assert "missing required" in route["aggregate"]["error"]
+
+
+def test_proxy_returns_multiple_strict_aggregate_tool_calls(tmp_path: Path) -> None:
+    received: list[dict[str, object]] = []
+
+    class UpstreamHandler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+            received.append(payload)
+            if "aggregator for a parallel" in payload["prompt"]:
+                content = (
+                    '[{"name":"bash","arguments":{"command":"pwd"}},'
+                    '{"name":"bash","arguments":{"command":"ls"}}]'
+                )
+            else:
+                content = '{"name":"bash","arguments":{"command":"pwd"}}'
+            response = json.dumps(
+                {
+                    "id": "upstream",
+                    "model": payload["model"],
+                    "choices": [{"text": content, "finish_reason": "stop"}],
+                }
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), UpstreamHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    trace = tmp_path / "parallel-multi.jsonl"
+    proxy = ParallelCandidateProxy(
+        f"http://127.0.0.1:{upstream.server_port}/v1",
+        api_key="secret",
+        trace_path=trace,
+        config=ParallelCandidateConfig(chunk_tools=2, batch_size=1),
+    )
+    try:
+        proxy.start()
+        source = {
+            "model": "rwkv",
+            "messages": [{"role": "user", "content": "Run pwd and ls."}],
+            "tools": TOOLS,
+            "tool_choice": "auto",
+            "temperature": 0,
+            "max_tokens": 512,
+        }
+        request = Request(
+            f"{proxy.base_url}/chat/completions",
+            data=json.dumps(source).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": "Bearer client-secret"},
+            method="POST",
+        )
+        with urlopen(request, timeout=10) as response:  # noqa: S310 - test-only local server
+            result = json.loads(response.read())
+    finally:
+        proxy.close()
+        upstream.shutdown()
+        upstream.server_close()
+        thread.join(timeout=5)
+
+    calls = result["choices"][0]["message"]["tool_calls"]
+    assert len(received) == 2
+    assert result["choices"][0]["finish_reason"] == "tool_calls"
+    assert [json.loads(call["function"]["arguments"]) for call in calls] == [
+        {"command": "pwd"},
+        {"command": "ls"},
+    ]
+    route = json.loads(trace.read_text(encoding="utf-8"))["router"]
     assert route["fallback_used"] is False
-    assert route["aggregate"] == {"skipped": "single valid candidate"}
+    assert len(route["selected_candidates"]) == 2
 
 
 def test_rwkv_prompt_uses_role_transcript_and_newest_history_budget() -> None:
