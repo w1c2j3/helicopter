@@ -395,6 +395,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evalscope.add_argument("--framework", help="External Agent Bridge framework, e.g. codex or claude-code")
     evalscope.add_argument("--agent-config", help="Agent config JSON string or JSON file")
+    evalscope.add_argument(
+        "--no-agent-config",
+        dest="no_agent_config",
+        action="store_true",
+        help="do not inject the global AgentLoop config; use the benchmark adapter's native inference path",
+    )
     evalscope.add_argument("--strategy", help="Native AgentLoop strategy")
     evalscope.add_argument("--tools", action="append", help="Native AgentLoop tool list; repeat or use comma-separated names")
     evalscope.add_argument("--agent-environment", help="Agent tool/CLI environment, local or docker")

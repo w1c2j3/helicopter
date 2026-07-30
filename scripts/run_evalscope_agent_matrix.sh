@@ -45,6 +45,15 @@ for dataset in "${DATASETS[@]}"; do
   work_dir="$WORK_ROOT/$dataset"
   mkdir -p "$work_dir"
   echo "=== START $dataset model=$MODEL_ALIAS base_url=$BASE_URL work_dir=$work_dir ==="
+  adapter_args=()
+  case "$dataset" in
+    acebench|tool_bench)
+      # These EvalScope adapters are static/single-turn adapters.  Injecting
+      # the global AgentLoop makes their benchmark-defined API calls execute
+      # against the unrelated bash tool and changes the official protocol.
+      adapter_args+=(--no-agent-config)
+      ;;
+  esac
   (
     cd "$ROOT" || exit 1
     env \
@@ -62,6 +71,7 @@ for dataset in "${DATASETS[@]}"; do
         --candidate-max-tokens 2048 \
         --aggregate-max-tokens 2048 \
         "${EVAL_BATCH_ARGS[@]}" \
+        "${adapter_args[@]}" \
         --work-dir "$work_dir"
   )
   rc=$?

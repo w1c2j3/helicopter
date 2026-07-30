@@ -353,7 +353,13 @@ def build_evalscope_plan(
         config_name="sandbox",
     )
     _append_json(command, "--sandbox", sandbox)
-    command.extend(["--agent-config", json.dumps(_agent_config(args, root=root, config=config), ensure_ascii=False, separators=(",", ":"))])
+    if not getattr(args, "no_agent_config", False):
+        command.extend(
+            [
+                "--agent-config",
+                json.dumps(_agent_config(args, root=root, config=config), ensure_ascii=False, separators=(",", ":")),
+            ]
+        )
     if pick(getattr(args, "no_timestamp", None), settings.get("no_timestamp"), False):
         command.append("--no-timestamp")
     use_cache = pick(getattr(args, "use_cache", None), settings.get("use_cache"))

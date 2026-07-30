@@ -34,6 +34,7 @@ def evalscope_args(**overrides: object) -> Namespace:
         "mode": None,
         "framework": None,
         "agent_config": None,
+        "no_agent_config": False,
         "strategy": None,
         "tools": None,
         "agent_environment": None,
@@ -221,6 +222,23 @@ class EvalScopeAgentTests(unittest.TestCase):
         self.assertEqual(agent_config["strategy"], "swe_bench_toolcall")
         self.assertEqual(agent_config["max_steps"], 250)
         self.assertIn('"max_tokens":4096', plan.command[plan.command.index("--generation-config") + 1])
+
+    def test_build_plan_can_skip_global_agent_config(self) -> None:
+        config = {
+            "models": {"demo": {"served_model_name": "demo-served"}},
+            "evalscope": {
+                "agent_config": {"strategy": "function_calling", "tools": ["bash"]},
+            },
+        }
+
+        plan = build_evalscope_plan(
+            evalscope_args(datasets=["acebench"], no_agent_config=True),
+            root=ROOT,
+            env={},
+            config=config,
+        )
+
+        self.assertNotIn("--agent-config", plan.command)
 
     def test_bridge_cli_overrides_framework_and_timeout(self) -> None:
         config = {
