@@ -17,6 +17,12 @@ shift 3
 WORK_ROOT="${WORK_ROOT:-$ROOT/results/evalscope/retest-${LABEL}-$(date +%Y%m%d_%H%M%S)}"
 GENERATION_CONFIG="${GENERATION_CONFIG:-experiments/evalscope_agent/flower-nocot-generation-2048.json}"
 API_KEY="${HELICOPTER_EVAL_API_KEY:-rwkv-skills}"
+EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-}"
+
+EVAL_BATCH_ARGS=()
+if [[ -n "$EVAL_BATCH_SIZE" ]]; then
+  EVAL_BATCH_ARGS=(--eval-batch-size "$EVAL_BATCH_SIZE")
+fi
 
 if (($#)); then
   DATASETS=("$@")
@@ -55,6 +61,7 @@ for dataset in "${DATASETS[@]}"; do
         --parallel-candidate-router \
         --candidate-max-tokens 2048 \
         --aggregate-max-tokens 2048 \
+        "${EVAL_BATCH_ARGS[@]}" \
         --work-dir "$work_dir"
   )
   rc=$?
