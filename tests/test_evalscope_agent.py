@@ -39,6 +39,7 @@ def evalscope_args(**overrides: object) -> Namespace:
         "tools": None,
         "agent_environment": None,
         "agent_timeout": None,
+        "request_timeout": None,
         "max_steps": None,
         "limit": 2,
         "eval_batch_size": None,
@@ -222,6 +223,35 @@ class EvalScopeAgentTests(unittest.TestCase):
         self.assertEqual(agent_config["strategy"], "swe_bench_toolcall")
         self.assertEqual(agent_config["max_steps"], 250)
         self.assertIn('"max_tokens":4096', plan.command[plan.command.index("--generation-config") + 1])
+
+    def test_build_plan_injects_finite_request_timeout_without_overriding_generation_config(self) -> None:
+        config = {
+            "models": {"demo": {"served_model_name": "demo-served"}},
+            "evalscope": {
+                "request_timeout": 321,
+                "generation_config": {"max_tokens": 2048},
+            },
+        }
+
+        plan = build_evalscope_plan(evalscope_args(), root=ROOT, env={}, config=config)
+        generation_config = json.loads(plan.command[plan.command.index("--generation-config") + 1])
+
+        self.assertEqual(generation_config["timeout"], 321.0)
+
+        explicit = build_evalscope_plan(
+            evalscope_args(request_timeout=111, generation_config={"max_tokens": 2048, "timeout": 17}),
+            root=ROOT,
+            env={},
+            config=config,
+        )
+        explicit_config = json.loads(explicit.command[explicit.command.index("--generation-config") + 1])
+        self.assertEqual(explicit_config["timeout"], 17)
+
+    def test_request_timeout_cli_option_is_exposed(self) -> None:
+        args = build_parser().parse_args(
+            ["eval", "evalscope", "demo", "general_fc", "--request-timeout", "42"]
+        )
+        self.assertEqual(args.request_timeout, 42.0)
 
     def test_build_plan_can_skip_global_agent_config(self) -> None:
         config = {

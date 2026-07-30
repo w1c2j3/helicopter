@@ -405,6 +405,11 @@ def build_parser() -> argparse.ArgumentParser:
     evalscope.add_argument("--tools", action="append", help="Native AgentLoop tool list; repeat or use comma-separated names")
     evalscope.add_argument("--agent-environment", help="Agent tool/CLI environment, local or docker")
     evalscope.add_argument("--agent-timeout", type=float, help="External Agent Bridge per-sample timeout")
+    evalscope.add_argument(
+        "--request-timeout",
+        type=float,
+        help="per-request model inference timeout in seconds; forwarded as EvalScope generation_config.timeout",
+    )
     evalscope.add_argument("--max-steps", type=int, help="Native AgentLoop step cap")
     evalscope.add_argument("--limit", help="maximum samples per dataset; integer or fraction")
     evalscope.add_argument("--eval-batch-size", type=int)

@@ -31,6 +31,11 @@ from .runner import run_command
 
 DEFAULT_CATALOG = "benchmarks/evalscope_agent_datasets.json"
 DEFAULT_OUTPUT_DIR = "results/evalscope"
+# RWKV Agent requests can legitimately take several minutes with a full
+# context.  Keep a finite default so one stalled HTTP response cannot hold a
+# full benchmark indefinitely; callers can override it or explicitly set
+# generation_config.timeout to null when they need the legacy behavior.
+DEFAULT_REQUEST_TIMEOUT_S = 600.0
 DEFAULT_AGENT_CONFIG: dict[str, Any] = {
     "strategy": "function_calling",
     "tools": ["bash"],
@@ -336,6 +341,19 @@ def build_evalscope_plan(
         arg_name="generation_config",
         config_name="generation_config",
     )
+    request_timeout = pick(
+        getattr(args, "request_timeout", None),
+        settings.get("request_timeout"),
+        DEFAULT_REQUEST_TIMEOUT_S,
+    )
+    if "timeout" not in generation_config:
+        try:
+            request_timeout = float(request_timeout)
+        except (TypeError, ValueError) as error:
+            raise SystemExit("EvalScope request timeout must be a positive number") from error
+        if request_timeout <= 0:
+            raise SystemExit("EvalScope request timeout must be a positive number")
+        generation_config["timeout"] = request_timeout
     _append_json(command, "--generation-config", generation_config)
     dataset_args = _config_json(
         args,
