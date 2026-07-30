@@ -37,6 +37,41 @@ DEFAULT_AGENT_CONFIG: dict[str, Any] = {
     "environment": "docker",
     "max_steps": 10,
 }
+_LOCAL_EVALSCOPE_PROXY_ENV = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+)
+
+
+def _evalscope_child_env(environment: dict[str, str], api_url: str) -> dict[str, str]:
+    """Prepare the EvalScope child environment for a local model endpoint.
+
+    httpx initializes a proxy transport from ``all_proxy`` even when the
+    request target is covered by ``NO_PROXY``.  A local EvalScope run must not
+    fail before the first model request because a desktop SOCKS proxy is
+    present in the inherited tmux environment.  Remote endpoints retain the
+    caller's environment unchanged.
+    """
+
+    child = dict(environment)
+    if not is_local_base_url(api_url):
+        return child
+    for key in _LOCAL_EVALSCOPE_PROXY_ENV:
+        child.pop(key, None)
+    no_proxy_values = {
+        item.strip()
+        for item in str(child.get("NO_PROXY") or child.get("no_proxy") or "").split(",")
+        if item.strip()
+    }
+    no_proxy_values.update({"localhost", "127.0.0.1", "::1"})
+    no_proxy = ",".join(sorted(no_proxy_values))
+    child["NO_PROXY"] = no_proxy
+    child["no_proxy"] = no_proxy
+    return child
 
 
 def _catalog_path(root: Path, value: str | None) -> Path:
@@ -557,7 +592,14 @@ def run_evalscope(args: Any, *, root: Path, env: dict[str, str], config: dict[st
                 api_url=proxy.base_url,
             )
             print(f"evalscope: parallel-candidate proxy listening at {proxy.base_url}; upstream {base_url}")
-        run_exit_code = run_command(plan.command, cwd=plan.cwd, env=plan.env, shown_env=plan.shown_env, dry_run=False)
+        child_env = _evalscope_child_env(plan.env, plan.command[plan.command.index("--api-url") + 1])
+        run_exit_code = run_command(
+            plan.command,
+            cwd=plan.cwd,
+            env=child_env,
+            shown_env=plan.shown_env,
+            dry_run=False,
+        )
         return run_exit_code
     finally:
         if proxy is not None:

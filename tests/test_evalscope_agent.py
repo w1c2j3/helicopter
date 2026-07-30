@@ -13,6 +13,7 @@ from helicopter_cli.evalscope_agent import (
     load_agent_catalog,
     _latest_evalscope_work_dir,
     _infer_plan,
+    _evalscope_child_env,
     run_evalscope,
 )
 from helicopter_cli.__main__ import build_parser
@@ -65,6 +66,33 @@ def evalscope_args(**overrides: object) -> Namespace:
 
 
 class EvalScopeAgentTests(unittest.TestCase):
+    def test_local_evalscope_child_removes_both_proxy_spellings(self) -> None:
+        environment = {
+            "HTTP_PROXY": "http://proxy:8080",
+            "ALL_PROXY": "socks5h://proxy:1080",
+            "http_proxy": "http://proxy:8080",
+            "all_proxy": "socks5h://proxy:1080",
+            "NO_PROXY": "model.internal",
+            "KEEP": "yes",
+        }
+
+        child = _evalscope_child_env(environment, "http://127.0.0.1:29572/v1")
+
+        self.assertNotIn("ALL_PROXY", child)
+        self.assertNotIn("all_proxy", child)
+        self.assertNotIn("HTTP_PROXY", child)
+        self.assertNotIn("http_proxy", child)
+        self.assertIn("127.0.0.1", child["NO_PROXY"])
+        self.assertEqual(child["KEEP"], "yes")
+
+    def test_remote_evalscope_child_preserves_proxy_environment(self) -> None:
+        environment = {"ALL_PROXY": "socks5h://proxy:1080"}
+
+        self.assertEqual(
+            _evalscope_child_env(environment, "https://eval.example/v1"),
+            environment,
+        )
+
     def test_external_mode_is_a_supported_cli_choice(self) -> None:
         args = build_parser().parse_args(["eval", "evalscope", "demo", "general_fc", "--mode", "external"])
         self.assertEqual(args.mode, "external")
