@@ -831,7 +831,17 @@ class ParallelCandidateProxy:
         selected: Candidate | None = None
         fallback_used = False
         aggregate_completion = ""
-        if valid_candidates:
+        if len(valid_candidates) == 1:
+            # There is no selection problem when exactly one candidate passed
+            # strict parsing and tool-schema validation.  Sending it through a
+            # second model call can only rewrite an already-valid argument
+            # object; BFCL has shown that this can drop required fields.  Keep
+            # the model-generated candidate verbatim and make the reason
+            # explicit in the trace instead of silently treating it as a
+            # fallback or repairing its arguments.
+            selected = valid_candidates[0]
+            aggregate_trace = {"skipped": "single valid candidate"}
+        elif valid_candidates:
             aggregate, aggregate_prompt_trace = _aggregate_prompt(
                 valid_candidates,
                 tools,
