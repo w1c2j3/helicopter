@@ -362,6 +362,18 @@ def _compact_prompt_tools(tools: list[Any]) -> list[dict[str, Any]]:
     return output
 
 
+def _compact_prompt_tool_names(tools: list[Any]) -> list[str]:
+    """Return the validated tool-name catalog used by the aggregator.
+
+    Candidate arguments have already been schema-validated before the
+    aggregator runs. Repeating every parameter schema in the aggregate prompt
+    makes large Agent tool inventories exceed the model context budget without
+    adding information needed to choose among the candidates.
+    """
+
+    return [str(schema["name"]) for schema in _schemas(tools)]
+
+
 def _candidate_prompt(
     tools: list[Any],
     messages: list[dict[str, str]],
@@ -416,8 +428,8 @@ def _aggregate_prompt(
             "Do not include id, type, tool_calls, function, analysis, markdown, or extra fields.",
             "Candidates:",
             json.dumps(rows, ensure_ascii=False, separators=(",", ":")),
-            "Valid tools:",
-            json.dumps(_compact_prompt_tools(tools), ensure_ascii=False, separators=(",", ":")),
+            "Valid tool names:",
+            json.dumps(_compact_prompt_tool_names(tools), ensure_ascii=False, separators=(",", ":")),
         ]
     )
     return build_rwkv_json_call_prompt(

@@ -9,8 +9,10 @@ from urllib.request import Request, urlopen
 import pytest
 
 from helicopter_cli.parallel_candidate_proxy import (
+    Candidate,
     ParallelCandidateConfig,
     ParallelCandidateProxy,
+    _aggregate_prompt,
     parse_candidate,
 )
 from helicopter_cli.rwkv_agent_prompt import (
@@ -226,6 +228,35 @@ def test_rwkv_flower_json_prompt_uses_g1h_nocot_transcript() -> None:
     assert "User\u273fSystem:\nSource system instruction.\u273f" in prompt
     assert "User\u273fRun the requested action.\u273f" in prompt
     assert prompt.endswith("Bot\u273f<think></think>\n```json\n")
+
+
+def test_aggregate_prompt_bounds_large_tool_catalog_after_candidate_validation() -> None:
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": f"tool_{index}",
+                "description": "A long tool description. " * 80,
+                "parameters": {
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "required": ["value"],
+                },
+            },
+        }
+        for index in range(40)
+    ]
+    prompt, trace = _aggregate_prompt(
+        [Candidate(name="tool_0", arguments={"value": "ok"}, confidence=0.9, evidence="validated")],
+        tools,
+        [{"role": "user", "content": "Run the best available action."}],
+        config=ParallelCandidateConfig(prompt_max_chars=2048, context_chars=256),
+    )
+
+    assert trace["prompt_over_budget"] is False
+    assert "Valid tool names:" in prompt
+    assert '"tool_0"' in prompt
+    assert '"properties"' not in prompt
 
 
 def test_parallel_candidate_proxy_returns_validated_tool_call_and_trace(tmp_path) -> None:
