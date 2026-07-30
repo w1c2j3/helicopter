@@ -309,9 +309,26 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
     rows: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # JSONL records are delimited by LF.  ``str.splitlines()`` also splits on
+    # Unicode separators that may legitimately occur inside a raw model/tool
+    # payload, which would turn one record into several false failures.
+    for line_number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").split("\n"), start=1):
         if line.strip():
-            value = json.loads(line)
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError as error:
+                # EvalScope has already emitted the raw artifact.  Preserve a
+                # malformed line for diagnosis instead of dropping the sample
+                # or aborting the entire acceptance report.
+                rows.append(
+                    {
+                        "__helicopter_jsonl_error__": True,
+                        "__line_number__": line_number,
+                        "__raw_line__": line,
+                        "__error__": f"invalid JSONL at line {line_number}: {error.msg}",
+                    }
+                )
+                continue
             if isinstance(value, dict):
                 rows.append(value)
     return rows
@@ -552,6 +569,41 @@ def write_acceptance_report(
         for position, prediction in enumerate(prediction_rows):
             review = review_rows[position] if position < len(review_rows) else {}
             dataset = _dataset_name_from_path(prediction_path)
+            if prediction.get("__helicopter_jsonl_error__"):
+                reference = review.get("target")
+                reference_answer = str(reference) if reference not in (None, "") else None
+                sample_score = review.get("sample_score")
+                raw_line = str(prediction.get("__raw_line__") or "")
+                error = str(prediction.get("__error__") or "malformed JSONL prediction")
+                extraction = _failed("result_artifact", raw_line, error, status="serialization_error")
+                decision = DiscriminationResult(
+                    "serialization_error",
+                    error,
+                    None,
+                    reference_answer,
+                    raw_line,
+                )
+                samples.append(
+                    {
+                        "dataset": dataset,
+                        "index": review.get("index", position),
+                        "prediction_path": _report_path(prediction_path),
+                        "review_path": _report_path(review_path) if review_path.is_file() else None,
+                        "format_kind": "result_artifact",
+                        "reference_answer": reference_answer,
+                        "official_sample_score": sample_score,
+                        "messages": None,
+                        "raw_model_output": {
+                            "serialization_error": error,
+                            "line_number": prediction.get("__line_number__"),
+                            "raw_line": raw_line,
+                        },
+                        "extraction": extraction.to_dict(),
+                        "decision": decision.to_dict(),
+                        "agent_trace": None,
+                    }
+                )
+                continue
             format_kind = _dataset_format(dataset, prediction=prediction, review=review)
             raw, tool_calls, finish_reason = _model_output_parts(prediction)
             extraction = extract_agent_answer(

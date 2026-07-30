@@ -159,6 +159,31 @@ def test_acceptance_report_joins_official_target_and_raw_prediction(tmp_path) ->
     assert report["official_reports"][0]["report"]["score"] == 0.0
 
 
+def test_acceptance_report_preserves_malformed_prediction_jsonl(tmp_path) -> None:
+    prediction_dir = tmp_path / "predictions" / "model"
+    review_dir = tmp_path / "reviews" / "model"
+    prediction_dir.mkdir(parents=True)
+    review_dir.mkdir(parents=True)
+    (prediction_dir / "gaia_2023_level1.jsonl").write_text(
+        '{"model_output":{"choices":[{"message":{"content":"bad\x85\\u"}}]}}\n',
+        encoding="utf-8",
+    )
+    (review_dir / "gaia_2023_level1.jsonl").write_text(
+        json.dumps({"index": 7, "target": "17", "sample_score": {"score": {"value": {"acc": 0.0}}}}) + "\n",
+        encoding="utf-8",
+    )
+
+    output = write_acceptance_report(tmp_path, exit_code=0)
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["counts"] == {"serialization_error": 1}
+    assert len(report["samples"]) == 1
+    sample = report["samples"][0]
+    assert sample["index"] == 7
+    assert sample["extraction"]["status"] == "serialization_error"
+    assert "bad" in sample["extraction"]["raw_response"]
+    assert "\\u" in sample["extraction"]["raw_response"]
+
+
 def test_acceptance_report_respects_general_fc_no_call_labels(tmp_path) -> None:
     prediction_dir = tmp_path / "predictions" / "model"
     review_dir = tmp_path / "reviews" / "model"
