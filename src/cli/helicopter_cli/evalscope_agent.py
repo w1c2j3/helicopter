@@ -362,6 +362,8 @@ def build_evalscope_plan(
         arg_name="model_args",
         config_name="model_args",
     )
+    if "timeout" not in model_args and generation_config.get("timeout") is not None:
+        model_args["timeout"] = generation_config["timeout"]
     _append_json(command, "--model-args", model_args)
     dataset_args = _config_json(
         args,

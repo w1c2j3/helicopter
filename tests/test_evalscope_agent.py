@@ -264,7 +264,23 @@ class EvalScopeAgentTests(unittest.TestCase):
 
         self.assertEqual(
             json.loads(plan.command[plan.command.index("--model-args") + 1]),
-            {"max_retries": 0},
+            {"max_retries": 0, "timeout": 600.0},
+        )
+
+    def test_explicit_model_client_timeout_is_preserved(self) -> None:
+        config = {
+            "models": {"demo": {"served_model_name": "demo-served"}},
+            "evalscope": {
+                "request_timeout": 321,
+                "model_args": {"max_retries": 0, "timeout": 17},
+            },
+        }
+
+        plan = build_evalscope_plan(evalscope_args(), root=ROOT, env={}, config=config)
+
+        self.assertEqual(
+            json.loads(plan.command[plan.command.index("--model-args") + 1]),
+            {"max_retries": 0, "timeout": 17},
         )
 
     def test_build_plan_can_skip_global_agent_config(self) -> None:
