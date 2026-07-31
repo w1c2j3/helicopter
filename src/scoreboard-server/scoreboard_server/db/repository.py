@@ -452,6 +452,92 @@ class ScoreboardStore:
     async def insert_completion_payload(self, *, payload: dict[str, Any], task_id: str) -> None:
         await self.insert_completion_payloads_batch(payloads=[payload], task_id=task_id)
 
+    async def insert_completion_eval_payloads_bulk(
+        self,
+        *,
+        completion_payloads: Sequence[dict[str, Any]],
+        eval_payloads: Sequence[dict[str, Any]],
+        task_id: str,
+    ) -> tuple[int, int]:
+        """Insert an official run without one database round trip per sample.
+
+        Large EvalScope Agent runs carry the full prediction and review in
+        JSONB.  The legacy ingestion path intentionally upserts each row and
+        is useful for resumable interactive runs, but it is prohibitively slow
+        for a completed official report.  This path bulk-inserts new rows,
+        keeps the same canonicalization rules, and leaves existing rows intact
+        so a repeated import remains idempotent.
+        """
+
+        await self._ensure_db()
+        task = await Task.get(task_id=int(task_id))
+        accepted = [
+            payload
+            for payload in completion_payloads
+            if str(payload.get("_stage", "answer")).strip().lower() in {"answer", "generation"}
+        ]
+        if not accepted:
+            return 0, 0
+        existing = await self.list_completion_keys(task_id=task_id)
+        new_payloads: list[dict[str, Any]] = []
+        for payload in accepted:
+            key = (
+                parse_nonneg_int(payload.get("sample_index"), "sample_index"),
+                parse_nonneg_int(payload.get("repeat_index"), "repeat_index"),
+                parse_nonneg_int(payload.get("pass_index", 0), "pass_index"),
+            )
+            if key not in existing:
+                new_payloads.append(payload)
+
+        from scoreboard_server.db.models import Completion as CompletionModel
+
+        async with in_transaction():
+            if new_payloads:
+                await CompletionModel.bulk_create(
+                    [
+                        CompletionModel(
+                            task=task,
+                            sample_index=parse_nonneg_int(payload.get("sample_index"), "sample_index"),
+                            avg_repeat_index=parse_nonneg_int(payload.get("repeat_index"), "repeat_index"),
+                            pass_index=parse_nonneg_int(payload.get("pass_index", 0), "pass_index"),
+                            context=self._build_completion_context(payload),
+                            created_at=now_utc_naive(),
+                            status=canonical_completion_status(payload.get("status", "Completed")),
+                        )
+                        for payload in new_payloads
+                    ],
+                    batch_size=250,
+                )
+
+            mapping = await self._completion_id_map(task_id=task_id, status="Completed")
+            existing_eval = {
+                row.completion_id
+                for row in await EvalRecord.filter(completion__task_id=int(task_id)).only("completion_id")
+            }
+            eval_rows = []
+            for payload in eval_payloads:
+                key = (
+                    parse_nonneg_int(payload.get("sample_index"), "sample_index"),
+                    parse_nonneg_int(payload.get("repeat_index"), "repeat_index"),
+                    parse_nonneg_int(payload.get("pass_index", 0), "pass_index"),
+                )
+                completion_id = mapping.get(key)
+                if completion_id is None or completion_id in existing_eval:
+                    continue
+                eval_rows.append(
+                    EvalRecord(
+                        completion_id=completion_id,
+                        answer=self._bounded_text(payload.get("answer"), 65_536),
+                        ref_answer=self._bounded_text(self._extract_reference_answer(payload), 4_096),
+                        is_passed=bool(payload.get("is_passed", False)),
+                        fail_reason=self._bounded_text(payload.get("fail_reason"), 2_048),
+                        created_at=now_utc_naive(),
+                    )
+                )
+            if eval_rows:
+                await EvalRecord.bulk_create(eval_rows, batch_size=250)
+        return len(new_payloads), len(eval_rows)
+
     async def ingest_eval_payloads(self, *, payloads: Iterable[dict[str, Any]], task_id: str) -> int:
         await self._ensure_db()
         mapping = await self._completion_id_map(task_id=task_id, status="Completed")

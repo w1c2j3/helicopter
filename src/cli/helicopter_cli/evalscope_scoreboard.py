@@ -290,27 +290,27 @@ async def persist_import_plan(
             "context_audit": plan.context_audit,
         }
         config_path = str(plan.work_dir / "configs" / "task_config.yaml")
-        task_id, inserted = await store.insert_completion_payloads_with_task(
-            payloads=plan.completion_payloads,
-            task_id=None,
+        task_id = await store.get_or_create_task(
             job_name=job_name,
+            job_id=None,
             dataset=plan.benchmark,
             model=plan.model_name,
             is_param_search=False,
             sampling_config=sampling_config,
             config_path=config_path if Path(config_path).is_file() else None,
             allow_resume=True,
-            num_samples=int(plan.report.get("score_num") or plan.context_audit["samples"]),
         )
-        if task_id is None:
-            raise RuntimeError("EvalScope import produced no completed completion payloads")
-        await store.ingest_eval_payloads(payloads=plan.eval_payloads, task_id=task_id)
+        inserted, inserted_evals = await store.insert_completion_eval_payloads_bulk(
+            completion_payloads=plan.completion_payloads,
+            eval_payloads=plan.eval_payloads,
+            task_id=task_id,
+        )
         metrics = {
             "score": plan.report.get("score"),
             "official_report": plan.report,
             "context_audit": plan.context_audit,
             "imported_completions": inserted,
-            "imported_evals": len(plan.eval_payloads),
+            "imported_evals": inserted_evals,
             "work_dir": str(plan.work_dir),
         }
         await store.record_score_payload(
@@ -320,7 +320,7 @@ async def persist_import_plan(
         )
         if plan.invalid_reviews:
             await store.update_task_status(task_id=task_id, status="Failed")
-        return f"task={task_id} completions={inserted} evals={len(plan.eval_payloads)} score={plan.report.get('score')}"
+        return f"task={task_id} completions={inserted} evals={inserted_evals} score={plan.report.get('score')}"
     finally:
         await close_db()
 
@@ -338,4 +338,3 @@ def cleanup_json_artifacts(work_dir: Path) -> int:
             path.unlink()
             removed += 1
     return removed
-
