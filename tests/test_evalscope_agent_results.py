@@ -382,6 +382,54 @@ def test_acceptance_report_classifies_acebench_prose_as_wire_format_failure(tmp_
     assert report["samples"][0]["extraction"]["raw_response"] == "I should call send_message."
 
 
+def test_bfcl_v4_content_json_is_strictly_extracted() -> None:
+    result = extract_agent_answer(
+        '[{"validateUserInput": "{\\"inputField\\":\\"userInputField\\",\\"isComplete\\":\\"true\\"}"}]',
+        format_kind="bfcl_v4",
+    )
+    assert result.status == "ok"
+    assert json.loads(result.extracted_answer or "") == [
+        {"validateUserInput": {"inputField": "userInputField", "isComplete": "true"}}
+    ]
+    assert extract_agent_answer("[]", format_kind="bfcl_v4").status == "ok"
+    assert extract_agent_answer("not-json", format_kind="bfcl_v4").status == "format_invalid"
+
+
+def test_acceptance_report_uses_bfcl_v4_wire_parser_and_official_acc(tmp_path) -> None:
+    prediction_dir = tmp_path / "predictions" / "model"
+    review_dir = tmp_path / "reviews" / "model"
+    prediction_dir.mkdir(parents=True)
+    review_dir.mkdir(parents=True)
+    prediction = {
+        "index": 0,
+        "model_output": {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": '[{"validateUserInput": "{\\"inputField\\":\\"userInputField\\",\\"isComplete\\":\\"true\\"}"}]',
+                        "tool_calls": None,
+                    },
+                }
+            ]
+        },
+        "metadata": {},
+    }
+    review = {
+        "index": 0,
+        "target": '[{"validateUserInput": {"inputField": ["userInputField"], "isComplete": [true]}}]',
+        "sample_score": {"score": {"value": {"acc": 1.0}}},
+    }
+    (prediction_dir / "bfcl_v4_simple_python.jsonl").write_text(json.dumps(prediction) + "\n", encoding="utf-8")
+    (review_dir / "bfcl_v4_simple_python.jsonl").write_text(json.dumps(review) + "\n", encoding="utf-8")
+
+    output = write_acceptance_report(tmp_path, exit_code=0)
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["counts"] == {"correct": 1}
+    assert report["samples"][0]["format_kind"] == "bfcl_v4"
+    assert report["samples"][0]["extraction"]["status"] == "ok"
+
+
 def test_acceptance_report_can_use_trace_report_from_an_outer_proxy_dir(tmp_path) -> None:
     run_dir = tmp_path / "20260726_120000"
     prediction_dir = run_dir / "predictions" / "model"

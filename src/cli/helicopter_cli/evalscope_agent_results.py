@@ -63,6 +63,46 @@ def extract_agent_answer(
     raw = str(raw_response or "")
     kind = str(format_kind).strip().lower()
 
+    if kind in {"bfcl_v4", "bfcl_json", "bfcl_function_calling"}:
+        candidate = raw.strip()
+        try:
+            value = json.loads(candidate)
+        except json.JSONDecodeError as error:
+            return _failed(kind, raw, f"invalid BFCL-v4 JSON answer: {error.msg}", status="format_invalid")
+        if not isinstance(value, list):
+            return _failed(kind, raw, "BFCL-v4 answer must be a JSON array", status="format_invalid")
+        normalized: list[dict[str, Any]] = []
+        for position, item in enumerate(value):
+            if not isinstance(item, dict) or len(item) != 1:
+                return _failed(
+                    kind,
+                    raw,
+                    f"BFCL-v4 item {position} must be an object with exactly one function entry",
+                    status="format_invalid",
+                )
+            name, arguments = next(iter(item.items()))
+            if not isinstance(name, str) or not name:
+                return _failed(kind, raw, f"BFCL-v4 item {position} has an invalid function name", status="format_invalid")
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except json.JSONDecodeError as error:
+                    return _failed(
+                        kind,
+                        raw,
+                        f"BFCL-v4 item {position} has invalid JSON arguments: {error.msg}",
+                        status="format_invalid",
+                    )
+            if not isinstance(arguments, dict):
+                return _failed(
+                    kind,
+                    raw,
+                    f"BFCL-v4 item {position} arguments must be a JSON object",
+                    status="format_invalid",
+                )
+            normalized.append({name: arguments})
+        return ExtractionResult(kind, raw, json.dumps(normalized, ensure_ascii=False, sort_keys=True), "ok")
+
     if kind in {"function_calling", "tool_call", "tool_calls"}:
         if tool_calls is None or (isinstance(tool_calls, list) and not tool_calls):
             if expected_tool_call is False:
@@ -336,6 +376,8 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def _dataset_format(dataset: str, *, prediction: dict[str, Any], review: dict[str, Any]) -> str:
     name = dataset.casefold()
+    if name == "bfcl_v4":
+        return "bfcl_v4"
     # These Agent benchmarks expose tools to the model and return native
     # tool-call messages during the AgentLoop.  Keep them on the strict
     # function-calling path even when their prediction filename does not
@@ -344,7 +386,6 @@ def _dataset_format(dataset: str, *, prediction: dict[str, Any], review: dict[st
         "acebench",
         "bfcl",
         "bfcl_v3",
-        "bfcl_v4",
         "claw_eval",
         "general_fc",
         "k2_verifier",
@@ -479,6 +520,38 @@ def _function_call_decision(
     return decision
 
 
+def _bfcl_v4_decision(
+    extraction: ExtractionResult,
+    decision: DiscriminationResult,
+    *,
+    sample_score: Any,
+) -> DiscriminationResult:
+    """Use BFCL-v4's official per-sample result after strict wire parsing."""
+
+    if extraction.format_kind != "bfcl_v4" or extraction.status != "ok":
+        return decision
+    value = sample_score.get("score", {}).get("value", {}) if isinstance(sample_score, dict) else {}
+    acc = value.get("acc") if isinstance(value, dict) else None
+    if isinstance(acc, (int, float)) and not isinstance(acc, bool):
+        accepted = float(acc) == 1.0
+        return DiscriminationResult(
+            "correct" if accepted else "model_error",
+            "official BFCL-v4 scorer accepted the strictly parsed model output"
+            if accepted
+            else "official BFCL-v4 scorer rejected the strictly parsed model output",
+            extraction.extracted_answer,
+            decision.reference_answer,
+            decision.raw_response,
+        )
+    return DiscriminationResult(
+        "unscored",
+        "BFCL-v4 sample did not contain an official acc result",
+        extraction.extracted_answer,
+        decision.reference_answer,
+        decision.raw_response,
+    )
+
+
 def _agent_trace_decision(
     prediction: dict[str, Any],
     decision: DiscriminationResult,
@@ -594,6 +667,8 @@ def _dataset_name_from_path(path: Path) -> str:
     stem = path.stem
     known_prefixes = (
         "automation_bench",
+        "bfcl_v4",
+        "bfcl_v3",
         "bfcl",
         "browsecomp",
         "general_fc",
@@ -688,6 +763,7 @@ def write_acceptance_report(
                 expected_tool_call=_expected_tool_call(prediction, review),
                 sample_score=sample_score,
             )
+            decision = _bfcl_v4_decision(extraction, decision, sample_score=sample_score)
             decision = _agent_trace_decision(prediction, decision)
             samples.append({
                 "dataset": dataset,
