@@ -23,7 +23,7 @@ eval = [
 ]
 
 agent = [
-  "evalscope[bfcl,mcp,sandbox]>=1.9.1,<2.0.0",
+  "evalscope[bfcl,mcp,sandbox,wide-search]>=1.9.1,<2.0.0",
 ]
 
 swe-bench = [

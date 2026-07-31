@@ -808,7 +808,7 @@ name = "cuda-bindings"
 version = "13.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cuda-pathfinder", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-eval') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra != 'group-10-helicopter-agent') or (sys_platform == 'win32' and extra == 'group-10-helicopter-eval') or (sys_platform == 'win32' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'win32' and extra != 'group-10-helicopter-agent')" },
+    { name = "cuda-pathfinder", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (sys_platform == 'emscripten' and extra != 'group-10-helicopter-eval' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra != 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'win32' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (sys_platform == 'win32' and extra != 'group-10-helicopter-eval' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'win32' and extra != 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ce/67/5e7dba1ba576dd73da5dee894ca076ca5e959450dfff66d6d510a255d1f7/cuda_bindings-13.3.1-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:c7855c4868aabc0cfae28abbe83d56734bdfbd08f08fc234ac1912a12858bf49", size = 6025351, upload-time = "2026-05-29T23:11:49.685Z" },
@@ -914,37 +914,37 @@ wheels = [
 
 [package.optional-dependencies]
 cublas = [
-    { name = "nvidia-cublas", marker = "sys_platform == 'linux' or (sys_platform == 'win32' and extra != 'group-10-helicopter-agent') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
+    { name = "nvidia-cublas", marker = "sys_platform == 'linux' or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
 ]
 cudart = [
-    { name = "nvidia-cuda-runtime", version = "13.0.96", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux' or (sys_platform == 'win32' and extra != 'group-10-helicopter-agent') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
+    { name = "nvidia-cuda-runtime", version = "13.0.96", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux' or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
 ]
 cufft = [
-    { name = "nvidia-cufft", marker = "sys_platform == 'linux' or (sys_platform == 'win32' and extra != 'group-10-helicopter-agent') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
+    { name = "nvidia-cufft", marker = "sys_platform == 'linux' or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
 ]
 cufile = [
     { name = "nvidia-cufile", marker = "sys_platform == 'linux' or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
 ]
 cupti = [
-    { name = "nvidia-cuda-cupti", marker = "sys_platform == 'linux' or (sys_platform == 'win32' and extra != 'group-10-helicopter-agent') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
+    { name = "nvidia-cuda-cupti", marker = "sys_platform == 'linux' or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
 ]
 curand = [
-    { name = "nvidia-curand", marker = "sys_platform == 'linux' or (sys_platform == 'win32' and extra != 'group-10-helicopter-agent') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
+    { name = "nvidia-curand", marker = "sys_platform == 'linux' or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
 ]
 cusolver = [
-    { name = "nvidia-cusolver", marker = "sys_platform == 'linux' or (sys_platform == 'win32' and extra != 'group-10-helicopter-agent') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
+    { name = "nvidia-cusolver", marker = "sys_platform == 'linux' or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
 ]
 cusparse = [
-    { name = "nvidia-cusparse", marker = "sys_platform == 'linux' or (sys_platform == 'win32' and extra != 'group-10-helicopter-agent') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
+    { name = "nvidia-cusparse", marker = "sys_platform == 'linux' or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
 ]
 nvjitlink = [
-    { name = "nvidia-nvjitlink", marker = "sys_platform == 'linux' or (sys_platform == 'win32' and extra != 'group-10-helicopter-agent') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
+    { name = "nvidia-nvjitlink", marker = "sys_platform == 'linux' or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
 ]
 nvrtc = [
-    { name = "nvidia-cuda-nvrtc", version = "13.0.88", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux' or (sys_platform == 'win32' and extra != 'group-10-helicopter-agent') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
+    { name = "nvidia-cuda-nvrtc", version = "13.0.88", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux' or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
 ]
 nvtx = [
-    { name = "nvidia-nvtx", marker = "sys_platform == 'linux' or (sys_platform == 'win32' and extra != 'group-10-helicopter-agent') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
+    { name = "nvidia-nvtx", marker = "sys_platform == 'linux' or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
 ]
 
 [[package]]
@@ -1050,6 +1050,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/22/22/73e46ac7a8c25e7ef0b3bd6f10da3465021d90219a32eb0b4d2afea4c56e/datasets-4.8.4.tar.gz", hash = "sha256:a1429ed853275ce7943a01c6d2e25475b4501eb758934362106a280470df3a52", size = 604382, upload-time = "2026-03-23T14:21:17.987Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b0/e5/247d094108e42ac26363ab8dc57f168840cf7c05774b40ffeb0d78868fcc/datasets-4.8.4-py3-none-any.whl", hash = "sha256:cdc8bee4698e549d78bf1fed6aea2eebc760b22b084f07e6fc020c6577a6ce6d", size = 526991, upload-time = "2026-03-23T14:21:15.89Z" },
+]
+
+[[package]]
+name = "dateparser"
+version = "1.4.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-dateutil" },
+    { name = "pytz" },
+    { name = "regex" },
+    { name = "tzlocal" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d3/f4/561c49bca97af561d34eed27e3e831135eb5cb88e754c1150be41820f5c6/dateparser-1.4.1.tar.gz", hash = "sha256:f265df13c0380e2e07543ba74b67c0681aaa1096981ffcd35227e1aa0cb81c7c", size = 314734, upload-time = "2026-06-15T08:45:47.659Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8b/7c/2e5dcf53909deddd0bf38cbe277ad9806be038276b1c6c436561b4d9b2e2/dateparser-1.4.1-py3-none-any.whl", hash = "sha256:f25d4e051a84be27a35bd297e3e1dc59ff78373701b89be352ba80372d22d0d0", size = 300503, upload-time = "2026-06-15T08:45:45.951Z" },
 ]
 
 [[package]]
@@ -1311,6 +1326,9 @@ sandbox = [
 ]
 swe-bench = [
     { name = "swebench" },
+]
+wide-search = [
+    { name = "dateparser" },
 ]
 
 [[package]]
@@ -1814,7 +1832,7 @@ dependencies = [
 
 [package.dev-dependencies]
 agent = [
-    { name = "evalscope", extra = ["bfcl", "mcp", "sandbox"], marker = "extra == 'group-10-helicopter-agent'" },
+    { name = "evalscope", extra = ["bfcl", "mcp", "sandbox", "wide-search"], marker = "extra == 'group-10-helicopter-agent'" },
 ]
 eval = [
     { name = "language-data" },
@@ -1940,7 +1958,7 @@ swe-bench = [
 requires-dist = [{ name = "helicopter-scoreboard-server", editable = "src/scoreboard-server" }]
 
 [package.metadata.requires-dev]
-agent = [{ name = "evalscope", extras = ["bfcl", "mcp", "sandbox"], specifier = ">=1.9.1,<2.0.0" }]
+agent = [{ name = "evalscope", extras = ["bfcl", "mcp", "sandbox", "wide-search"], specifier = ">=1.9.1,<2.0.0" }]
 eval = [
     { name = "language-data" },
     { name = "lighteval", extras = ["extended-tasks", "litellm", "multilingual"], editable = "src/eval/lighteval" },
@@ -3817,7 +3835,7 @@ name = "nvidia-cudnn-cu13"
 version = "9.19.0.56"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas", marker = "(sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'group-10-helicopter-agent') or (sys_platform == 'darwin' and extra != 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-eval') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra != 'group-10-helicopter-agent') or (sys_platform == 'win32' and extra == 'group-10-helicopter-eval') or (sys_platform == 'win32' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'win32' and extra != 'group-10-helicopter-agent')" },
+    { name = "nvidia-cublas", marker = "(sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'group-10-helicopter-agent') or (sys_platform == 'darwin' and extra != 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'win32' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (sys_platform == 'win32' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f1/84/26025437c1e6b61a707442184fa0c03d083b661adf3a3eecfd6d21677740/nvidia_cudnn_cu13-9.19.0.56-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:6ed29ffaee1176c612daf442e4dd6cfeb6a0caa43ddcbeb59da94953030b1be4", size = 433781201, upload-time = "2026-02-03T20:40:53.805Z" },
@@ -3840,7 +3858,7 @@ name = "nvidia-cufft"
 version = "12.0.0.61"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink", marker = "(sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'group-10-helicopter-agent') or (sys_platform == 'darwin' and extra != 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-eval') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra != 'group-10-helicopter-agent') or (sys_platform == 'win32' and extra == 'group-10-helicopter-eval') or (sys_platform == 'win32' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'win32' and extra != 'group-10-helicopter-agent')" },
+    { name = "nvidia-nvjitlink", marker = "(sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'group-10-helicopter-agent') or (sys_platform == 'darwin' and extra != 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'win32' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (sys_platform == 'win32' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8b/ae/f417a75c0259e85c1d2f83ca4e960289a5f814ed0cea74d18c353d3e989d/nvidia_cufft-12.0.0.61-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:2708c852ef8cd89d1d2068bdbece0aa188813a0c934db3779b9b1faa8442e5f5", size = 214053554, upload-time = "2025-09-04T08:31:38.196Z" },
@@ -3872,9 +3890,9 @@ name = "nvidia-cusolver"
 version = "12.0.4.66"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas", marker = "(sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'group-10-helicopter-agent') or (sys_platform == 'darwin' and extra != 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-eval') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra != 'group-10-helicopter-agent') or (sys_platform == 'win32' and extra == 'group-10-helicopter-eval') or (sys_platform == 'win32' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'win32' and extra != 'group-10-helicopter-agent')" },
-    { name = "nvidia-cusparse", marker = "(sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'group-10-helicopter-agent') or (sys_platform == 'darwin' and extra != 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-eval') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra != 'group-10-helicopter-agent') or (sys_platform == 'win32' and extra == 'group-10-helicopter-eval') or (sys_platform == 'win32' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'win32' and extra != 'group-10-helicopter-agent')" },
-    { name = "nvidia-nvjitlink", marker = "(sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'group-10-helicopter-agent') or (sys_platform == 'darwin' and extra != 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-eval') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra != 'group-10-helicopter-agent') or (sys_platform == 'win32' and extra == 'group-10-helicopter-eval') or (sys_platform == 'win32' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'win32' and extra != 'group-10-helicopter-agent')" },
+    { name = "nvidia-cublas", marker = "(sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'group-10-helicopter-agent') or (sys_platform == 'darwin' and extra != 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'win32' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (sys_platform == 'win32' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
+    { name = "nvidia-cusparse", marker = "(sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'group-10-helicopter-agent') or (sys_platform == 'darwin' and extra != 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'win32' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (sys_platform == 'win32' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
+    { name = "nvidia-nvjitlink", marker = "(sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'group-10-helicopter-agent') or (sys_platform == 'darwin' and extra != 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'win32' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (sys_platform == 'win32' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c8/c3/b30c9e935fc01e3da443ec0116ed1b2a009bb867f5324d3f2d7e533e776b/nvidia_cusolver-12.0.4.66-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:02c2457eaa9e39de20f880f4bd8820e6a1cfb9f9a34f820eb12a155aa5bc92d2", size = 223467760, upload-time = "2025-09-04T08:33:04.222Z" },
@@ -3887,7 +3905,7 @@ name = "nvidia-cusparse"
 version = "12.6.3.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink", marker = "(sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'group-10-helicopter-agent') or (sys_platform == 'darwin' and extra != 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-eval') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra != 'group-10-helicopter-agent') or (sys_platform == 'win32' and extra == 'group-10-helicopter-eval') or (sys_platform == 'win32' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'win32' and extra != 'group-10-helicopter-agent')" },
+    { name = "nvidia-nvjitlink", marker = "(sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'darwin' and extra == 'group-10-helicopter-agent') or (sys_platform == 'darwin' and extra != 'group-10-helicopter-rwkv') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (sys_platform == 'emscripten' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv') or (sys_platform == 'win32' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-eval') or (sys_platform == 'win32' and extra == 'group-10-helicopter-agent' and extra == 'group-10-helicopter-rwkv')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f8/94/5c26f33738ae35276672f12615a64bd008ed5be6d1ebcb23579285d960a9/nvidia_cusparse-12.6.3.3-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:80bcc4662f23f1054ee334a15c72b8940402975e0eab63178fc7e670aa59472c", size = 162155568, upload-time = "2025-09-04T08:33:42.864Z" },
@@ -6703,6 +6721,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ba/19/1b9b0e29f30c6d35cb345486df41110984ea67ae69dddbc0e8a100999493/tzdata-2026.2.tar.gz", hash = "sha256:9173fde7d80d9018e02a662e168e5a2d04f87c41ea174b139fbef642eda62d10", size = 198254, upload-time = "2026-04-24T15:22:08.651Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ce/e4/dccd7f47c4b64213ac01ef921a1337ee6e30e8c6466046018326977efd95/tzdata-2026.2-py2.py3-none-any.whl", hash = "sha256:bbe9af844f658da81a5f95019480da3a89415801f6cc966806612cc7169bffe7", size = 349321, upload-time = "2026-04-24T15:22:05.876Z" },
+]
+
+[[package]]
+name = "tzlocal"
+version = "5.4.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/81/5b/879b2f932adfa7a053c360d50bc896c977fa6426109185f7c12ebdd0cb9d/tzlocal-5.4.4.tar.gz", hash = "sha256:8dbb8660838688a7b6ba4fed31d18dedf842afb4d47ca050d6d891c2c15f3be4", size = 31170, upload-time = "2026-06-29T08:03:40.026Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9e/a4/017a7a6cbe387d961a688ec31364ae60a5c4e22c96ae9921b79a947c855d/tzlocal-5.4.4-py3-none-any.whl", hash = "sha256:aae09f0126a8a86fa736be266eb4a471380d26a0de3bc14844e7821fee3e2a15", size = 18115, upload-time = "2026-06-29T08:03:38.666Z" },
 ]
 
 [[package]]
