@@ -373,6 +373,20 @@ def build_evalscope_plan(
         config_name="dataset_args",
     )
     _append_json(command, "--dataset-args", dataset_args)
+    judge_strategy = pick(getattr(args, "judge_strategy", None), settings.get("judge_strategy"))
+    if judge_strategy:
+        command.extend(["--judge-strategy", str(judge_strategy)])
+    judge_model_args = _config_json(
+        args,
+        root=root,
+        settings=settings,
+        arg_name="judge_model_args",
+        config_name="judge_model_args",
+    )
+    _append_json(command, "--judge-model-args", judge_model_args)
+    judge_worker_num = pick(getattr(args, "judge_worker_num", None), settings.get("judge_worker_num"))
+    if judge_worker_num is not None:
+        command.extend(["--judge-worker-num", str(judge_worker_num)])
     sandbox = _config_json(
         args,
         root=root,

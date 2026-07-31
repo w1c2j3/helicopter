@@ -46,6 +46,9 @@ def evalscope_args(**overrides: object) -> Namespace:
         "generation_config": None,
         "model_args": None,
         "dataset_args": None,
+        "judge_strategy": None,
+        "judge_model_args": None,
+        "judge_worker_num": None,
         "dataset_hub": None,
         "work_dir": None,
         "no_timestamp": None,
@@ -266,6 +269,49 @@ class EvalScopeAgentTests(unittest.TestCase):
             json.loads(plan.command[plan.command.index("--model-args") + 1]),
             {"max_retries": 0, "timeout": 600.0},
         )
+
+    def test_judge_configuration_is_forwarded(self) -> None:
+        config = {
+            "models": {"demo": {"served_model_name": "demo-served"}},
+            "evalscope": {
+                "judge_strategy": "llm",
+                "judge_model_args": {
+                    "model_id": "judge-served",
+                    "api_url": "http://127.0.0.1:29572/v1",
+                    "api_key": "rwkv-skills",
+                    "generation_config": {"temperature": 0.0},
+                },
+                "judge_worker_num": 2,
+            },
+        }
+
+        plan = build_evalscope_plan(evalscope_args(), root=ROOT, env={}, config=config)
+
+        self.assertEqual(plan.command[plan.command.index("--judge-strategy") + 1], "llm")
+        self.assertEqual(
+            json.loads(plan.command[plan.command.index("--judge-model-args") + 1]),
+            config["evalscope"]["judge_model_args"],
+        )
+        self.assertEqual(plan.command[plan.command.index("--judge-worker-num") + 1], "2")
+
+    def test_judge_configuration_cli_options_are_exposed(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "eval",
+                "evalscope",
+                "demo",
+                "wide_search",
+                "--judge-strategy",
+                "auto",
+                "--judge-model-args",
+                "judge.json",
+                "--judge-worker-num",
+                "3",
+            ]
+        )
+        self.assertEqual(args.judge_strategy, "auto")
+        self.assertEqual(args.judge_model_args, "judge.json")
+        self.assertEqual(args.judge_worker_num, 3)
 
     def test_explicit_model_client_timeout_is_preserved(self) -> None:
         config = {
