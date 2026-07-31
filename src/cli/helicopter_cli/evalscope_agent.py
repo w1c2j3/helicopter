@@ -15,6 +15,8 @@ from .config import resolve_model_entry, table
 from .env import env_value, pick
 from .eval_run import (
     DEFAULT_SERVER_TIMEOUT_S,
+    SCOREBOARD_LOCK,
+    _scoreboard_env,
     format_plan_for_display,
     infer_args_namespace,
     port_from_base_url,
@@ -25,6 +27,11 @@ from .eval_run import (
 from .naive_chat_proxy import NaiveChatProxy
 from .parallel_candidate_proxy import ParallelCandidateConfig, ParallelCandidateProxy
 from .evalscope_agent_results import write_acceptance_report, write_trace_report
+from .evalscope_scoreboard import (
+    build_import_plan,
+    cleanup_json_artifacts,
+    persist_import_plan_sync,
+)
 from .paths import resolve_path
 from .runner import run_command
 
@@ -156,6 +163,46 @@ def _saved_trace_exit_code(path: Path) -> int | None:
     except (OSError, json.JSONDecodeError, AttributeError):
         return None
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _served_model_name(args: Any, *, config: dict[str, Any]) -> str:
+    model = resolve_model_entry(config, args.model)
+    return str(
+        pick(
+            getattr(args, "served_model_name", None),
+            model.get("served_model_name"),
+            model.get("requested_name"),
+            args.model,
+        )
+    )
+
+
+def _persist_evalscope_scoreboard(
+    *,
+    work_dir: Path,
+    args: Any,
+    root: Path,
+    env: dict[str, str],
+    config: dict[str, Any],
+) -> tuple[bool, str | None]:
+    """Import official EvalScope artifacts and optionally remove JSON files."""
+
+    try:
+        model_name = _served_model_name(args, config=config)
+        plan = build_import_plan(work_dir, model_name=model_name)
+        with SCOREBOARD_LOCK, _scoreboard_env(env):
+            result = persist_import_plan_sync(plan, root=root)
+        print(
+            "evalscope: official results persisted to scoreboard: "
+            f"{result}; context_audit={json.dumps(plan.context_audit, ensure_ascii=False, sort_keys=True)}"
+        )
+        if getattr(args, "scoreboard_db_only", False):
+            removed = cleanup_json_artifacts(work_dir)
+            print(f"evalscope: removed {removed} JSON/JSONL artifacts after verified DB import")
+        return True, result
+    except Exception as error:  # noqa: BLE001 - surface DB failure without hiding the official run result
+        print(f"evalscope: scoreboard import failed; JSON artifacts were retained: {error}")
+        return False, None
 
 
 def _json_mapping(value: Any, *, root: Path, name: str) -> dict[str, Any]:
@@ -532,6 +579,14 @@ def run_evalscope(args: Any, *, root: Path, env: dict[str, str], config: dict[st
             trace_report_path=trace_report if trace_report.is_file() else None,
         )
         print(f"evalscope: acceptance report written to {report}")
+        if getattr(args, "scoreboard", False):
+            _persist_evalscope_scoreboard(
+                work_dir=work_dir,
+                args=args,
+                root=root,
+                env=env,
+                config=config,
+            )
         return 0
     if getattr(args, "list_datasets", False):
         rows = load_agent_catalog(root, getattr(args, "dataset_catalog", None))
@@ -668,6 +723,14 @@ def run_evalscope(args: Any, *, root: Path, env: dict[str, str], config: dict[st
             trace_report_path=trace_report_path,
         )
         print(f"evalscope: acceptance report written to {acceptance_report}")
+        if getattr(args, "scoreboard", False):
+            _persist_evalscope_scoreboard(
+                work_dir=work_dir,
+                args=args,
+                root=root,
+                env=env,
+                config=config,
+            )
         if server_process is not None and not getattr(args, "keep_server", False):
             print("evalscope: stopping vLLM server")
             stop_server(server_process)

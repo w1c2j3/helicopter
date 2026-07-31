@@ -381,6 +381,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="rebuild raw/acceptance_report.json from an existing EvalScope work directory",
     )
+    evalscope.add_argument(
+        "--scoreboard",
+        action="store_true",
+        help="persist official EvalScope prediction/review/report results into the local scoreboard database",
+    )
+    evalscope.add_argument(
+        "--scoreboard-db-only",
+        action="store_true",
+        help="remove EvalScope JSON/JSONL artifacts after a successful --scoreboard import",
+    )
     evalscope.add_argument("--dataset-catalog", default=DEFAULT_CATALOG, help="EvalScope Agent dataset catalog JSON")
     evalscope.add_argument("--format", choices=("text", "json", "summary"), default="text")
     evalscope.add_argument("--binary", help="EvalScope executable; defaults to [evalscope].binary")
