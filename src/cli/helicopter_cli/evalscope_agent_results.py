@@ -533,6 +533,59 @@ def _report_path(path: Path) -> str:
         return path.as_posix()
 
 
+_RUN_ERROR_SIGNATURES: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    (
+        "external_adapter_error",
+        re.compile(r"AttributeError: ['\"]NoneType['\"] object has no attribute ['\"]model_dump['\"]"),
+        "benchmark adapter dereferenced a missing optional response field",
+    ),
+    (
+        "interface_error",
+        re.compile(r"(?:invalid[_ ]api[_ ]key|Error code:\s*401|HTTP\s+401)", re.IGNORECASE),
+        "benchmark run recorded an upstream authentication/interface failure",
+    ),
+    (
+        "context_truncated",
+        re.compile(r"(?:maximum context length|context length|context window|too many tokens)", re.IGNORECASE),
+        "benchmark run recorded a context-window failure",
+    ),
+    (
+        "timeout_error",
+        re.compile(r"(?:ReadTimeout|ConnectTimeout|timed out|timeout while)", re.IGNORECASE),
+        "benchmark run recorded a request or environment timeout",
+    ),
+)
+
+
+def _run_error_diagnostics(output_dir: Path) -> list[dict[str, str]]:
+    """Preserve run-level adapter/interface errors when no sample artifact exists."""
+
+    diagnostics: list[dict[str, str]] = []
+    log_root = output_dir / "logs"
+    if not log_root.is_dir():
+        return diagnostics
+    for log_path in sorted(log_root.glob("*.log")):
+        try:
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for status, pattern, reason in _RUN_ERROR_SIGNATURES:
+            match = pattern.search(text)
+            if match is None:
+                continue
+            start = max(0, match.start() - 400)
+            end = min(len(text), match.end() + 1_600)
+            diagnostics.append(
+                {
+                    "status": status,
+                    "reason": reason,
+                    "log_path": _report_path(log_path),
+                    "raw_excerpt": text[start:end].strip(),
+                }
+            )
+    return diagnostics
+
+
 def _dataset_name_from_path(path: Path) -> str:
     stem = path.stem
     known_prefixes = (
@@ -670,6 +723,7 @@ def write_acceptance_report(
                 "samples": samples,
                 "official_reports": _official_reports(output_dir),
                 "trace_report": trace_report,
+                "run_errors": _run_error_diagnostics(output_dir),
             },
             ensure_ascii=False,
             indent=2,
