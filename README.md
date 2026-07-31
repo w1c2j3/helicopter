@@ -357,6 +357,49 @@ bash scripts/run_local_evalscope.sh general_fc 5 \
   results/evalscope/local-general-fc-1p5b-20260727-limit5
 ```
 
+For the current forwarded RWKV services, use the fixed 10,240-token context
+and the repository's 2,048-token no-COT generation configuration. The two
+services expose native RWKV tool calls through vLLM:
+
+```bash
+# G1h 7.2B
+uv run --no-default-groups --group agent --no-sync helicopter eval evalscope \
+  --config configs/example.toml \
+  g1h-7.2b general_fc \
+  --model-catalog configs/models/g1h-single-replica.toml \
+  --base-url http://127.0.0.1:29572/v1 \
+  --api-key rwkv-skills --no-server --generation-config \
+  experiments/evalscope_agent/flower-nocot-generation-2048.json \
+  --strategy function_calling --tools bash --agent-environment local
+
+# G1h 13.3B: change only the model alias, catalog, and endpoint as configured
+# in configs/models/g1h-single-replica.toml.
+uv run --no-default-groups --group agent --no-sync helicopter eval evalscope \
+  --config configs/example.toml \
+  g1h-13.3b general_fc \
+  --model-catalog configs/models/g1h-single-replica.toml \
+  --base-url http://127.0.0.1:29534/v1 \
+  --api-key rwkv-skills --no-server --generation-config \
+  experiments/evalscope_agent/flower-nocot-generation-2048.json \
+  --strategy function_calling --tools bash --agent-environment local
+```
+
+For long tool catalogs or evidence documents, enable the native
+parallel-candidate router in the project configuration. It shards tool
+schemas/evidence at the transport boundary and keeps the original EvalScope
+messages and tool semantics unchanged:
+
+```bash
+uv run --no-default-groups --group agent --no-sync helicopter eval evalscope \
+  g1h-7.2b bfcl_v3 --model-catalog configs/models/g1h-single-replica.toml \
+  --base-url http://127.0.0.1:29572/v1 --api-key rwkv-skills --no-server \
+  --generation-config experiments/evalscope_agent/flower-nocot-generation-2048.json \
+  --parallel-candidate-router --tools bash --agent-environment local
+```
+
+Benchmark outputs and experiment logs are intentionally kept outside Git;
+only the runner, configuration, diagnostics, and tests are versioned.
+
 For coding agents whose server does not expose OpenAI tool calls, use
 EvalScope's text strategy and install its optional SWE-bench extra separately.
 The text-only naive adapter is an explicit compatibility mode; it is not a
