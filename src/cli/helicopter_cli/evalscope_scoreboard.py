@@ -300,6 +300,10 @@ async def persist_import_plan(
             config_path=config_path if Path(config_path).is_file() else None,
             allow_resume=True,
         )
+        await store.ensure_benchmark_num_samples(
+            dataset=plan.benchmark,
+            num_samples=int(plan.context_audit["samples"]),
+        )
         inserted, inserted_evals = await store.insert_completion_eval_payloads_bulk(
             completion_payloads=plan.completion_payloads,
             eval_payloads=plan.eval_payloads,
