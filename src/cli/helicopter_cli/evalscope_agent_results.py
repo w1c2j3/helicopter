@@ -546,7 +546,11 @@ _RUN_ERROR_SIGNATURES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ),
     (
         "context_truncated",
-        re.compile(r"(?:maximum context length|context length|context window|too many tokens)", re.IGNORECASE),
+        re.compile(
+            r"(?:maximum context length|context length|context window|too many tokens|"
+            r"input_tokens\s*(?:>=|>|=)|prompt_tokens\s*(?:>=|>|=))",
+            re.IGNORECASE,
+        ),
         "benchmark run recorded a context-window failure",
     ),
     (

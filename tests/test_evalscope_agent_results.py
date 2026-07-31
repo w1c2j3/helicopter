@@ -199,6 +199,21 @@ def test_acceptance_report_records_run_level_external_adapter_error(tmp_path) ->
     assert "model_dump" in report["run_errors"][0]["raw_excerpt"]
 
 
+def test_acceptance_report_records_input_token_context_overflow(tmp_path) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "eval_log.log").write_text(
+        "HTTP 400: input_tokens >= 8193 and output_tokens=2048 exceeds max context 10240\n",
+        encoding="utf-8",
+    )
+
+    output = write_acceptance_report(tmp_path, exit_code=1)
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["samples"] == []
+    assert report["run_errors"][0]["status"] == "context_truncated"
+    assert "input_tokens" in report["run_errors"][0]["raw_excerpt"]
+
+
 def test_acceptance_report_respects_general_fc_no_call_labels(tmp_path) -> None:
     prediction_dir = tmp_path / "predictions" / "model"
     review_dir = tmp_path / "reviews" / "model"
