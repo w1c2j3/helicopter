@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import os
 from typing import Any
 
+from tortoise import Tortoise
 from tortoise.transactions import in_transaction
 from tortoise.exceptions import OperationalError
 
@@ -79,9 +81,39 @@ class BenchmarkCatalogInput:
 class ScoreboardStore:
     def __init__(self, settings: DatabaseSettings | None = None) -> None:
         self.settings = settings or DatabaseSettings.from_env()
+        self._legacy_naive_timestamps: bool | None = None
 
     async def _ensure_db(self) -> None:
         await init_db(self.settings)
+        if self._legacy_naive_timestamps is None:
+            rows = await Tortoise.get_connection("default").execute_query_dict(
+                """
+                SELECT data_type
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'task'
+                  AND column_name = 'created_at'
+                LIMIT 1
+                """
+            )
+            self._legacy_naive_timestamps = bool(
+                rows and rows[0].get("data_type") == "timestamp without time zone"
+            )
+
+    def _db_created_at(self, value: datetime | None = None) -> datetime:
+        timestamp = value or now_utc_naive()
+        if self._legacy_naive_timestamps:
+            return timestamp.replace(tzinfo=None)
+        if timestamp.tzinfo is None:
+            return timestamp.replace(tzinfo=timezone.utc)
+        return timestamp
+
+    def _set_db_created_at(self, model: Any, value: datetime | None = None) -> None:
+        # Tortoise normalizes datetime values during model construction.  For
+        # legacy ``timestamp without time zone`` databases, assign the naive
+        # value after construction so asyncpg receives the type the column
+        # requires.  Newer timestamptz schemas keep an aware UTC value.
+        model.created_at = self._db_created_at(value)
 
     async def _benchmark(self, dataset: str, *, num_samples: int | None = None) -> Benchmark:
         await self._ensure_db()
@@ -296,12 +328,12 @@ class ScoreboardStore:
 
         benchmark = await self._benchmark(dataset)
         score_model = await self._model(model)
-        task = await Task.create(
+        task = Task(
             config_path=self._task_config_path(config_path),
             evaluator=job_name or "",
             is_param_search=bool(is_param_search),
             is_tmp=self._task_is_tmp(),
-            created_at=now_utc_naive(),
+            created_at=self._db_created_at(),
             status="Running",
             git_hash=git_hash(),
             model=score_model,
@@ -310,6 +342,8 @@ class ScoreboardStore:
             sampling_config=sanitize_json(sampling_config) if sampling_config is not None else None,
             log_path=os.environ.get("RWKV_SKILLS_LOG_PATH", ""),
         )
+        self._set_db_created_at(task)
+        await task.save(force_create=True)
         return str(task.task_id)
 
     async def get_or_create_task(
@@ -366,15 +400,17 @@ class ScoreboardStore:
                     pass_index=pass_index,
                 )
                 if existing is None:
-                    await Completion.create(
+                    completion = Completion(
                         task=task,
                         sample_index=sample_index,
                         avg_repeat_index=repeat_index,
                         pass_index=pass_index,
                         context=context,
-                        created_at=now_utc_naive(),
+                        created_at=self._db_created_at(),
                         status=status,
                     )
+                    self._set_db_created_at(completion)
+                    await completion.save(force_create=True)
                 else:
                     previous_context = (
                         existing.context if isinstance(existing.context, Mapping) else {}
@@ -503,21 +539,20 @@ class ScoreboardStore:
 
         async with in_transaction():
             if new_payloads:
-                await CompletionModel.bulk_create(
-                    [
-                        CompletionModel(
-                            task=task,
-                            sample_index=parse_nonneg_int(payload.get("sample_index"), "sample_index"),
-                            avg_repeat_index=parse_nonneg_int(payload.get("repeat_index"), "repeat_index"),
-                            pass_index=parse_nonneg_int(payload.get("pass_index", 0), "pass_index"),
-                            context=self._build_completion_context(payload),
-                            created_at=now_utc_naive(),
-                            status=canonical_completion_status(payload.get("status", "Completed")),
-                        )
-                        for payload in new_payloads
-                    ],
-                    batch_size=250,
-                )
+                completion_rows = []
+                for payload in new_payloads:
+                    completion = CompletionModel(
+                        task=task,
+                        sample_index=parse_nonneg_int(payload.get("sample_index"), "sample_index"),
+                        avg_repeat_index=parse_nonneg_int(payload.get("repeat_index"), "repeat_index"),
+                        pass_index=parse_nonneg_int(payload.get("pass_index", 0), "pass_index"),
+                        context=self._build_completion_context(payload),
+                        created_at=self._db_created_at(),
+                        status=canonical_completion_status(payload.get("status", "Completed")),
+                    )
+                    self._set_db_created_at(completion)
+                    completion_rows.append(completion)
+                await CompletionModel.bulk_create(completion_rows, batch_size=250)
 
             mapping = await self._completion_id_map(task_id=task_id, status="Completed")
             existing_eval = {
@@ -534,16 +569,16 @@ class ScoreboardStore:
                 completion_id = mapping.get(key)
                 if completion_id is None or completion_id in existing_eval:
                     continue
-                eval_rows.append(
-                    EvalRecord(
-                        completion_id=completion_id,
-                        answer=self._bounded_text(payload.get("answer"), 65_536),
-                        ref_answer=self._bounded_text(self._extract_reference_answer(payload), 4_096),
-                        is_passed=bool(payload.get("is_passed", False)),
-                        fail_reason=self._bounded_text(payload.get("fail_reason"), 2_048),
-                        created_at=now_utc_naive(),
-                    )
+                eval_record = EvalRecord(
+                    completion_id=completion_id,
+                    answer=self._bounded_text(payload.get("answer"), 65_536),
+                    ref_answer=self._bounded_text(self._extract_reference_answer(payload), 4_096),
+                    is_passed=bool(payload.get("is_passed", False)),
+                    fail_reason=self._bounded_text(payload.get("fail_reason"), 2_048),
+                    created_at=self._db_created_at(),
                 )
+                self._set_db_created_at(eval_record)
+                eval_rows.append(eval_record)
             if eval_rows:
                 await EvalRecord.bulk_create(eval_rows, batch_size=250)
         return len(new_payloads), len(eval_rows)
@@ -562,16 +597,30 @@ class ScoreboardStore:
             if completion_id is None:
                 continue
             completion = await Completion.get(completions_id=completion_id)
-            await EvalRecord.update_or_create(
-                completion=completion,
-                defaults={
-                    "answer": self._bounded_text(payload.get("answer"), 65_536),
-                    "ref_answer": self._bounded_text(self._extract_reference_answer(payload), 4_096),
-                    "is_passed": bool(payload.get("is_passed", False)),
-                    "fail_reason": self._bounded_text(payload.get("fail_reason"), 2_048),
-                    "created_at": now_utc_naive(),
-                },
-            )
+            answer = self._bounded_text(payload.get("answer"), 65_536)
+            ref_answer = self._bounded_text(self._extract_reference_answer(payload), 4_096)
+            is_passed = bool(payload.get("is_passed", False))
+            fail_reason = self._bounded_text(payload.get("fail_reason"), 2_048)
+            created_at = self._db_created_at()
+            eval_record = await EvalRecord.filter(completion=completion).first()
+            if eval_record is None:
+                eval_record = EvalRecord(
+                    completion=completion,
+                    answer=answer,
+                    ref_answer=ref_answer,
+                    is_passed=is_passed,
+                    fail_reason=fail_reason,
+                    created_at=created_at,
+                )
+                self._set_db_created_at(eval_record, created_at)
+                await eval_record.save(force_create=True)
+            else:
+                eval_record.answer = answer
+                eval_record.ref_answer = ref_answer
+                eval_record.is_passed = is_passed
+                eval_record.fail_reason = fail_reason
+                self._set_db_created_at(eval_record, created_at)
+                await eval_record.save(update_fields=["answer", "ref_answer", "is_passed", "fail_reason", "created_at"])
             inserted += 1
         return inserted
 
@@ -652,12 +701,12 @@ class ScoreboardStore:
             )
             if part
         ]
-        task = await Task.create(
+        task = Task(
             config_path=parent.config_path,
             evaluator=f"{parent.evaluator or 'eval'}:{strategy}",
             is_param_search=True,
             is_tmp=True,
-            created_at=now_utc_naive(),
+            created_at=self._db_created_at(),
             status="Running",
             git_hash=parent.git_hash or git_hash(),
             model=parent.model,
@@ -666,6 +715,8 @@ class ScoreboardStore:
             sampling_config=parent.sampling_config if isinstance(parent.sampling_config, dict) else None,
             log_path=parent.log_path or "",
         )
+        self._set_db_created_at(task)
+        await task.save(force_create=True)
         return int(task.task_id)
 
     async def record_score_payload(
@@ -677,14 +728,19 @@ class ScoreboardStore:
     ) -> None:
         await self._ensure_db()
         task = await Task.get(task_id=int(task_id))
-        await Score.update_or_create(
-            task=task,
-            defaults={
-                "cot_mode": canonical_cot_mode(payload),
-                "metrics": sanitize_json(payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}),
-                "created_at": parse_datetime(payload.get("created_at")),
-            },
-        )
+        cot_mode = canonical_cot_mode(payload)
+        metrics = sanitize_json(payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {})
+        created_at = self._db_created_at(parse_datetime(payload.get("created_at")))
+        score = await Score.filter(task=task).first()
+        if score is None:
+            score = Score(task=task, cot_mode=cot_mode, metrics=metrics, created_at=created_at)
+            self._set_db_created_at(score, created_at)
+            await score.save(force_create=True)
+        else:
+            score.cot_mode = cot_mode
+            score.metrics = metrics
+            self._set_db_created_at(score, created_at)
+            await score.save(update_fields=["cot_mode", "metrics", "created_at"])
         if mark_completed:
             task.status = "Completed"
             await task.save(update_fields=["status"])

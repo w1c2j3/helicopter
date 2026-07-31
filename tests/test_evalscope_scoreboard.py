@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 from helicopter_cli.__main__ import build_parser
 from helicopter_cli.evalscope_scoreboard import build_import_plan, cleanup_json_artifacts
+from scoreboard_server.db.repository import ScoreboardStore
 
 
 def _prediction(index: int, *, finish_reason: str = "stop") -> dict:
@@ -88,3 +90,14 @@ def test_evalscope_parser_exposes_db_only_import_flags() -> None:
     assert args.scoreboard is True
     assert args.scoreboard_db_only is True
 
+
+def test_scoreboard_store_adapts_created_at_to_database_timestamp_type() -> None:
+    value = datetime(2026, 7, 31, 10, 0, tzinfo=timezone.utc)
+
+    legacy_store = ScoreboardStore()
+    legacy_store._legacy_naive_timestamps = True
+    assert legacy_store._db_created_at(value).tzinfo is None
+
+    current_store = ScoreboardStore()
+    current_store._legacy_naive_timestamps = False
+    assert current_store._db_created_at(value).tzinfo == timezone.utc
