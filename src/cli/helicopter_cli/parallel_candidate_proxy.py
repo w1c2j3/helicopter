@@ -54,6 +54,7 @@ class ParallelCandidateConfig:
     aggregate_max_tokens: int = 2048
     max_candidates: int = 12
     fallback_to_highest_confidence: bool = True
+    fallback_to_native_chat: bool = True
     long_doc_min_chars: int = DEFAULT_LONG_DOC_MIN_CHARS
     long_doc_max_chars: int = DEFAULT_LONG_DOC_MAX_CHARS
     long_doc_overlap_lines: int = DEFAULT_LONG_DOC_OVERLAP_LINES
@@ -793,6 +794,50 @@ class ParallelCandidateProxy:
         with urlopen(request, timeout=60) as response:  # noqa: S310 - configured local endpoint
             return response.status, dict(response.headers.items()), response.read()
 
+    def _native_chat_fallback(self, source: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        """Forward the unchanged source request when candidate routing fails.
+
+        Candidate routing is an evaluation adapter, not a second tool protocol.
+        If it cannot produce a validated candidate, preserve the upstream
+        native response instead of converting prose into an empty tool call.
+        The source payload is serialized unchanged so the upstream parser sees
+        the original messages and tool definitions.
+        """
+
+        started = perf_counter()
+        body: Any = None
+        status = 502
+        headers: dict[str, str] = {}
+        error: dict[str, str] | None = None
+        try:
+            status, headers, body_bytes = self._forward(
+                "/v1/chat/completions",
+                json.dumps(source, ensure_ascii=False).encode("utf-8"),
+                method="POST",
+            )
+            body = _json_or_text(body_bytes)
+        except HTTPError as exc:
+            status = exc.code
+            headers = {key: value for key, value in exc.headers.items()}
+            body = _json_or_text(exc.read())
+            error = {"type": "HTTPError", "message": str(exc)}
+        except (OSError, URLError) as exc:
+            error = {"type": type(exc).__name__, "message": str(exc)}
+            body = {"error": error}
+
+        trace = {
+            "url": self._upstream_url("/v1/chat/completions"),
+            "headers": {"Authorization": "Bearer [redacted]", "Content-Type": "application/json"},
+            "json": source,
+            "status": status,
+            "response": body,
+            "duration_ms": round((perf_counter() - started) * 1000, 2),
+            "error": error,
+        }
+        if status < 400 and isinstance(body, dict):
+            return body, trace
+        return None, trace
+
     @staticmethod
     def _completion_text(response: Any) -> str:
         if not isinstance(response, Mapping):
@@ -973,7 +1018,16 @@ class ParallelCandidateProxy:
         }
         if usage is not None:
             route_trace["usage"] = usage
+        native_response: dict[str, Any] | None = None
+        if not selected_candidates and self.config.fallback_to_native_chat:
+            native_response, native_trace = self._native_chat_fallback(source)
+            route_trace["native_fallback_used"] = native_response is not None
+            route_trace["native_fallback"] = native_trace
+        else:
+            route_trace["native_fallback_used"] = False
         if not selected_candidates:
+            if native_response is not None:
+                return native_response, route_trace
             content = aggregate_completion or (candidate_traces[0].get("completion", "") if candidate_traces else "")
             response = {
                 "id": f"parallel-candidate-{uuid.uuid4().hex}",

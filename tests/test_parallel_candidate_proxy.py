@@ -667,6 +667,96 @@ def test_parallel_candidate_proxy_returns_validated_tool_call_and_trace(tmp_path
     assert record["response"]["body"]["usage"] == {"prompt_tokens": 30, "completion_tokens": 6, "total_tokens": 36}
 
 
+def test_parallel_candidate_proxy_preserves_native_tool_call_when_candidates_fail(tmp_path) -> None:
+    received_paths: list[str] = []
+    native_payloads: list[dict[str, object]] = []
+
+    class UpstreamHandler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            payload = json.loads(body)
+            received_paths.append(self.path)
+            if self.path == "/v1/chat/completions":
+                native_payloads.append(payload)
+                response_body = {
+                    "id": "native-upstream",
+                    "object": "chat.completion",
+                    "model": "rwkv",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call-native",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "bash",
+                                            "arguments": '{"command":"echo native"}',
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+                }
+            else:
+                assert self.path == "/v1/completions"
+                response_body = {
+                    "id": "candidate-upstream",
+                    "model": payload["model"],
+                    "choices": [{"text": "not a candidate", "finish_reason": "stop"}],
+                }
+            response = json.dumps(response_body).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), UpstreamHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    trace = tmp_path / "parallel-native-fallback.jsonl"
+    proxy = ParallelCandidateProxy(
+        f"http://127.0.0.1:{upstream.server_port}/v1",
+        api_key="secret",
+        trace_path=trace,
+        config=ParallelCandidateConfig(chunk_tools=1, batch_size=2, fallback_to_highest_confidence=False),
+    )
+    source = {
+        "model": "rwkv",
+        "messages": [{"role": "user", "content": "Run the command."}],
+        "tools": TOOLS,
+        "tool_choice": "auto",
+        "temperature": 0,
+        "max_tokens": 512,
+    }
+    try:
+        result, route_trace = proxy._route(source)
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+        thread.join(timeout=5)
+
+    assert result["id"] == "native-upstream"
+    assert result["choices"][0]["finish_reason"] == "tool_calls"
+    assert result["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "bash"
+    assert received_paths.count("/v1/completions") == 2
+    assert received_paths[-1] == "/v1/chat/completions"
+    assert native_payloads == [source]
+    assert route_trace["candidate_count"] == 0
+    assert route_trace["native_fallback_used"] is True
+    assert route_trace["native_fallback"]["status"] == 200
+
+
 def test_parallel_candidate_proxy_trace_encodes_bytes_without_breaking_response(tmp_path) -> None:
     trace = tmp_path / "parallel-bytes.jsonl"
     proxy = ParallelCandidateProxy(
