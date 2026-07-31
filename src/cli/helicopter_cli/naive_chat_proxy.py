@@ -13,6 +13,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
+from .evalscope_agent_compat import adapt_tool_call_response
 from .naive_chat import serialize_openai_request
 
 
@@ -72,6 +73,8 @@ class NaiveChatProxy:
                 response_status = 502
                 response_headers: dict[str, str] = {}
                 response_body = b""
+                upstream_response_body: Any = None
+                compatibility: dict[str, Any] = {"status": "not_run", "reason": None}
                 error: dict[str, str] | None = None
                 is_chat_request = self.command == "POST" and self.path.split("?", 1)[0].endswith("/chat/completions")
                 upstream_path = "/v1/completions" if is_chat_request else self.path
@@ -93,7 +96,16 @@ class NaiveChatProxy:
                     response = proxy._request(upstream_url, outgoing_body, outgoing_headers)
                     response_status, response_headers, response_body = response
                     if is_chat_request and response_status == 200:
+                        upstream_response_body = _json_or_text(response_body)
                         response_body = proxy._adapt_completion_response(response_body)
+                        chat_payload = _json_or_text(response_body)
+                        adapted_payload, compatibility = adapt_tool_call_response(
+                            chat_payload,
+                            tools=source_payload.get("tools")
+                            if isinstance(source_payload, dict) and isinstance(source_payload.get("tools"), list)
+                            else None,
+                        )
+                        response_body = json.dumps(adapted_payload, ensure_ascii=False).encode("utf-8")
                 except HTTPError as exc:
                     response_status = exc.code
                     response_headers = {key: value for key, value in exc.headers.items()}
@@ -124,7 +136,9 @@ class NaiveChatProxy:
                         "status": response_status,
                         "headers": response_headers,
                         "body": _json_or_text(response_body),
+                        "upstream_body_before_compatibility": upstream_response_body,
                     },
+                    "compatibility": compatibility,
                     "duration_ms": round((perf_counter() - started) * 1000, 2),
                     "error": error,
                 }

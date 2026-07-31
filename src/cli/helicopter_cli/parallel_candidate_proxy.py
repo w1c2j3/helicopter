@@ -28,6 +28,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
+from .evalscope_agent_compat import adapt_tool_call_response
 from .rwkv_agent_prompt import (
     DEFAULT_LONG_DOC_MAX_CHARS,
     DEFAULT_LONG_DOC_MAX_EVIDENCE_CHARS,
@@ -177,6 +178,23 @@ def _schemas(tools: list[Any]) -> list[dict[str, Any]]:
 
 def _schema_by_name(tools: list[Any]) -> dict[str, dict[str, Any]]:
     return {schema["name"]: schema for schema in _schemas(tools)}
+
+
+def _resolve_schema_name(name: str, schemas: Mapping[str, Any]) -> str:
+    """Resolve exact names and only unique dot/underscore wire aliases."""
+
+    if name in schemas:
+        return name
+    equivalents = [
+        candidate
+        for candidate in schemas
+        if candidate.replace(".", "_") == name or candidate.replace("_", ".") == name
+    ]
+    if len(equivalents) == 1:
+        return equivalents[0]
+    if not equivalents:
+        raise ValueError(f"candidate name {name!r} is not in the supplied tools")
+    raise ValueError(f"candidate name {name!r} is not an exact or unique compatible tool name")
 
 
 def _json_schema_type(value: Any) -> str:
@@ -404,6 +422,7 @@ def _compact_prompt_tool_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
 def _candidate_values(value: dict[str, Any] | list[Any]) -> list[dict[str, Any]]:
     values = value if isinstance(value, list) else [value]
     output: list[dict[str, Any]] = []
+    candidate_fields = {"name", "arguments", "confidence", "evidence", "id", "tool_call_id", "tool_calls"}
     for item in values:
         if not isinstance(item, dict):
             raise ValueError("completion JSON array candidate must be an object")
@@ -412,6 +431,13 @@ def _candidate_values(value: dict[str, Any] | list[Any]) -> list[dict[str, Any]]
                 {"name": name, "arguments": arguments}
                 for name, arguments in _parse_native_candidate_envelope(item)
             )
+        elif len(item) == 1 and next(iter(item)) not in candidate_fields:
+            # BFCL's text form is an array of one-entry function maps, while
+            # the OpenAI wire form is message.tool_calls.  Keep the conversion
+            # lossless: the schema validator below still rejects unknown
+            # functions, malformed arguments, and missing required fields.
+            name, arguments = next(iter(item.items()))
+            output.append({"name": name, "arguments": arguments})
         else:
             output.append(item)
     return output
@@ -426,8 +452,7 @@ def _parse_candidate_value(value: dict[str, Any], *, tools: list[Any]) -> Candid
         raise ValueError("candidate name must be a non-empty string")
     name = name.strip()
     schemas = _schema_by_name(tools)
-    if name not in schemas:
-        raise ValueError(f"candidate name {name!r} is not in the supplied tools")
+    name = _resolve_schema_name(name, schemas)
     arguments = value.get("arguments")
     if isinstance(arguments, str):
         try:
@@ -835,7 +860,13 @@ class ParallelCandidateProxy:
             "error": error,
         }
         if status < 400 and isinstance(body, dict):
-            return body, trace
+            adapted, compatibility = adapt_tool_call_response(
+                body,
+                tools=source.get("tools") if isinstance(source.get("tools"), list) else None,
+            )
+            trace["compatibility"] = compatibility
+            return adapted, trace
+        trace["compatibility"] = {"status": "unchanged", "reason": "upstream response was not a successful JSON object"}
         return None, trace
 
     @staticmethod

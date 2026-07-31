@@ -126,6 +126,16 @@ def test_parse_candidate_accepts_one_strict_native_tool_call_envelope() -> None:
     assert candidate.arguments == {"command": "echo hi"}
 
 
+def test_parse_candidate_accepts_bfcl_function_map_text() -> None:
+    candidate = parse_candidate(
+        '[{"bash":{"command":"echo hi"}}]',
+        tools=TOOLS,
+    )
+
+    assert candidate.name == "bash"
+    assert candidate.arguments == {"command": "echo hi"}
+
+
 def test_parse_candidate_accepts_one_candidate_wrapped_in_json_array() -> None:
     candidate = parse_candidate(
         '[{"name":"bash","arguments":{"command":"echo hi"},'
