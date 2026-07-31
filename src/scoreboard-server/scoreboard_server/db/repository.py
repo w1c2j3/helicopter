@@ -6,6 +6,7 @@ import os
 from typing import Any
 
 from tortoise.transactions import in_transaction
+from tortoise.exceptions import OperationalError
 
 from scoreboard_server.cores.normalize import (
     canonical_completion_status,
@@ -92,10 +93,19 @@ class ScoreboardStore:
             benchmark_name=raw_name,
             benchmark_split="",
         ).first()
-        catalog_exact = await BenchmarkCatalog.filter(
-            benchmark_name=raw_name,
-            benchmark_split="",
-        ).exists()
+        # ``benchmark_catalog`` is optional metadata introduced after the
+        # original scoreboard schema.  The production database may still be
+        # a complete legacy database without that table; benchmark lookup
+        # must remain usable for importing official EvalScope results there.
+        try:
+            catalog_exact = await BenchmarkCatalog.filter(
+                benchmark_name=raw_name,
+                benchmark_split="",
+            ).exists()
+        except OperationalError as exc:
+            if "benchmark_catalog" not in str(exc).lower():
+                raise
+            catalog_exact = False
         if exact is not None or catalog_exact:
             name, split = raw_name, ""
         else:
