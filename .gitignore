@@ -42,6 +42,7 @@ configs/local/
 /runs/
 /outputs/
 /results/
+/experiments/
 /checkpoints/
 /wandb/
 /tensorboard/
