@@ -15,6 +15,7 @@ from helicopter_cli.lighteval_answer_adapters import (
     adapt_answer,
     answers_match,
     extract_choice_answer,
+    extract_choice_answer_v2,
     extract_code_completion,
     extract_math_answer,
     normalize_math_answer,
@@ -44,6 +45,18 @@ def test_choice_adapter_does_not_read_answer_choices_header_as_answer() -> None:
 
 def test_choice_adapter_does_not_use_an_arbitrary_reasoning_tail() -> None:
     assert extract_choice_answer("reasoning without a final option") == ""
+
+
+def test_choice_adapter_v2_prefers_last_valid_rwkv_candidate() -> None:
+    prompt = "Answer Choices:\nA. first\nB. second\nC. third\nD. fourth\nE. fifth"
+    text = "Reasoning: the first guess is (B).\nFinal answer: <answer>(E)</answer>"
+    assert extract_choice_answer_v2(text, prompt=prompt) == " E"
+    assert adapt_answer(text, domain="knowledge", request_format="choice", prompt=prompt) == " E"
+
+
+def test_choice_adapter_v2_handles_box_xml_and_dollar_delimiters() -> None:
+    prompt = "Options:\nA. first\nB. second\nC. third\nD. fourth\nE. fifth"
+    assert extract_choice_answer_v2("\\boxed{B}\n$D$", prompt=prompt) == " D"
 
 
 def test_choice_adapter_does_not_treat_roman_numerals_as_option_labels() -> None:

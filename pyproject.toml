@@ -30,6 +30,10 @@ swe-bench = [
   "evalscope[swe_bench]>=1.9.1,<2.0.0",
 ]
 
+terminal-bench = [
+  "evalscope[terminal_bench]>=1.9.1,<2.0.0",
+]
+
 rwkv = [
   "accelerate",
   "aiohttp>=3.13.3",
@@ -151,6 +155,10 @@ conflicts = [
   [
     { group = "agent" },
     { group = "rwkv" },
+  ],
+  [
+    { group = "agent" },
+    { group = "terminal-bench" },
   ],
 ]
 

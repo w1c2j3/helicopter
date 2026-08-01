@@ -100,10 +100,7 @@ def _leaderboard_matrix(entries: list[dict[str, Any]]) -> dict[str, Any]:
 def _is_primary_entry(entry: dict[str, Any]) -> bool:
     if entry.get("is_param_search"):
         return False
-    sampling_config = entry.get("sampling_config")
-    # Historical DB rows can predate prompt metadata. They are official
-    # non-search runs, so absence of that metadata must not hide them.
-    return not sampling_config or is_naive(entry.get("task"), sampling_config)
+    return is_naive(entry.get("task"), entry.get("sampling_config"))
 
 
 def _matrix_domain(entries: list[dict[str, Any]], group: dict[str, str]) -> dict[str, Any]:
@@ -167,7 +164,9 @@ def _matrix_domain(entries: list[dict[str, Any]], group: dict[str, str]) -> dict
 
 def _entry_matrix_column_key(entry: dict[str, Any], metric: str) -> str:
     del metric
-    return str(entry.get("dataset") or "unknown")
+    dataset = str(entry.get("dataset") or "unknown")
+    cot_mode = str(entry.get("cot_mode") or ("CoT" if entry.get("cot") else "NoCoT"))
+    return f"{dataset}:{cot_mode.strip().lower()}"
 
 
 def _matrix_cell(entry: dict[str, Any] | None, column: dict[str, Any]) -> dict[str, Any]:

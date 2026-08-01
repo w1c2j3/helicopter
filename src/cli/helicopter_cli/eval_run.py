@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.error import URLError
 from urllib.parse import urlsplit
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from .commands import (
     CommandPlan,
@@ -62,6 +62,70 @@ def server_is_healthy(base_url: str, *, timeout_s: float = 2.0) -> bool:
             return 200 <= response.status < 300
     except (OSError, URLError, TimeoutError, ValueError):
         return False
+
+
+def endpoint_model_ids(
+    base_url: str,
+    *,
+    api_key: str | None = None,
+    timeout_s: float = 5.0,
+) -> tuple[str, ...]:
+    """Return the model IDs advertised by an OpenAI-compatible endpoint."""
+
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = Request(health_url_for(base_url), headers=headers)
+    with urlopen(request, timeout=timeout_s) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    rows = payload.get("data", []) if isinstance(payload, dict) else []
+    if not isinstance(rows, list):
+        return ()
+    return tuple(
+        str(row.get("id"))
+        for row in rows
+        if isinstance(row, dict) and row.get("id")
+    )
+
+
+def validate_endpoint_model(
+    base_url: str,
+    expected_model: str | None,
+    *,
+    api_key: str | None = None,
+    allow_mismatch: bool = False,
+) -> tuple[str, ...]:
+    """Reject a live endpoint whose advertised model differs from the task model.
+
+    A wrong ``--base-url`` otherwise looks healthy and silently writes valid-looking
+    scores for the wrong model.  The explicit escape hatch is retained for proxy
+    endpoints that intentionally hide or rewrite the served model ID.
+    """
+
+    expected = str(expected_model or "").strip()
+    if not expected:
+        return ()
+    try:
+        model_ids = endpoint_model_ids(base_url, api_key=api_key)
+    except (OSError, URLError, TimeoutError, ValueError, json.JSONDecodeError) as error:
+        raise SystemExit(
+            f"model endpoint check failed at {health_url_for(base_url)}: {error}"
+        ) from error
+    if not model_ids:
+        raise SystemExit(
+            f"model endpoint check returned no model IDs at {health_url_for(base_url)}"
+        )
+    expected_names = {expected, expected.rsplit("/", 1)[-1]}
+    if any(model_id in expected_names for model_id in model_ids):
+        return model_ids
+    message = (
+        f"model endpoint mismatch at {base_url}: requested {expected!r}, "
+        f"served {', '.join(model_ids)}; use the model's configured endpoint"
+    )
+    if allow_mismatch:
+        print(f"WARNING: {message} (HELICOPTER_ALLOW_MODEL_MISMATCH enabled)")
+        return model_ids
+    raise SystemExit(message)
 
 
 def _tail_lines(path: Path, count: int = 30) -> str:
@@ -475,6 +539,23 @@ def run_eval(
             print(format_plan_for_display(infer_plan))
         print(format_plan_for_display(lighteval_plan))
         return 0
+
+    api_key = lighteval_plan.env.get("HELICOPTER_EVAL_API_KEY") or lighteval_plan.env.get(
+        "OPENAI_API_KEY"
+    )
+    allow_model_mismatch = lighteval_plan.env.get(
+        "HELICOPTER_ALLOW_MODEL_MISMATCH", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    expected_model = getattr(args, "lighteval_model_name", None)
+    # External endpoints are already running, so validate before creating a
+    # scoreboard task. Managed endpoints are checked again after startup below.
+    if not manage_server:
+        validate_endpoint_model(
+            base_url,
+            expected_model,
+            api_key=api_key,
+            allow_mismatch=allow_model_mismatch,
+        )
     database_only = lighteval_plan.env.get("HELICOPTER_SCOREBOARD_DB_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
     scoreboard_task_id: str | None = None
     pinned_scoreboard_task_id = _pinned_scoreboard_task_id(lighteval_plan.env)
@@ -534,6 +615,14 @@ def run_eval(
             )
             wait_for_server(base_url, process=server_process, log_path=server_log, timeout_s=timeout_s)
             print(f"eval run: server healthy at {base_url}")
+
+    if manage_server:
+        validate_endpoint_model(
+            base_url,
+            expected_model,
+            api_key=api_key,
+            allow_mismatch=allow_model_mismatch,
+        )
 
     performance_output = output_dir / "performance" / f"performance_{stamp}.json"
     metrics_url = getattr(args, "metrics_url", None) or derive_metrics_url(base_url)

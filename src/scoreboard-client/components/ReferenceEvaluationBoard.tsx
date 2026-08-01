@@ -20,13 +20,16 @@ import type {
   MatrixRow,
 } from "../lib/dtos/api/leaderboard";
 
-type Generation = "previous" | "current";
+type Architecture = `g1${string}`;
+type EvalMode = "CoT" | "NoCoT";
 type AnswerCategory = "correct" | "incorrect" | "unanswered";
 
 type ParameterGroup = {
   param: string;
-  current: MatrixRow;
-  previous: MatrixRow | null;
+  models: Array<{
+    architecture: Architecture;
+    row: MatrixRow;
+  }>;
 };
 
 type DisplayBenchmark = {
@@ -35,13 +38,14 @@ type DisplayBenchmark = {
   column: MatrixColumn;
   source: MatrixDomain | null;
   cellIndex: number;
+  evalMode: EvalMode;
   deferred?: string;
 };
 
 type ScoreSelection = {
   benchmark: DisplayBenchmark;
   group: ParameterGroup;
-  generation: Generation;
+  architecture: Architecture;
   model: string;
   cell: MatrixCell;
 };
@@ -62,7 +66,7 @@ type AnswerRecord = {
 };
 
 const EXPERIMENT_TABS = [
-  "前代 vs 当代",
+  "最新两个架构",
   "Prompt template",
   "Fake CoT vs CoT",
   "fp16 vs fp32io16",
@@ -102,17 +106,15 @@ function parameterValue(param: string): number {
   return Number.parseFloat(param.replace(/[^\d.]/g, "")) || 0;
 }
 
-function isFinalG1hModel(model: string): boolean {
-  return /-g1h-/i.test(model) && !/-g1h-preview/i.test(model);
-}
-
-function isG1gModel(model: string): boolean {
-  return /-g1g-/i.test(model);
+function modelArchitecture(model: string): Architecture | null {
+  const match = model.match(/-(g1[a-z])(?:-|_)/i);
+  const architecture = match?.[1]?.toLowerCase();
+  return architecture ? architecture as Architecture : null;
 }
 
 function modelGeneration(model: string): string {
-  const match = model.match(/-(g\d+[a-z]?)-/i);
-  return match?.[1]?.toUpperCase() ?? "RWKV";
+  const architecture = modelArchitecture(model);
+  return architecture ? architectureLabel(architecture) : "RWKV";
 }
 
 function groupsFromMatrix(matrix: LeaderboardMatrix): ParameterGroup[] {
@@ -129,11 +131,18 @@ function groupsFromMatrix(matrix: LeaderboardMatrix): ParameterGroup[] {
       const ordered = rows
         .slice()
         .sort((left, right) => generationTimestamp(right.model) - generationTimestamp(left.model));
-      const current = ordered.find((row) => isFinalG1hModel(row.model)) ?? ordered[0];
-      const previous = ordered.find((row) => isG1gModel(row.model))
-        ?? ordered.find((row) => row.model !== current.model)
-        ?? null;
-      return { param, current, previous };
+      const architectures = new Map<Architecture, MatrixRow>();
+      ordered.forEach((row) => {
+        const architecture = modelArchitecture(row.model);
+        if (architecture && !architectures.has(architecture)) {
+          architectures.set(architecture, row);
+        }
+      });
+      const models = [...architectures.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([architecture, row]) => ({ architecture, row }))
+        .slice(-2);
+      return { param, models };
     })
     .sort((left, right) => parameterValue(left.param) - parameterValue(right.param));
 }
@@ -150,6 +159,7 @@ function displayBenchmarks(matrix: LeaderboardMatrix, domainKey: string): Displa
         column: source.columns[cellIndex],
         source,
         cellIndex,
+        evalMode: normalizedEvalMode(source.columns[cellIndex].eval_method) === "cot" ? "CoT" : "NoCoT",
       }];
     });
   }
@@ -161,6 +171,7 @@ function displayBenchmarks(matrix: LeaderboardMatrix, domainKey: string): Displa
     column,
     source,
     cellIndex,
+    evalMode: normalizedEvalMode(column.eval_method) === "cot" ? "CoT" : "NoCoT",
   }));
 }
 
@@ -168,41 +179,58 @@ function catalogBenchmarks(matrix: LeaderboardMatrix, domainKey: string): Displa
   const requested = domainKey === "all"
     ? BENCHMARK_CATALOG
     : BENCHMARK_CATALOG.filter((item) => item.domain === domainKey);
-  return requested.map((spec) => displayCatalogBenchmark(matrix, spec));
+  return requested.map((spec) => displayCatalogBenchmark(
+    matrix,
+    spec,
+    spec.domain === "knowledge" || spec.domain === "math" ? "CoT" : "NoCoT",
+  ));
 }
 
-function displayCatalogBenchmark(matrix: LeaderboardMatrix, spec: BenchmarkCatalogItem): DisplayBenchmark {
+function normalizedEvalMode(value: string): string {
+  return value.toLowerCase().replace(/[^a-z]/g, "");
+}
+
+function displayCatalogBenchmark(
+  matrix: LeaderboardMatrix,
+  spec: BenchmarkCatalogItem,
+  evalMode: EvalMode,
+): DisplayBenchmark {
   const preferred = matrix.domains.find((item) => item.key === spec.domain) ?? null;
   const sources = preferred
     ? [preferred, ...matrix.domains.filter((item) => item !== preferred)]
     : matrix.domains;
   for (const source of sources) {
     const cellIndex = source.columns.findIndex(
-      (column) => benchmarkMatches(spec, column.key) || benchmarkMatches(spec, column.label),
+      (column) => (
+        (benchmarkMatches(spec, column.key.split(":")[0]) || benchmarkMatches(spec, column.label))
+        && normalizedEvalMode(column.eval_method) === normalizedEvalMode(evalMode)
+      ),
     );
     if (cellIndex >= 0) {
       return {
-        key: spec.key,
+        key: `${spec.key}:${evalMode.toLowerCase()}`,
         label: spec.label,
         column: source.columns[cellIndex],
         source,
         cellIndex,
+        evalMode,
         deferred: spec.deferred,
       };
     }
   }
   return {
-    key: spec.key,
+    key: `${spec.key}:${evalMode.toLowerCase()}`,
     label: spec.label,
     column: {
-      key: spec.key,
+      key: `${spec.key}:${evalMode.toLowerCase()}`,
       label: spec.label,
       metric: null,
-      eval_method: "NoCoT",
+      eval_method: evalMode,
       num_samples: spec.samples,
     },
     source: null,
     cellIndex: -1,
+    evalMode,
     deferred: spec.deferred,
   };
 }
@@ -212,134 +240,13 @@ function cellForModel(benchmark: DisplayBenchmark, model: string): MatrixCell | 
   return benchmark.source.rows.find((row) => row.model === model)?.cells[benchmark.cellIndex] ?? null;
 }
 
-function stableNumber(input: string): number {
-  let value = 2166136261;
-  for (let index = 0; index < input.length; index += 1) {
-    value ^= input.charCodeAt(index);
-    value = Math.imul(value, 16777619);
-  }
-  return Math.abs(value);
-}
-
-function median(values: number[]): number {
-  if (!values.length) return 0;
-  const ordered = values.slice().sort((left, right) => left - right);
-  const middle = Math.floor(ordered.length / 2);
-  return ordered.length % 2
-    ? ordered[middle]
-    : (ordered[middle - 1] + ordered[middle]) / 2;
-}
-
-function estimateDisplayPercent(
-  benchmark: DisplayBenchmark,
-  groups: ParameterGroup[],
-  targetGroup: ParameterGroup,
-  generation: Generation,
-): number {
-  const observations = groups.flatMap((group) => {
-    const rows: { x: number; score: number; generation: Generation }[] = [];
-    const previous = group.previous ? cellForModel(benchmark, group.previous.model) : null;
-    const current = cellForModel(benchmark, group.current.model);
-    const x = Math.log2(Math.max(parameterValue(group.param), 0.1));
-    if (previous?.percent != null) rows.push({ x, score: previous.percent, generation: "previous" });
-    if (current?.percent != null) rows.push({ x, score: current.percent, generation: "current" });
-    return rows;
-  });
-  const generationDeltas = groups.flatMap((group) => {
-    if (!group.previous) return [];
-    const previous = cellForModel(benchmark, group.previous.model);
-    const current = cellForModel(benchmark, group.current.model);
-    return previous?.percent != null && current?.percent != null
-      ? [current.percent - previous.percent]
-      : [];
-  });
-  const generationDelta = generationDeltas.length ? median(generationDeltas) : 2;
-  const targetX = Math.log2(Math.max(parameterValue(targetGroup.param), 0.1));
-  const trendObservations = observations.length > 1
-    ? observations.filter((point) => (
-      point.generation !== generation || Math.abs(point.x - targetX) > 0.001
-    ))
-    : observations;
-  const normalized = (trendObservations.length ? trendObservations : observations).map((point) => ({
-    x: point.x,
-    score: point.score + (
-      point.generation === generation
-        ? 0
-        : generation === "current"
-          ? generationDelta
-          : -generationDelta
-    ),
-  }));
-  let estimate: number;
-  if (normalized.length) {
-    const byX = new Map<number, number[]>();
-    normalized.forEach((point) => byX.set(point.x, [...(byX.get(point.x) ?? []), point.score]));
-    const points = [...byX.entries()]
-      .map(([x, scores]) => ({ x, score: scores.reduce((sum, score) => sum + score, 0) / scores.length }))
-      .sort((left, right) => left.x - right.x);
-    if (points.length === 1) {
-      estimate = points[0].score + (targetX - points[0].x) * 4;
-    } else {
-      const upperIndex = points.findIndex((point) => point.x >= targetX);
-      const segmentIndex = upperIndex < 0
-        ? points.length - 2
-        : Math.max(0, Math.min(points.length - 2, upperIndex - 1));
-      const left = points[segmentIndex];
-      const right = points[segmentIndex + 1];
-      const rawSlope = (right.score - left.score) / Math.max(0.01, right.x - left.x);
-      const slope = Math.max(-5, Math.min(20, rawSlope));
-      estimate = left.score + (targetX - left.x) * slope;
-    }
-  } else {
-    const label = benchmark.label.toLowerCase();
-    const base = /swe-bench pro/.test(label)
-      ? 1.5
-      : /swe-bench multilingual/.test(label)
-        ? 3
-        : /swe-bench verified/.test(label)
-          ? 5
-          : 18 + (stableNumber(benchmark.key) % 180) / 10;
-    estimate = base
-      + Math.log2(Math.max(parameterValue(targetGroup.param), 1.5) / 1.5) * 3.2
-      + (generation === "current" ? 1.6 : 0);
-  }
-  return Math.round(Math.max(0, Math.min(99.9, estimate)) * 10) / 10;
-}
-
-function displayCellFor(
-  benchmark: DisplayBenchmark,
-  groups: ParameterGroup[],
-  group: ParameterGroup,
-  generation: Generation,
-): MatrixCell {
-  const model = generation === "previous" ? group.previous?.model : group.current.model;
-  const real = model ? cellForModel(benchmark, model) : null;
-  const trend = estimateDisplayPercent(benchmark, groups, group, generation);
-  const jitter = ((stableNumber(`${benchmark.key}:${group.param}:${generation}`) % 9) - 4) / 10;
-  const percent = Math.round(Math.max(
-    0,
-    Math.min(99.9, (real?.percent == null ? trend : trend * 0.7 + real.percent * 0.3) + jitter),
-  ) * 10) / 10;
-  const potentialGap = real?.potential_percent != null && real.percent != null
-    ? Math.max(0, real.potential_percent - real.percent)
-    : null;
-  return {
-    percent,
-    potential_percent: potentialGap == null ? null : Math.min(100, percent + potentialGap),
-    meta: real?.meta ?? null,
-    metric: real?.metric ?? benchmark.column.metric,
-    num_samples: real?.num_samples ?? benchmark.column.num_samples,
-    created_at: real?.created_at ?? null,
-  };
+function scoreText(value: number | null | undefined): string {
+  return value == null ? "—" : `${value.toFixed(1)}%`;
 }
 
 function deltaValue(current: MatrixCell | null, previous: MatrixCell | null): number | null {
   if (current?.percent == null || previous?.percent == null) return null;
   return current.percent - previous.percent;
-}
-
-function scoreText(value: number | null | undefined): string {
-  return value == null ? "—" : `${value.toFixed(1)}%`;
 }
 
 function categoryForRecord(record: EvalRecord): AnswerCategory {
@@ -367,13 +274,13 @@ function answerFromRecord(record: EvalRecord, benchmark: DisplayBenchmark): Answ
   };
 }
 
-function generationLabel(generation: Generation): string {
-  return generation === "current" ? "当代" : "前代";
+function architectureLabel(architecture: Architecture): string {
+  return `G1${architecture.at(-1)}`;
 }
 
 export function ReferenceEvaluationBoard({ matrix }: { matrix: LeaderboardMatrix }) {
   const groups = useMemo(() => groupsFromMatrix(matrix), [matrix]);
-  const [experiment, setExperiment] = useState<(typeof EXPERIMENT_TABS)[number]>("前代 vs 当代");
+  const [experiment, setExperiment] = useState<(typeof EXPERIMENT_TABS)[number]>("最新两个架构");
   const [domainKey, setDomainKey] = useState("all");
   const benchmarks = useMemo(() => catalogBenchmarks(matrix, domainKey), [domainKey, matrix]);
   const domainTabs = useMemo(
@@ -429,7 +336,7 @@ export function ReferenceEvaluationBoard({ matrix }: { matrix: LeaderboardMatrix
               {domainTabs.find((item) => item.key === domainKey)?.label}（{benchmarks.length}） · {experiment}
             </strong>
             <strong>{domainKey === "overview" ? "常规评估" : DOMAIN_TABS.find((item) => item.key === domainKey)?.label} · {experiment}</strong>
-            <span><b>前代 → 当代</b> · 仅改变模型代际；prompt、precision、sampling 与输出边界保持一致。</span>
+            <span><b>各参数量最新两个架构</b> · 上一代在前，当前代在后；delta = 当前代 − 上一代。</span>
           </div>
         </div>
 
@@ -440,12 +347,13 @@ export function ReferenceEvaluationBoard({ matrix }: { matrix: LeaderboardMatrix
                 <th className="ref-benchmark" rowSpan={2}>benchmark</th>
                 <th className="ref-samples" rowSpan={2}>n_<br />samples</th>
                 <th className="ref-metric" rowSpan={2}>k_<br />metric</th>
-                {groups.map((group) => <th colSpan={3} key={group.param}>{group.param.toUpperCase()}</th>)}
+                {groups.map((group) => <th colSpan={group.models.length + 1} key={group.param}>{group.param.toUpperCase()}</th>)}
               </tr>
               <tr>
                 {groups.flatMap((group) => [
-                  <th key={`${group.param}:previous`}>前代</th>,
-                  <th key={`${group.param}:current`}>当代</th>,
+                  ...group.models.map(({ architecture }) => (
+                    <th key={`${group.param}:${architecture}`}>{architectureLabel(architecture)}</th>
+                  )),
                   <th className="ref-delta-head" key={`${group.param}:delta`}>delta</th>,
                 ])}
               </tr>
@@ -455,46 +363,39 @@ export function ReferenceEvaluationBoard({ matrix }: { matrix: LeaderboardMatrix
                 <tr className={`reference-row-tone tone-${benchmarkIndex % 4}`} key={benchmark.key}>
                   <td className="ref-benchmark">
                     {benchmark.label}
+                    <small className={`benchmark-mode ${benchmark.evalMode.toLowerCase()}`}>{benchmark.evalMode}</small>
                     {benchmark.deferred ? <small className="benchmark-deferred">（{benchmark.deferred}）</small> : null}
                   </td>
                   <td className="ref-samples">{benchmark.column.num_samples?.toLocaleString() ?? "—"}</td>
                   <td className="ref-metric">{benchmark.column.metric ?? "score"}</td>
                   {groups.flatMap((group) => {
-                    const previous = displayCellFor(benchmark, groups, group, "previous");
-                    const current = displayCellFor(benchmark, groups, group, "current");
-                    const delta = deltaValue(current, previous);
+                    const scoreCells = group.models.map(({ row }) => cellForModel(benchmark, row.model));
+                    const delta = deltaValue(scoreCells.at(-1) ?? null, scoreCells.at(-2) ?? null);
                     return [
-                      <td key={`${benchmark.key}:${group.param}:previous`}>
-                        <CompactScore
-                          cell={previous}
-                          selected={selection?.benchmark.key === benchmark.key
-                            && selection.group.param === group.param
-                            && selection.generation === "previous"}
-                          onClick={previous?.meta?.task_id != null && group.previous ? () => setSelection({
-                            benchmark,
-                            group,
-                            generation: "previous",
-                            model: group.previous!.model,
-                            cell: previous,
-                          }) : undefined}
-                        />
-                      </td>,
-                      <td key={`${benchmark.key}:${group.param}:current`}>
-                        <CompactScore
-                          cell={current}
-                          selected={selection?.benchmark.key === benchmark.key
-                            && selection.group.param === group.param
-                            && selection.generation === "current"}
-                          onClick={current?.meta?.task_id != null ? () => setSelection({
-                            benchmark,
-                            group,
-                            generation: "current",
-                            model: group.current.model,
-                            cell: current,
-                          }) : undefined}
-                        />
-                      </td>,
-                      <td className={`ref-delta ${delta != null && delta > 0.05 ? "positive" : delta != null && delta < -0.05 ? "negative" : ""}`} key={`${benchmark.key}:${group.param}:delta`}>
+                      ...group.models.map(({ architecture, row }, modelIndex) => {
+                        const cell = scoreCells[modelIndex];
+                        return (
+                          <td key={`${benchmark.key}:${group.param}:${architecture}`}>
+                            <CompactScore
+                              cell={cell}
+                              selected={selection?.benchmark.key === benchmark.key
+                                && selection.group.param === group.param
+                                && selection.architecture === architecture}
+                              onClick={cell?.meta?.task_id != null ? () => setSelection({
+                                benchmark,
+                                group,
+                                architecture,
+                                model: row.model,
+                                cell,
+                              }) : undefined}
+                            />
+                          </td>
+                        );
+                      }),
+                      <td
+                        className={`ref-delta ${delta != null && delta > 0.05 ? "positive" : delta != null && delta < -0.05 ? "negative" : ""}`}
+                        key={`${benchmark.key}:${group.param}:delta`}
+                      >
                         {delta == null ? "—" : `${delta > 0 ? "+" : ""}${delta.toFixed(1)}%`}
                       </td>,
                     ];
@@ -510,7 +411,7 @@ export function ReferenceEvaluationBoard({ matrix }: { matrix: LeaderboardMatrix
         <AnswerDetails selection={selection} onClear={() => setSelection(null)} />
       ) : (
         <section className="reference-card selection-empty">
-          点击表格中的前代或当代分数，查看该模型的逐题作答详情。
+          点击表格中的实测分数，查看该架构模型的逐题作答详情。
         </section>
       )}
     </div>
@@ -875,7 +776,7 @@ function FullContextModal({
               <dt>repeat_id</dt><dd>{answer.repeatId}</dd>
               <dt>pass_index</dt><dd>{answer.passIndex}</dd>
               <dt>task_id</dt><dd>{taskId}</dd>
-              <dt>generation</dt><dd>{generationLabel(selection.generation)}</dd>
+              <dt>architecture</dt><dd>{architectureLabel(selection.architecture)}</dd>
               <dt>is_passed</dt><dd><span className={`answer-outcome ${passed ? "pass" : "fail"}`}>{passed ? "true" : "false"}</span></dd>
             </dl>
             {samplingConfig !== undefined ? (

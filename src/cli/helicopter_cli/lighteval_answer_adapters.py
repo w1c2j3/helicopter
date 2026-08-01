@@ -31,7 +31,7 @@ _CODE_FORMATS = {
     "python_program",
     "python_snippet",
 }
-_CHOICE_FORMATS = {"choice", "multiple_choice", "multichoice", "mmlu"}
+_CHOICE_FORMATS = {"choice", "multiple_choice", "multichoice", "mmlu", "math_choice"}
 _MATH_FORMATS = {"math", "math_boxed", "math_free_response", "math_open_qa"}
 _MATH_CUE = re.compile(
     r"(?:final\s+answer|answer\s+is|the\s+answer(?:\s+is)?|therefore|answer|"
@@ -143,6 +143,101 @@ def extract_choice_answer(text: str, *, prompt: str = "") -> str:
     # found; returning prose here makes eval.answer look like a choice while
     # silently storing an arbitrary piece of reasoning.
     return ""
+
+
+_CHOICE_LABEL_PATTERN = re.compile(
+    r"(?m)^\s*(?:\(([A-Z])\)|\[([A-Z])\]|([A-Z])\s*[.):\-\uFF1A])\s*",
+    re.IGNORECASE,
+)
+
+
+def _choice_label(match: re.Match[str]) -> str:
+    for group in match.groups():
+        if group:
+            return group.upper()
+    return ""
+
+
+def _choice_letters_v2(prompt: str) -> set[str]:
+    value = str(prompt or "")
+    marker = re.search(r"(?:answer\s+choices?|options?)\s*[:\uFF1A]", value, re.IGNORECASE)
+    choices_text = value[marker.end() :] if marker else value
+    matches = list(_CHOICE_LABEL_PATTERN.finditer(choices_text))
+    candidates: list[tuple[int, int, set[str]]] = []
+    for index, match in enumerate(matches):
+        if _choice_label(match) != "A":
+            continue
+        labels = {"A"}
+        cursor = index
+        while cursor + 1 < len(matches) and len(labels) < 26:
+            expected = chr(ord(max(labels)) + 1)
+            next_index = next(
+                (
+                    candidate_index
+                    for candidate_index in range(cursor + 1, len(matches))
+                    if _choice_label(matches[candidate_index]) == expected
+                ),
+                None,
+            )
+            if next_index is None:
+                break
+            labels.add(expected)
+            cursor = next_index
+        if len(labels) >= 2:
+            candidates.append((len(labels), matches[cursor].end(), labels))
+    return (
+        max(candidates, key=lambda item: (item[0], item[1]))[2]
+        if candidates
+        else set("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    )
+
+
+def extract_choice_answer_v2(text: str, *, prompt: str = "") -> str:
+    """Extract the last valid RWKV choice token from a response."""
+
+    value = truncate_rwkv_completion(text, ())
+    valid = _choice_letters_v2(prompt)
+    candidates: list[tuple[int, str]] = []
+    prompt_header = re.compile(r"\b(?:answer\s+choices|options?|choices)\s*:", re.IGNORECASE)
+
+    def add(match: re.Match[str]) -> None:
+        letter = match.group(1).upper()
+        if letter not in valid:
+            return
+        line_start = value.rfind("\n", 0, match.start()) + 1
+        line_end = value.find("\n", match.end())
+        if line_end < 0:
+            line_end = len(value)
+        line = value[line_start:line_end]
+        if prompt_header.search(line[: match.start() - line_start]):
+            return
+        candidates.append((match.start(), letter))
+
+    patterns = (
+        r"\\(?:boxed|fbox)\s*\{\s*(?:(?:option|choice)\s+)?"
+        r"([A-Z])(?![A-Za-z_])(?=\s*(?:\}|[.):\-]))",
+        r"<(?:answer|final_answer)>\s*[\(\[]?\s*([A-Z])"
+        r"(?![A-Za-z_])\s*[\)\]]?\s*</(?:answer|final_answer)>",
+        r"(?<![A-Za-z_])\$\s*([A-Z])(?![A-Za-z_])\s*\$",
+        r"(?<![A-Za-z_])(?:\*\*|__)\s*([A-Z])(?![A-Za-z_])\s*(?:\*\*|__)",
+        r"(?:\b(?:answer|option|choice|letter|statement|result|value)\b|"
+        r"答案|正确选项|选项)\s*(?:(?:is|was|equals|为|是)\s*)?"
+        r"(?:(?:option|choice)\s*)?[:=：]?\s*"
+        r"(?:\*\*|__|\$|[\(\[])?\s*([A-Z])(?![A-Za-z_])",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, value, re.IGNORECASE):
+            add(match)
+
+    for match in re.finditer(
+        r"(?m)^[ \t]*(?:[\(\[]\s*)?([A-Z])(?![A-Za-z_])"
+        r"(?:\s*[\)\]])?[ \t]*[.!]?[ \t]*$",
+        value,
+        re.IGNORECASE,
+    ):
+        add(match)
+
+    return f" {candidates[-1][1]}" if candidates else ""
 
 
 def _boxed_candidates(text: str) -> list[str]:
@@ -467,8 +562,8 @@ def answers_match(
     domain_name = str(domain or "").strip().lower()
     format_name = str(request_format or "").strip().lower()
     if format_name in _CHOICE_FORMATS:
-        left = extract_choice_answer(model_answer)
-        right = extract_choice_answer(reference_answer)
+        left = extract_choice_answer_v2(model_answer)
+        right = extract_choice_answer_v2(reference_answer)
         return bool(left and right and left == right)
     # Some AGIEval tasks belong to the math domain but are multiple-choice
     # tasks (for example aqua-rat).  The explicit transport format is more
@@ -529,7 +624,7 @@ def adapt_answer(
     domain_name = str(domain or "").strip().lower()
     format_name = str(request_format or "").strip().lower()
     if format_name in _CHOICE_FORMATS:
-        return extract_choice_answer(value, prompt=prompt)
+        return extract_choice_answer_v2(value, prompt=prompt)
     if format_name in _MATH_FORMATS or domain_name == "math":
         return extract_math_answer(value)
     if format_name in _CODE_FORMATS or domain_name == "coding":

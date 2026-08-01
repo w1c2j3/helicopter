@@ -15,6 +15,7 @@ def _entry(
     field: str = "knowledge",
     is_param_search: bool = False,
     temperature: float | None = None,
+    cot_mode: str = "NoCoT",
 ) -> dict[str, object]:
     sampling: dict[str, object] = {"prompt_profile": profile}
     if temperature is not None:
@@ -22,8 +23,8 @@ def _entry(
     return {
         "score_id": score_id,
         "task_id": score_id,
-        "cot": False,
-        "cot_mode": "NoCoT",
+        "cot": cot_mode == "CoT",
+        "cot_mode": cot_mode,
         "metrics": {"accuracy": score},
         "created_at": datetime(2026, 7, 22, 8, score_id),
         "is_param_search": is_param_search,
@@ -67,6 +68,38 @@ def test_primary_matrix_is_naive_only_with_models_as_rows() -> None:
         "rwkv7-g1g-1.5b-weight-a",
     ]
     assert all("normal" not in row["model"] for row in knowledge["rows"])
+
+
+def test_primary_matrix_keeps_cot_and_nocot_as_separate_columns() -> None:
+    entries = [
+        _entry(
+            score_id=1,
+            model="rwkv7-g1h-1.5b-weight",
+            dataset="mmlu_test",
+            score=0.6,
+            profile="naive",
+            cot_mode="CoT",
+        ),
+        _entry(
+            score_id=2,
+            model="rwkv7-g1h-1.5b-weight",
+            dataset="mmlu_test",
+            score=0.7,
+            profile="naive",
+            cot_mode="NoCoT",
+        ),
+    ]
+
+    payload = build_leaderboard_payload(
+        entries,
+        selected_model=None,
+        view="benchmark_detail_latest",
+        tuning_entries=entries,
+    )
+    knowledge = payload["matrix"]["domains"][0]
+
+    assert [column["eval_method"] for column in knowledge["columns"]] == ["CoT", "NoCoT"]
+    assert [cell["percent"] for cell in knowledge["rows"][0]["cells"]] == [60.0, 70.0]
 
 
 def test_normal_and_parameter_search_are_kept_on_tuning_matrix() -> None:

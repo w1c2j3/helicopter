@@ -1,0 +1,17 @@
+# Docker-backed Terminal-Bench 2.1 profile.
+#
+# Terminal-Bench owns its Harbor/terminus-2 agent loop.  The launcher therefore
+# passes --no-agent-config and leaves the benchmark-defined tool protocol intact.
+
+[evalscope]
+binary = "evalscope"
+eval_type = "openai_api"
+eval_batch_size = 1
+request_timeout = 1800
+generation_config = { max_tokens = 2048, temperature = 0.0, timeout = 1800 }
+
+[evalscope.dataset_args.terminal_bench_v2_1.extra_params]
+environment_type = "docker"
+agent_name = "terminus-2"
+timeout_multiplier = 1.0
+max_turns = 200

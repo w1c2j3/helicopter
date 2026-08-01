@@ -61,13 +61,109 @@ def test_build_import_plan_keeps_official_raw_records_and_scores(tmp_path) -> No
     plan = build_import_plan(tmp_path, model_name=model)
 
     assert plan.context_audit["samples"] == 2
-    assert plan.context_audit["context_error_samples"] == 1
+    assert plan.context_audit["context_error_samples"] == 0
     assert len(plan.completion_payloads) == 2
     assert len(plan.eval_payloads) == 2
     assert plan.eval_payloads[0]["is_passed"] is True
     assert plan.eval_payloads[1]["is_passed"] is False
     assert plan.completion_payloads[0]["agent_result"]["prediction"]["messages"][0]["content"] == "question-0"
     assert plan.completion_payloads[1]["agent_result"]["official_reference"] == [{"tool": {"x": [1]}}]
+
+
+def test_build_import_plan_accepts_official_passed_and_preserves_unscored_values(tmp_path) -> None:
+    model = "verifier-model"
+    for kind in ("predictions", "reviews"):
+        (tmp_path / kind / model).mkdir(parents=True)
+    (tmp_path / "reports" / model).mkdir(parents=True)
+    (tmp_path / "reports" / model / "k2_verifier.json").write_text(
+        json.dumps({"dataset_name": "k2_verifier", "model_name": model, "score": 0.25}),
+        encoding="utf-8",
+    )
+    predictions = [_prediction(0), _prediction(1)]
+    reviews = [
+        {
+            "sample_score": {
+                "score": {
+                    "value": {"passed": True},
+                    "extracted_prediction": "official-answer-0",
+                }
+            }
+        },
+        {
+            "sample_score": {
+                "score": {
+                    "value": {"trigger_similarity": 0.0, "schema_accuracy": 1.0},
+                    "extracted_prediction": "official-answer-1",
+                }
+            }
+        },
+    ]
+    for kind, rows in (("predictions", predictions), ("reviews", reviews)):
+        (tmp_path / kind / model / "k2_verifier_default.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in rows),
+            encoding="utf-8",
+        )
+
+    plan = build_import_plan(tmp_path, model_name=model, benchmark="k2_verifier")
+
+    assert plan.invalid_reviews == 0
+    assert plan.unscored_reviews == 1
+    assert len(plan.eval_payloads) == 1
+    assert plan.completion_payloads[1]["status"] == "Completed"
+    assert plan.completion_payloads[1]["agent_result"]["official_sample_value"] == {
+        "trigger_similarity": 0.0,
+        "schema_accuracy": 1.0,
+    }
+
+
+def test_output_token_cap_is_not_a_context_error(tmp_path) -> None:
+    model = "cap-model"
+    for kind in ("predictions", "reviews"):
+        (tmp_path / kind / model).mkdir(parents=True)
+    (tmp_path / "reports" / model).mkdir(parents=True)
+    (tmp_path / "reports" / model / "general_fc.json").write_text(
+        json.dumps({"dataset_name": "general_fc", "model_name": model, "score": 0.0}),
+        encoding="utf-8",
+    )
+    prediction = _prediction(0, finish_reason="length")
+    prediction["model_output"]["choices"][0]["message"]["content"] = "truncated"
+    review = {"sample_score": {"score": {"value": {"passed": False}}}}
+    for kind, row in (("predictions", prediction), ("reviews", review)):
+        (tmp_path / kind / model / "general_fc_default.jsonl").write_text(
+            json.dumps(row) + "\n",
+            encoding="utf-8",
+        )
+
+    plan = build_import_plan(tmp_path, model_name=model, benchmark="general_fc")
+
+    assert plan.context_audit["context_error_samples"] == 0
+
+
+def test_provider_connection_error_is_not_scored_as_model_failure(tmp_path) -> None:
+    model = "transport-error-model"
+    for kind in ("predictions", "reviews"):
+        (tmp_path / kind / model).mkdir(parents=True)
+    (tmp_path / "reports" / model).mkdir(parents=True)
+    (tmp_path / "reports" / model / "general_fc.json").write_text(
+        json.dumps({"dataset_name": "general_fc", "model_name": model, "score": 0.0}),
+        encoding="utf-8",
+    )
+    prediction = _prediction(0)
+    prediction["model_output"]["error"] = "Connection error."
+    review = {"sample_score": {"score": {"value": {"passed": False}}}}
+    for kind, row in (("predictions", prediction), ("reviews", review)):
+        (tmp_path / kind / model / "general_fc_default.jsonl").write_text(
+            json.dumps(row) + "\n",
+            encoding="utf-8",
+        )
+
+    plan = build_import_plan(tmp_path, model_name=model, benchmark="general_fc")
+
+    assert plan.inference_error_samples == 1
+    assert plan.context_audit["status_counts"] == {"inference_error": 1}
+    assert plan.context_audit["context_error_samples"] == 0
+    assert plan.completion_payloads[0]["status"] == "Failed"
+    assert plan.eval_payloads == []
 
 
 def test_cleanup_json_artifacts_is_scoped_to_evalscope_work_dir(tmp_path) -> None:

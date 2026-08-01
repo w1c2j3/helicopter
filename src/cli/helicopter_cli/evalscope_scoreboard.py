@@ -31,6 +31,8 @@ class EvalScopeImportPlan:
     context_audit: dict[str, Any]
     missing_reviews: int
     invalid_reviews: int
+    inference_error_samples: int
+    unscored_reviews: int
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -102,7 +104,20 @@ def _context_audit(prediction: Mapping[str, Any]) -> dict[str, Any]:
     finish = str(finish_reason or "").casefold()
     error_text = " ".join(str(item or "") for item in (error, output.get("error") if isinstance(output, Mapping) else None)).casefold()
     context_markers = ("context length", "maximum context", "context window", "too many tokens", "token limit", "input too long")
-    context_error = any(marker in error_text for marker in context_markers) or finish in {"length", "max_tokens"}
+    # ``max_tokens`` and OpenAI's generic ``length`` stop reason describe an
+    # output cap just as often as they describe an input-context failure.  Do
+    # not label those ordinary completions as context errors; require an
+    # explicit context error marker or a provider-specific context stop code.
+    context_error = any(marker in error_text for marker in context_markers) or finish in {
+        "context_length",
+        "input_length",
+        "model_length",
+    }
+    # EvalScope preserves provider failures in ``model_output.error``.  Keep
+    # those samples auditable, but do not let a transport failure become a
+    # model-quality score.  Tool/environment errors live in the message
+    # trace, not in this provider-level field, so they are not classified here.
+    inference_error = bool(error_text.strip()) and not context_error
     input_tokens = usage.get("prompt_tokens") if isinstance(usage, Mapping) else None
     if input_tokens is None and isinstance(perf, Mapping):
         input_tokens = perf.get("input_tokens")
@@ -110,8 +125,9 @@ def _context_audit(prediction: Mapping[str, Any]) -> dict[str, Any]:
     if output_tokens is None and isinstance(perf, Mapping):
         output_tokens = perf.get("output_tokens")
     return {
-        "status": "context_error" if context_error else "ok",
+        "status": "context_error" if context_error else ("inference_error" if inference_error else "ok"),
         "context_error": context_error,
+        "inference_error": inference_error,
         "finish_reason": finish_reason,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
@@ -130,8 +146,10 @@ def _sample_score(review: Mapping[str, Any]) -> tuple[float | None, str | None, 
     score = sample_score.get("score")
     value = score.get("value") if isinstance(score, Mapping) else None
     raw_acc = value.get("acc") if isinstance(value, Mapping) else None
+    raw_passed = value.get("passed") if isinstance(value, Mapping) else None
+    scalar = raw_acc if raw_acc is not None else raw_passed
     try:
-        acc = float(raw_acc) if raw_acc is not None else None
+        acc = float(scalar) if scalar is not None else None
     except (TypeError, ValueError):
         acc = None
     extracted = score.get("extracted_prediction") if isinstance(score, Mapping) else None
@@ -143,8 +161,45 @@ def _sample_score(review: Mapping[str, Any]) -> tuple[float | None, str | None, 
     if not error and isinstance(score_metadata, Mapping):
         error = score_metadata.get("error_message") or score_metadata.get("error")
     if acc is None:
-        error = error or "official review has no numeric acc"
+        error = error or "official review has no numeric acc/passed sample value"
     return acc, str(extracted) if extracted is not None else None, metadata, str(error or "")
+
+
+def _official_sample_value(review: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Return EvalScope's raw per-sample score value without rescoring it."""
+
+    sample_score = review.get("sample_score")
+    score = sample_score.get("score") if isinstance(sample_score, Mapping) else None
+    value = score.get("value") if isinstance(score, Mapping) else None
+    return value if isinstance(value, Mapping) else None
+
+
+def _official_sample_passed(value: Mapping[str, Any] | None) -> bool | None:
+    """Extract a pass flag only when EvalScope exposes one at sample level.
+
+    The importer never recomputes an aggregate metric.  The two explicit
+    fields used by EvalScope's rule scorers are safe to copy directly.  Some
+    verifier adapters intentionally expose only validator counters; those are
+    retained in ``agent_result`` and the official report, but do not create a
+    synthetic per-sample pass/fail row.
+    """
+
+    if not value:
+        return None
+    if "acc" in value:
+        try:
+            return float(value["acc"]) == 1.0
+        except (TypeError, ValueError):
+            return None
+    if "passed" in value:
+        raw = value["passed"]
+        if isinstance(raw, bool):
+            return raw
+        try:
+            return float(raw) == 1.0
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 def _ground_truth(prediction: Mapping[str, Any], review: Mapping[str, Any]) -> Any:
@@ -185,6 +240,8 @@ def build_import_plan(work_dir: Path, *, model_name: str, benchmark: str = "bfcl
     audit_counts: Counter[str] = Counter()
     missing_reviews = 0
     invalid_reviews = 0
+    inference_error_samples = 0
+    unscored_reviews = 0
     sample_index = 0
     prediction_paths = sorted(prediction_dir.glob("*.jsonl"))
     if not prediction_paths:
@@ -199,11 +256,16 @@ def build_import_plan(work_dir: Path, *, model_name: str, benchmark: str = "bfcl
             review = reviews[ordinal] if ordinal < len(reviews) else {}
             audit = _context_audit(prediction)
             audit_counts[str(audit["status"])] += 1
+            if audit["inference_error"]:
+                inference_error_samples += 1
             acc, extracted, metadata, reason = _sample_score(review)
             if not review:
                 missing_reviews += 1
-            if acc is None:
+            value = _official_sample_value(review)
+            if not review or value is None:
                 invalid_reviews += 1
+            elif _official_sample_passed(value) is None:
+                unscored_reviews += 1
             answer = extracted
             if answer is None:
                 answer, _error, _finish = _model_output_parts(prediction)
@@ -213,6 +275,7 @@ def build_import_plan(work_dir: Path, *, model_name: str, benchmark: str = "bfcl
                 "prediction": prediction,
                 "review": review,
                 "official_sample_score": acc,
+                "official_sample_value": dict(value) if value is not None else None,
                 "official_extracted_prediction": extracted,
                 "official_reference": ref_answer,
                 "subset": subset,
@@ -225,12 +288,13 @@ def build_import_plan(work_dir: Path, *, model_name: str, benchmark: str = "bfcl
                     "sample_index": sample_index,
                     "repeat_index": 0,
                     "pass_index": 0,
-                    "status": "Completed" if acc is not None else "Failed",
+                    "status": "Completed" if value is not None and not audit["inference_error"] else "Failed",
                     "sampling_config": {"cot_mode": "NoCoT", "source": "evalscope_official", "benchmark": benchmark},
                     "agent_result": agent_result,
                 }
             )
-            if acc is not None:
+            passed = _official_sample_passed(value)
+            if passed is not None and not audit["inference_error"]:
                 eval_payloads.append(
                     {
                         "sample_index": sample_index,
@@ -238,8 +302,8 @@ def build_import_plan(work_dir: Path, *, model_name: str, benchmark: str = "bfcl
                         "pass_index": 0,
                         "answer": answer,
                         "ref_answer": ref_answer,
-                        "is_passed": acc == 1.0,
-                        "fail_reason": "" if acc == 1.0 else reason,
+                        "is_passed": passed,
+                        "fail_reason": "" if passed else reason,
                     }
                 )
             sample_index += 1
@@ -249,6 +313,8 @@ def build_import_plan(work_dir: Path, *, model_name: str, benchmark: str = "bfcl
         "context_error_samples": audit_counts.get("context_error", 0),
         "missing_reviews": missing_reviews,
         "invalid_reviews": invalid_reviews,
+        "inference_error_samples": inference_error_samples,
+        "unscored_reviews": unscored_reviews,
     }
     return EvalScopeImportPlan(
         benchmark=benchmark,
@@ -260,6 +326,8 @@ def build_import_plan(work_dir: Path, *, model_name: str, benchmark: str = "bfcl
         context_audit=context_audit,
         missing_reviews=missing_reviews,
         invalid_reviews=invalid_reviews,
+        inference_error_samples=inference_error_samples,
+        unscored_reviews=unscored_reviews,
     )
 
 
@@ -267,7 +335,7 @@ async def persist_import_plan(
     plan: EvalScopeImportPlan,
     *,
     root: Path,
-    job_name: str = "evalscope_bfcl_v4_official",
+    job_name: str | None = None,
 ) -> str:
     """Persist one official run into the existing scoreboard database."""
 
@@ -288,10 +356,11 @@ async def persist_import_plan(
             "benchmark": plan.benchmark,
             "work_dir": str(plan.work_dir),
             "context_audit": plan.context_audit,
+            "inference_error_samples": plan.inference_error_samples,
         }
         config_path = str(plan.work_dir / "configs" / "task_config.yaml")
         task_id = await store.get_or_create_task(
-            job_name=job_name,
+            job_name=job_name or f"evalscope_{plan.benchmark}_official",
             job_id=None,
             dataset=plan.benchmark,
             model=plan.model_name,
@@ -320,16 +389,16 @@ async def persist_import_plan(
         await store.record_score_payload(
             task_id=task_id,
             payload={"cot_mode": "NoCoT", "metrics": metrics},
-            mark_completed=not plan.invalid_reviews,
+            mark_completed=not plan.invalid_reviews and not plan.inference_error_samples,
         )
-        if plan.invalid_reviews:
+        if plan.invalid_reviews or plan.inference_error_samples:
             await store.update_task_status(task_id=task_id, status="Failed")
         return f"task={task_id} completions={inserted} evals={inserted_evals} score={plan.report.get('score')}"
     finally:
         await close_db()
 
 
-def persist_import_plan_sync(plan: EvalScopeImportPlan, *, root: Path, job_name: str = "evalscope_bfcl_v4_official") -> str:
+def persist_import_plan_sync(plan: EvalScopeImportPlan, *, root: Path, job_name: str | None = None) -> str:
     return asyncio.run(persist_import_plan(plan, root=root, job_name=job_name))
 
 

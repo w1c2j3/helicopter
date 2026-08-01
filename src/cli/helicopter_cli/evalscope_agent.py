@@ -189,17 +189,28 @@ def _persist_evalscope_scoreboard(
 
     try:
         model_name = _served_model_name(args, config=config)
-        plan = build_import_plan(work_dir, model_name=model_name)
-        with SCOREBOARD_LOCK, _scoreboard_env(env):
-            result = persist_import_plan_sync(plan, root=root)
-        print(
-            "evalscope: official results persisted to scoreboard: "
-            f"{result}; context_audit={json.dumps(plan.context_audit, ensure_ascii=False, sort_keys=True)}"
-        )
+        try:
+            benchmarks = _datasets(args, config)
+        except SystemExit:
+            # ``--report-only`` can be used against the historical BFCL run
+            # without repeating its positional dataset argument.
+            benchmarks = ["bfcl_v4"]
+        results: list[str] = []
+        plans = []
+        for benchmark in benchmarks:
+            plan = build_import_plan(work_dir, model_name=model_name, benchmark=benchmark)
+            with SCOREBOARD_LOCK, _scoreboard_env(env):
+                result = persist_import_plan_sync(plan, root=root)
+            plans.append(plan)
+            results.append(result)
+            print(
+                "evalscope: official results persisted to scoreboard: "
+                f"{result}; context_audit={json.dumps(plan.context_audit, ensure_ascii=False, sort_keys=True)}"
+            )
         if getattr(args, "scoreboard_db_only", False):
             removed = cleanup_json_artifacts(work_dir)
             print(f"evalscope: removed {removed} JSON/JSONL artifacts after verified DB import")
-        return True, result
+        return True, "; ".join(results)
     except Exception as error:  # noqa: BLE001 - surface DB failure without hiding the official run result
         print(f"evalscope: scoreboard import failed; JSON artifacts were retained: {error}")
         return False, None

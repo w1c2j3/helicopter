@@ -2428,6 +2428,25 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   white-space: nowrap;
 }
 
+.benchmark-mode {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 4px;
+  border: 1px solid #40516b;
+  border-radius: 3px;
+  color: #a9bad3;
+  font-size: 7px;
+  font-weight: 700;
+  line-height: 1.2;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+
+.benchmark-mode.cot {
+  border-color: #786836;
+  color: #d7bd65;
+}
+
 .comparison-heading > div {
   display: grid;
   gap: 4px;
