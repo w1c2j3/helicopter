@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -112,5 +113,71 @@ def test_config_rejects_output_path_that_is_not_a_directory(tmp_path: Path) -> N
     with pytest.raises(ConfigError, match="output_dir must be a regular directory"):
         LMEvalConfig.read(
             _config(tmp_path),
+            {"HELICOPTER_VLLM_POOL_MANIFEST": str(manifest)},
+        )
+
+
+def test_published_config_builds_weight_and_wkv_execution_matrix(tmp_path: Path) -> None:
+    weight_root = tmp_path / "weights"
+    weight_root.mkdir()
+    weight = weight_root / "model.pth"
+    weight.write_bytes(b"checkpoint")
+    digest = hashlib.sha256(b"checkpoint").hexdigest()
+    manifests = []
+    for mode in ("fp16", "fp32io16"):
+        path = tmp_path / f"{mode}.json"
+        mode_dir = tmp_path / mode
+        mode_dir.mkdir()
+        payload = json.loads(_manifest(mode_dir).read_text(encoding="utf-8"))
+        payload.update(
+            wkv_mode=mode,
+            weight_sha256=digest,
+            weight_display_name=weight.name,
+        )
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        manifests.append(path)
+    config_path = tmp_path / "campaign.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "schema_version = 1",
+                'backend = "vllm_http"',
+                "publish = true",
+                'tasks = ["wikitext"]',
+                f'output_dir = "{tmp_path / "results"}"',
+                'weights = ["model.pth"]',
+                'wkv_modes = ["fp16", "fp32io16"]',
+                "max_gen_toks = 8",
+                "pool_manifests = [",
+                *(f'  "{path}",' for path in manifests),
+                "]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = LMEvalConfig.read(
+        config_path,
+        {
+            "WEIGHT_PATH": str(weight_root),
+            "HELICOPTER_SCOREBOARD_URL": "https://scoreboard.example",
+            "HELICOPTER_SCOREBOARD_TOKEN": "secret",
+        },
+    )
+
+    assert [unit.wkv_mode for unit in config.execution_units] == [
+        "fp16",
+        "fp32io16",
+    ]
+    assert all(unit.weight_sha256 == digest for unit in config.execution_units)
+    assert config.public()["scoreboard_token"] == "[REDACTED]"
+
+
+def test_published_config_rejects_smoke_limit(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+
+    with pytest.raises(ConfigError, match="must not set limit"):
+        LMEvalConfig.read(
+            _config(tmp_path, extra="publish = true\nlimit = 1"),
             {"HELICOPTER_VLLM_POOL_MANIFEST": str(manifest)},
         )

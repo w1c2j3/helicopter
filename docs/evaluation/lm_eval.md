@@ -44,7 +44,8 @@ log_samples = false
   条件 token。
 - `max_gen_toks` 是 task 未指定生成长度时的默认值。task 自己的
   `max_gen_toks` 或 `max_new_tokens` 优先；提示词会从左侧截断，为输出保留空间。
-- `limit` 是可选的正整数，只用于 smoke test；正式结果不应设置。
+- `limit` 是可选的正整数，只用于本地 smoke test；`publish = true` 时配置解析会
+  直接拒绝 `limit`，防止将抽样结果发布成完整评测。
 - `log_samples` 默认关闭；启用时原始 lm-eval sample 信息会进入结果文件。
 
 生成请求支持 harness 常用的 `until`、`max_gen_toks`、`max_new_tokens`、
@@ -152,9 +153,55 @@ selector、task version、few-shot、无 chat template、确定性解码、数�
 - `summary.json`：稳定的项目级摘要，包含 lm-eval 版本、model id、global step、
   WKV mode、上下文长度、task 版本和 metrics。
 
-这些结果只写本地，不创建 Scoreboard campaign，也不修改现有 LightEval
-publication schema。WikiText-only 运行仍可使用
+默认配置仍只写本地，不创建 Scoreboard campaign。每个执行单元会写出
+`results.json`、`summary.json`、`artifacts.json`，启用 `log_samples` 时还会按 task
+写入 `samples/*.json`。WikiText-only 运行仍可使用
 `configs/eval/lm_eval_ppl.toml`。
+
+## 生产 campaign
+
+`configs/eval/lm_eval_campaign.toml` 提供与 LightEval campaign 对齐的发布模式：
+
+- `weights` 中的路径必须位于 `WEIGHT_PATH` 下，禁止绝对路径、`..` 和 symlink；
+  runner 会计算每份权重的 SHA-256，并拒绝内容重复的权重。
+- `wkv_modes` 在发布模式必须同时包含 `fp16` 和 `fp32io16`。
+- `pool_manifests` 按 weight-major、随后按 `wkv_modes` 顺序一一对应执行矩阵。
+  每份 manifest 必须声明与权重文件一致的 `weight_sha256`、
+  `weight_display_name` 和对应 WKV mode。
+- group 和 tag 在 campaign 合同中递归展开为叶子 task，但执行时仍由 lm-eval
+  原生 selector 负责加载和评分。
+- dry-run 会预检全部 pool 和 Scoreboard 合同，并输出完整 execution units 与
+  expected task 数量；不会创建 campaign。
+- 正式运行先创建 `lm-eval-campaign-v1`，逐矩阵单元运行并发布
+  `lm-eval-task-v1`，全部 task 到齐后才 finalize。重复内容使用 canonical digest
+  幂等写入，冲突内容失败关闭。
+
+生产 manifest 在原有字段外必须包含：
+
+```json
+{
+  "weight_sha256": "<64 lowercase hex>",
+  "weight_display_name": "model.pth"
+}
+```
+
+发布还要求 `HELICOPTER_SCOREBOARD_URL` 和
+`HELICOPTER_SCOREBOARD_TOKEN`。Scoreboard 同时接受原有 LightEval v3/v2 合同和
+lm-eval v1 合同，历史 LightEval API 保持兼容。
+
+```bash
+export WEIGHT_PATH=/absolute/path/to/weights
+export LM_EVAL_CAMPAIGN_WEIGHT=model.pth
+export LM_EVAL_FP16_POOL_MANIFEST=/run/helicopter/lm-eval-fp16.json
+export LM_EVAL_FP32IO16_POOL_MANIFEST=/run/helicopter/lm-eval-fp32io16.json
+export HELICOPTER_SCOREBOARD_URL=https://scoreboard.example
+export HELICOPTER_SCOREBOARD_TOKEN=replace-with-private-token
+
+helicopter eval \
+  --evaluator lm-eval \
+  --config configs/eval/lm_eval_campaign.toml \
+  --dry-run
+```
 
 ## 安装
 

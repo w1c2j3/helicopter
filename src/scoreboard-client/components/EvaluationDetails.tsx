@@ -57,16 +57,17 @@ function reference(doc: Record<string, unknown>): string {
   return "null";
 }
 
-const PROMPT_STOPS: Record<PromptTemplate, string> = {
+const PROMPT_STOPS: Record<PromptTemplate, string | null> = {
   bot: "✿",
   assistant: "\nUser:",
   function_calling: "\n### User",
+  none: null,
 };
 
 function completionRows(
   sample: SampleDetail,
   limit: number,
-  turnBoundary: string,
+  turnBoundary: string | null,
 ) {
   const raw = strings(sample.model_response.text);
   const processed = strings(sample.model_response.text_post_processed);
@@ -85,7 +86,8 @@ function completionRows(
       answer: processed[index] ?? (split.length === 2 ? split[1] : null),
       tokens: tokens[index] ?? [],
       truncated: (tokens[index]?.length ?? 0) >= limit,
-      boundaryViolation: text.includes(turnBoundary),
+      boundaryViolation:
+        turnBoundary !== null && text.includes(turnBoundary),
     };
   });
 }
@@ -97,7 +99,7 @@ function SampleCard({
 }: {
   sample: SampleDetail;
   limit: number;
-  turnBoundary: string;
+  turnBoundary: string | null;
 }) {
   const completions = completionRows(sample, limit, turnBoundary);
   const logprobs = sample.model_response.logprobs;
@@ -221,6 +223,7 @@ export function EvaluationDetails() {
         <span>campaign: {selected.campaign_id}</span>
         <span>selector: {selected.task.selector}</span>
         <span>module: {selected.task.module_family}</span>
+        <span>evaluator: {selected.model.evaluator ?? "lighteval"}</span>
         <span>prompt template: {selected.model.prompt_template}</span>
         <span>
           tags:{" "}

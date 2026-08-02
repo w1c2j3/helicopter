@@ -151,7 +151,10 @@ are resolved by lm-eval itself. The smaller `configs/eval/lm_eval_ppl.toml`
 continues to provide a WikiText-only run. The
 `configs/eval/lm_eval_qwen35.toml` suite fixes the public Qwen3.5 language-task
 selectors for local protocol-aligned comparisons. All write local
-`results.json` plus `summary.json` and do not publish to Scoreboard. See
+`results.json` plus `summary.json` and do not publish to Scoreboard. Production
+matrix publication is available through `configs/eval/lm_eval_campaign.toml`,
+with weight SHA verification, both WKV modes, standard sample artifacts, and an
+evaluator-aware Scoreboard campaign. See
 [`docs/evaluation/lm_eval.md`](docs/evaluation/lm_eval.md) for the HTTP and
 result contracts.
 

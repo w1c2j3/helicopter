@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import stat
 import tomllib
@@ -254,3 +255,147 @@ def test_result_writer_preserves_raw_results_and_normalizes_metrics(
     assert stat.S_IMODE(output_dir.stat().st_mode) == 0o700
     assert stat.S_IMODE((output_dir / "results.json").stat().st_mode) == 0o600
     assert stat.S_IMODE((output_dir / "summary.json").stat().st_mode) == 0o600
+
+
+def test_published_run_completes_every_matrix_unit_before_finalize(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import lm_eval
+
+    weight_root = tmp_path / "weights"
+    weight_root.mkdir()
+    weight = weight_root / "model.pth"
+    weight.write_bytes(b"checkpoint")
+    digest = hashlib.sha256(b"checkpoint").hexdigest()
+    manifests = []
+    for index, mode in enumerate(("fp16", "fp32io16")):
+        manifest = tmp_path / f"{mode}.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "global_step": 10,
+                    "wkv_mode": mode,
+                    "vllm_version": "0.23.1.dev0",
+                    "max_model_len": 10240,
+                    "weight_sha256": digest,
+                    "weight_display_name": weight.name,
+                    "replicas": [
+                        {
+                            "base_url": f"http://127.0.0.1:{8000 + index}",
+                            "max_concurrency": 2,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        manifests.append(manifest)
+    config = tmp_path / "campaign.toml"
+    config.write_text(
+        "\n".join(
+            [
+                "schema_version = 1",
+                'backend = "vllm_http"',
+                "publish = true",
+                'tasks = ["wikitext"]',
+                f'output_dir = "{tmp_path / "results"}"',
+                'weights = ["model.pth"]',
+                'wkv_modes = ["fp16", "fp32io16"]',
+                "pool_manifests = [",
+                *(f'  "{path}",' for path in manifests),
+                "]",
+                "batch_size = 2",
+                "max_gen_toks = 256",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    events: list[str] = []
+
+    class Pool:
+        total_capacity = 2
+
+        def __init__(self, manifest):
+            self.manifest = manifest
+            self.model_id = f"rwkv-{manifest.wkv_mode}"
+
+        def preflight(self):
+            events.append(f"pool:{self.manifest.wkv_mode}")
+            return self.model_id
+
+        def close(self):
+            events.append(f"close:{self.manifest.wkv_mode}")
+
+    class Client:
+        def __init__(self, _url, _token):
+            pass
+
+        def preflight(self, evaluator, version):
+            events.append(f"scoreboard:{evaluator}:{version}")
+            return {"status": "ready"}
+
+        def create_campaign(self, payload, run_key):
+            assert payload["run_key"] == run_key
+            events.append("create")
+            return {
+                "campaign_id": "11111111-1111-1111-1111-111111111111",
+                "expected_task_count": 2,
+            }
+
+        def publish_task(self, _campaign_id, identity, _payload):
+            events.append(f"publish:{identity.split(':')[1]}")
+
+        def finalize(self, _campaign_id, expected_count):
+            assert expected_count == 2
+            events.append("finalize")
+
+    def simple_evaluate(**kwargs):
+        mode = kwargs["model"].pool.manifest.wkv_mode
+        events.append(f"evaluate:{mode}")
+        return {
+            "results": {"wikitext": {"word_perplexity,none": 12.5}},
+            "configs": {"wikitext": {"output_type": "loglikelihood_rolling"}},
+            "n-samples": {"wikitext": {"original": 1, "effective": 1}},
+            "samples": {
+                "wikitext": [
+                    {
+                        "doc_id": 0,
+                        "doc": {"page": "text"},
+                        "filter": "none",
+                        "metrics": ["word_perplexity"],
+                        "word_perplexity": 12.5,
+                        "filtered_resps": [],
+                    }
+                ]
+            },
+            "versions": {"wikitext": 2},
+        }
+
+    def package_version(name):
+        return "0.4.12" if name == "lm-eval" else "2.11.0"
+
+    monkeypatch.setattr(evaluate, "VLLMHttpPool", Pool)
+    monkeypatch.setattr(lm_eval, "simple_evaluate", simple_evaluate)
+    monkeypatch.setattr(evaluate.importlib.metadata, "version", package_version)
+    monkeypatch.setattr("helicopter_lighteval.publish.ScoreboardClient", Client)
+
+    assert evaluate.run(
+        config_path=config,
+        env={
+            "WEIGHT_PATH": str(weight_root),
+            "HELICOPTER_SCOREBOARD_URL": "https://scoreboard.example",
+            "HELICOPTER_SCOREBOARD_TOKEN": "secret",
+        },
+        dry_run=False,
+    ) == 0
+
+    assert events[:4] == [
+        "scoreboard:lm-eval:0.4.12",
+        "pool:fp16",
+        "pool:fp32io16",
+        "create",
+    ]
+    assert events.index("finalize") > events.index("publish:fp16")
+    assert events.index("finalize") > events.index("publish:fp32io16")

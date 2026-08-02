@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -30,6 +31,8 @@ class PoolManifest:
     vllm_version: str
     max_model_len: int
     replicas: tuple[Replica, ...]
+    weight_sha256: str | None = None
+    weight_display_name: str | None = None
 
     @classmethod
     def read(cls, path: Path) -> PoolManifest:
@@ -50,6 +53,8 @@ class PoolManifest:
             "vllm_version",
             "max_model_len",
             "replicas",
+            "weight_sha256",
+            "weight_display_name",
         }
         unknown = sorted(set(raw) - allowed)
         if unknown:
@@ -83,6 +88,21 @@ class PoolManifest:
             or max_model_len <= 0
         ):
             raise PoolError("vLLM pool manifest max_model_len must be positive")
+        weight_sha256 = raw.get("weight_sha256")
+        if weight_sha256 is not None and (
+            not isinstance(weight_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", weight_sha256) is None
+        ):
+            raise PoolError("vLLM pool manifest weight_sha256 must be lowercase SHA-256")
+        weight_display_name = raw.get("weight_display_name")
+        if weight_display_name is not None and (
+            not isinstance(weight_display_name, str)
+            or not weight_display_name
+            or weight_display_name != weight_display_name.strip()
+        ):
+            raise PoolError(
+                "vLLM pool manifest weight_display_name must be non-empty"
+            )
 
         configured_replicas = raw.get("replicas")
         if not isinstance(configured_replicas, list) or not configured_replicas:
@@ -103,6 +123,8 @@ class PoolManifest:
             vllm_version=vllm_version,
             max_model_len=max_model_len,
             replicas=replicas,
+            weight_sha256=weight_sha256,
+            weight_display_name=weight_display_name,
         )
 
     @staticmethod
