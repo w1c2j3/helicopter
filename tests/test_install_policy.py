@@ -74,6 +74,9 @@ class InstallPolicyTests(unittest.TestCase):
         self.assertIn('RWKV_MODEL_PATH:-${model_path}', launcher)
         self.assertIn('VLLM_RWKV7_WKV_MODE:-fp16', launcher)
 
+        workflow = (ROOT / ".github/workflows/tests.yml").read_text(encoding="utf-8")
+        self.assertIn("--group test --group lm-eval", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
