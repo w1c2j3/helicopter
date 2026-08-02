@@ -91,6 +91,33 @@ def test_qwen35_alignment_suite_uses_stable_unlimited_selectors() -> None:
     assert manager.task_index["mmmlu"].cfg["group"] == "mmmlu"
 
 
+def test_capability_suite_is_unlimited_and_disjoint_from_lighteval() -> None:
+    with (ROOT / "configs/eval/lm_eval_capabilities.toml").open("rb") as stream:
+        config = tomllib.load(stream)
+    with (ROOT / "configs/eval/lighteval.toml").open("rb") as stream:
+        lighteval = tomllib.load(stream)
+
+    expected = (
+        "race",
+        "wmt14-en-fr",
+        "lambada_openai",
+        "blimp",
+        "longbench_passage_retrieval_en",
+    )
+    manager, resolved = evaluate._resolve_tasks(tuple(config["tasks"]))
+
+    assert resolved == expected
+    assert "limit" not in config
+    assert set(expected).isdisjoint(lighteval["benchmarks"])
+    assert manager.task_index["race"].cfg["output_type"] == "multiple_choice"
+    assert manager.task_index["wmt14-en-fr"].cfg["output_type"] == "generate_until"
+    assert manager.task_index["lambada_openai"].cfg["output_type"] == "loglikelihood"
+    assert manager.task_index["blimp"].cfg["group"] == "blimp"
+    assert "longbench_synthetic_tasks" in manager.task_index[
+        "longbench_passage_retrieval_en"
+    ].tags
+
+
 def test_dry_run_preflights_without_starting_evaluation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

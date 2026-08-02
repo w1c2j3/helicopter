@@ -15,13 +15,13 @@ class InstallPolicyTests(unittest.TestCase):
         lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
 
         self.assertIn(
-            "lm-eval[ifeval]==0.4.12",
+            "lm-eval[ifeval,longbench]==0.4.12",
             manifest["dependency-groups"]["lm-eval"],
         )
         packages = {package["name"] for package in lock["package"]}
         self.assertGreaterEqual(
             packages,
-            {"immutabledict", "langdetect", "nltk"},
+            {"fuzzywuzzy", "immutabledict", "jieba", "langdetect", "nltk", "rouge"},
         )
 
     def test_verl_runtime_dependency_is_locked(self) -> None:

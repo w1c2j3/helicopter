@@ -32,7 +32,7 @@ lighteval = [
 
 lm-eval = [
   "httpx[socks]",
-  "lm-eval[ifeval]==0.4.12",
+  "lm-eval[ifeval,longbench]==0.4.12",
 ]
 
 vllm-rwkv = [

@@ -209,9 +209,28 @@ helicopter eval \
 INSTALL_COMPONENTS=lm-eval,dev scripts/install_local.sh
 ```
 
-`lm-eval` 依赖组固定安装 `lm-eval[ifeval]==0.4.12`，因此默认配置中的
-IFEval 规则校验依赖（`langdetect`、`immutabledict` 和 `nltk`）会一并进入锁文件
-和独立环境。部署时不应改为只安装基础 `lm-eval` 包。
+`lm-eval` 依赖组固定安装 `lm-eval[ifeval,longbench]==0.4.12`，因此默认配置中的
+IFEval 规则校验依赖（`langdetect`、`immutabledict` 和 `nltk`）以及 LongBench 的
+`jieba`、`fuzzywuzzy`、`rouge` 会一并进入锁文件和独立环境。部署时不应改为只
+安装基础 `lm-eval` 包。
+
+## 能力补充套件
+
+`configs/eval/lm_eval_capabilities.toml` 只选择默认 LightEval 清单没有覆盖的任务，
+避免重复消耗算力：
+
+| 维度 | lm-eval selector | 协议与主指标 |
+| --- | --- | --- |
+| 阅读理解 | `race` | high-school split，multiple-choice accuracy |
+| 翻译 | `wmt14-en-fr` | English to French，BLEU/TER/chrF |
+| 语言建模 | `lambada_openai` | last-word accuracy/perplexity |
+| 句法语言学 | `blimp` | 67 个最小对组任务，group accuracy |
+| 大海捞针类检索 | `longbench_passage_retrieval_en` | 30 段 Wikipedia 中定位目标摘要，retrieval score |
+
+该套件固定 `lm-eval==0.4.12`、无 chat template、完整 evaluation split、
+`limit = null`、确定性生成，并保留 sample artifacts。Qwen3.5 对标必须使用同一组
+selector、相同 task revision 和相同最大输入长度；本机 1.5B RWKV 对应的官方
+Qwen3.5 参数量包络仍是 0.8B Base 与 2B Base，而不是不存在的 1.5B 型号。
 
 `--dry-run` 会校验配置、selector、manifest、所有 replica 和 lm-eval 版本，并输出
 解析后的 task/group 类型及 output type，但不会下载数据集或执行评分。
