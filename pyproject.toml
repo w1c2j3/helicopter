@@ -31,6 +31,9 @@ lighteval = [
 ]
 
 lm-eval = [
+  # lm-eval 0.4.12 still ships dataset-script tasks such as CMMLU. Datasets 4+
+  # removed script loading, so keep this evaluator environment compatible.
+  "datasets==3.6.0",
   "httpx[socks]",
   "lm-eval[ifeval,longbench]==0.4.12",
 ]
@@ -144,6 +147,12 @@ conflicts = [
   [
     { group = "lighteval" },
     { group = "verl-rwkv" },
+  ],
+  [
+    # These evaluators intentionally use separate virtual environments:
+    # LightEval requires datasets>=4 while lm-eval CMMLU requires 3.6.
+    { group = "lighteval" },
+    { group = "lm-eval" },
   ],
 ]
 

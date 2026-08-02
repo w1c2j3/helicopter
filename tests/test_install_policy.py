@@ -18,6 +18,21 @@ class InstallPolicyTests(unittest.TestCase):
             "lm-eval[ifeval,longbench]==0.4.12",
             manifest["dependency-groups"]["lm-eval"],
         )
+        self.assertIn(
+            "datasets==3.6.0",
+            manifest["dependency-groups"]["lm-eval"],
+        )
+        self.assertTrue(
+            any(
+                package["name"] == "datasets" and package["version"] == "3.6.0"
+                for package in lock["package"]
+            )
+        )
+        conflicts = manifest["tool"]["uv"]["conflicts"]
+        self.assertIn(
+            [{"group": "lighteval"}, {"group": "lm-eval"}],
+            conflicts,
+        )
         packages = {package["name"] for package in lock["package"]}
         self.assertGreaterEqual(
             packages,

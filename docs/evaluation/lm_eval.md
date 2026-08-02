@@ -209,10 +209,11 @@ helicopter eval \
 INSTALL_COMPONENTS=lm-eval,dev scripts/install_local.sh
 ```
 
-`lm-eval` 依赖组固定安装 `lm-eval[ifeval,longbench]==0.4.12`，因此默认配置中的
-IFEval 规则校验依赖（`langdetect`、`immutabledict` 和 `nltk`）以及 LongBench 的
-`jieba`、`fuzzywuzzy`、`rouge` 会一并进入锁文件和独立环境。部署时不应改为只
-安装基础 `lm-eval` 包。
+`lm-eval` 依赖组固定安装 `lm-eval[ifeval,longbench]==0.4.12` 和
+`datasets==3.6.0`。前者把 IFEval 规则校验依赖（`langdetect`、`immutabledict` 和
+`nltk`）以及 LongBench 的 `jieba`、`fuzzywuzzy`、`rouge` 带入独立环境；后者保留
+CMMLU 等上游 dataset-script 任务所需的加载能力（`datasets>=4` 已移除该能力）。
+部署时不应改为只安装基础 `lm-eval` 包，也不能放宽 datasets 上界。
 
 ## 能力补充套件
 
