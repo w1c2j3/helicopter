@@ -118,6 +118,46 @@ def test_capability_suite_is_unlimited_and_disjoint_from_lighteval() -> None:
     ].tags
 
 
+def test_capability_result_manifest_preserves_comparison_contract() -> None:
+    result_path = ROOT / "docs/evaluation/lm_eval_capability_results.json"
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+
+    expected_tasks = {
+        "race": 1045,
+        "wmt14-en-fr": 3003,
+        "lambada_openai": 5153,
+        "blimp": 67000,
+        "longbench_passage_retrieval_en": 200,
+    }
+    protocol = result["protocol"]
+
+    assert result["schema_version"] == 1
+    assert protocol["lm_eval_version"] == "0.4.12"
+    assert protocol["max_length"] == 16382
+    assert protocol["chat_template"] is None
+    assert protocol["limit"] is None
+    assert protocol["log_samples"] is True
+    assert {
+        task["selector"]: task["sample_count"] for task in protocol["tasks"]
+    } == expected_tasks
+    assert result["metric_directions"]["wmt14-en-fr.ter"] == "lower"
+
+    models = {model["comparison_role"]: model for model in result["models"]}
+    assert set(models) == {"target", "lower_bound", "upper_bound"}
+    assert {model["sample_record_count"] for model in models.values()} == {76401}
+    assert models["target"]["identity"]["weight_sha256"] == (
+        "22fe129988f6e98480b344075597259a13ae4201c1d8dedf987246772e613586"
+    )
+    assert models["lower_bound"]["identity"]["revision"] == (
+        "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68"
+    )
+    assert models["upper_bound"]["identity"]["revision"] == (
+        "b1485b2fa6dfa1287294f269f5fb618e03d52d7c"
+    )
+    for model in models.values():
+        assert set(model["metrics"]) == expected_tasks.keys()
+
+
 def test_dry_run_preflights_without_starting_evaluation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

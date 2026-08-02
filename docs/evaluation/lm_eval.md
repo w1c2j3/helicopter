@@ -253,5 +253,10 @@ WMT14 同时报告 BLEU、chrF 和 TER。BLEU/chrF 越高越好，TER 越低越�
 lm-eval 0.4.12 的上游 WMT YAML 未声明 TER 的方向，因此运行时会出现默认方向警告，
 但不会改变 TER 数值。报告和对比必须按“越低越好”解释 TER。
 
+2026-08-02 的 RWKV7 1.5B、Qwen3.5-0.8B Base 和 Qwen3.5-2B Base 完整实测、
+运行协议、stderr、样本数及产物 SHA-256 见
+[`lm_eval_capability_results.md`](lm_eval_capability_results.md)；对应机器可读清单为
+[`lm_eval_capability_results.json`](lm_eval_capability_results.json)。
+
 `--dry-run` 会校验配置、selector、manifest、所有 replica 和 lm-eval 版本，并输出
 解析后的 task/group 类型及 output type，但不会下载数据集或执行评分。
