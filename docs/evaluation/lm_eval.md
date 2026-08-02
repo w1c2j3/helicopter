@@ -1,0 +1,170 @@
+# lm-eval-harness RWKV-vLLM 后端
+
+该适配器使用已经运行的 RWKV-vLLM HTTP pool，不会在评估进程中加载权重或创建
+第二份 vLLM engine。它实现 lm-eval 模型后端的三个标准请求：
+`loglikelihood`、`loglikelihood_rolling` 和 `generate_until`。因此可以直接运行
+HellaSwag、ARC、MMLU、TruthfulQA、GSM8K、IFEval、WikiText 等常见 harness task。
+
+```bash
+helicopter eval \
+  --evaluator lm-eval \
+  --config configs/eval/lm_eval.toml \
+  --dry-run
+
+helicopter eval \
+  --evaluator lm-eval \
+  --config configs/eval/lm_eval.toml
+```
+
+`lm-eval` 固定为 `0.4.12`，安装在独立的 `.venv-lm-eval`。可通过
+`HELICOPTER_LM_EVAL_PYTHON` 覆盖解释器路径。LightEval 仍是
+`helicopter eval` 的默认 evaluator，现有 MaxRL 验证不受影响。
+
+## 配置
+
+```toml
+schema_version = 1
+backend = "vllm_http"
+
+tasks = ["arc_easy", "hellaswag", "mmlu", "gsm8k", "wikitext"]
+output_dir = ".tmp/eval/lm-eval"
+batch_size = 64
+eot_token_id = 0
+max_gen_toks = 2048
+log_samples = false
+```
+
+- `tasks` 接受 lm-eval task、group、tag 和 glob pattern；每个 selector 必须至少
+  匹配一项。task 定义、few-shot、过滤器和指标仍完全由 lm-eval 提供。
+- `output_dir` 可为绝对路径，或相对执行命令时的项目目录；环境变量引用使用
+  `${VARIABLE}` 形式。
+- `batch_size` 控制一次提交给 HTTP pool 的评分窗口数量，pool manifest 中每个
+  replica 的 `max_concurrency` 继续作为实际并发上限；默认示例使用 `64`。
+- `eot_token_id` 默认是 RWKV 的 `0`，用于为空上下文和首个 rolling window 提供
+  条件 token。
+- `max_gen_toks` 是 task 未指定生成长度时的默认值。task 自己的
+  `max_gen_toks` 或 `max_new_tokens` 优先；提示词会从左侧截断，为输出保留空间。
+- `limit` 是可选的正整数，只用于 smoke test；正式结果不应设置。
+- `log_samples` 默认关闭；启用时原始 lm-eval sample 信息会进入结果文件。
+
+生成请求支持 harness 常用的 `until`、`max_gen_toks`、`max_new_tokens`、
+`do_sample`、`temperature`、`top_p`、`top_k`、`min_p` 和 `seed`。当前后端只支持
+单路生成，task 若要求 `num_beams > 1` 会明确失败，而不是静默改变评估语义。
+`do_sample = false` 会编码为 `temperature = 1.0, top_k = 1`：它仍是逐 token
+argmax，但同时兼容 RWKV-vLLM 的 rapid sampler（该 sampler 不接受
+`temperature = 0`）。
+
+## HTTP 协议
+
+运行前必须在私有 `.env.local` 或 `.env.remote` 中提供绝对路径：
+
+```dotenv
+HELICOPTER_VLLM_POOL_MANIFEST=/run/helicopter/vllm-pool.json
+```
+
+manifest schema 与 LightEval HTTP backend 相同。启动时会访问每个 replica 的
+`/health` 和 `/v1/models`，确保所有 endpoint 可用并且只服务同一个 model id。
+
+评估使用以下接口：
+
+1. `/tokenize` 对 harness 生成的原始 prompt、context 和 continuation 分词，固定
+   `add_special_tokens = false`；RWKV endpoint 返回的首个 EOT/BOS token 会被移除。
+2. `loglikelihood` 和 `loglikelihood_rolling` 通过 `/v1/completions` 接收 token
+   IDs，并设置 `echo = true`、`max_tokens = 0`、
+   `logprobs = 1`、`prompt_logprobs = 1` 和 `return_token_ids = true`。
+3. `generate_until` 同样使用 `/v1/completions`，传入左截断后的 prompt token
+   IDs、task 的 stop sequences 和采样参数；服务端和适配器都会执行 stop 截断。
+4. 适配器验证评分返回 token 完全一致，忽略首 token 的 `null` logprob，只累加
+   continuation 对应位置的自然对数概率。后续 rolling window 不以 EOT 开头时，
+   RWKV-vLLM 自动补入的 EOT 会在返回结果中被正规化，避免 token 和 logprob 错位。
+
+HTTP client 不继承 shell proxy，避免本机或内网服务被全局代理转发。HTTP 429、
+5xx 和传输错误最多切换一个 replica 重试；其他 4xx 直接失败。
+
+RWKV-vLLM 会为 decoder prompt 内部增加一个 token，并且对
+`echo + max_tokens=0` 的请求仍保留至少一个生成位置。因此适配器暴露的有效长度为
+manifest `max_model_len - 2`，rolling window 再保留一个条件 token。
+
+默认保持 lm-eval base-model 语义：harness 构造的 prompt 不会被适配器再次套一层
+chat template。这一点对基于 continuation 概率的多选指标很重要，也使结果能与
+lm-eval 的其他 causal LM 后端直接比较。
+
+## Qwen3.5 对齐套件
+
+`configs/eval/lm_eval_qwen35.toml` 将任务名对齐到 Qwen3.5 模型卡公开的语言评测
+表：`MMLU-Pro`、`MMLU-Redux`、`C-Eval`、`GPQA`、`IFEval` 和 `MMMLU`。
+固定 selector 如下：
+
+| Qwen 表中名称 | lm-eval 0.4.12 selector | 本地协议 |
+| --- | --- | --- |
+| MMLU-Pro | `mmlu_pro` | 5-shot、确定性生成、exact match |
+| MMLU-Redux | `mmlu_redux_generative` | 0-shot、确定性生成、exact match |
+| C-Eval | `ceval-valid` | validation split、多选概率 |
+| GPQA | `gpqa_diamond_cot_zeroshot` | Diamond、0-shot CoT、exact match |
+| IFEval | `ifeval` | 0-shot、确定性生成、严格/宽松指令指标 |
+| MMMLU | `mmmlu` | 14 种语言、0-shot、多选概率 |
+
+运行 RWKV 对齐套件：
+
+```bash
+helicopter eval \
+  --evaluator lm-eval \
+  --config configs/eval/lm_eval_qwen35.toml \
+  --dry-run
+
+helicopter eval \
+  --evaluator lm-eval \
+  --config configs/eval/lm_eval_qwen35.toml
+```
+
+Qwen3.5 官方没有 1.5B 型号。最接近的官方尺寸是
+[`Qwen3.5-0.8B-Base`](https://huggingface.co/Qwen/Qwen3.5-0.8B-Base) 和
+[`Qwen3.5-2B-Base`](https://huggingface.co/Qwen/Qwen3.5-2B-Base)，因此 1.5B RWKV
+应以 0.8B/2B 作为参数量下界和上界，不能标记为“同参数量”。精确 1.5B 对照只能
+选择旧代模型，例如 Qwen2.5-1.5B，而不能再称为 Qwen3.5 对齐。
+
+截至 2026-08-01，Qwen 官方模型卡给出的后训练模型参考分如下：
+
+| 模型与模式 | MMLU-Pro | MMLU-Redux | C-Eval | GPQA | IFEval | MMMLU |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3.5-0.8B non-thinking | 29.7 | 48.5 | 46.4 | 未报告 | 52.1 | 34.1 |
+| Qwen3.5-0.8B thinking | 42.3 | 59.5 | 50.5 | 11.9 | 44.0 | 44.3 |
+| Qwen3.5-2B non-thinking | 55.3 | 69.2 | 65.2 | 未报告 | 61.2 | 56.9 |
+| Qwen3.5-2B thinking | 66.5 | 79.6 | 73.2 | 51.6 | 78.6 | 63.1 |
+
+来源：[`Qwen3.5-0.8B`](https://huggingface.co/Qwen/Qwen3.5-0.8B) 和
+[`Qwen3.5-2B`](https://huggingface.co/Qwen/Qwen3.5-2B) 官方模型卡。这些分数使用
+后训练模型、chat template、thinking/non-thinking 模式及官方生成参数；Qwen 没有
+公开足以逐项复现整张表的完整 harness 配置。因此它们只能作为外部参考，不能与
+本项目默认 base-model 结果直接相减。
+
+可比较的本地结果必须同时固定：模型类型（优先 Base）、`lm-eval==0.4.12`、上述
+selector、task version、few-shot、无 chat template、确定性解码、数据 revision、
+`limit = null` 和主指标。尤其不能把默认套件的普通 `mmlu` 分数填入 Qwen 表的
+`MMLU-Pro` 或 `MMLU-Redux` 列。`SuperGPQA` 也不是 `GPQA Diamond`，当前配置不
+用后者冒充前者。
+
+## 输出
+
+成功运行后，`output_dir` 中包含：
+
+- `results.json`：lm-eval `simple_evaluate` 的完整可序列化结果。
+- `summary.json`：稳定的项目级摘要，包含 lm-eval 版本、model id、global step、
+  WKV mode、上下文长度、task 版本和 metrics。
+
+这些结果只写本地，不创建 Scoreboard campaign，也不修改现有 LightEval
+publication schema。WikiText-only 运行仍可使用
+`configs/eval/lm_eval_ppl.toml`。
+
+## 安装
+
+```bash
+INSTALL_COMPONENTS=lm-eval,dev scripts/install_local.sh
+```
+
+`lm-eval` 依赖组固定安装 `lm-eval[ifeval]==0.4.12`，因此默认配置中的
+IFEval 规则校验依赖（`langdetect`、`immutabledict` 和 `nltk`）会一并进入锁文件
+和独立环境。部署时不应改为只安装基础 `lm-eval` 包。
+
+`--dry-run` 会校验配置、selector、manifest、所有 replica 和 lm-eval 版本，并输出
+解析后的 task/group 类型及 output type，但不会下载数据集或执行评分。

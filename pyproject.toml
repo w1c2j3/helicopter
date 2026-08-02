@@ -30,6 +30,11 @@ lighteval = [
   "ray",
 ]
 
+lm-eval = [
+  "httpx[socks]",
+  "lm-eval[ifeval]==0.4.12",
+]
+
 vllm-rwkv = [
   "aiohttp>=3.13.3",
   "blake3",
@@ -147,11 +152,12 @@ flash-rwkv = { path = "src/kernel/flash-rwkv", editable = true }
 flash-linear-attention = { path = "src/kernel/fla-rwkv", editable = true }
 
 [tool.setuptools]
-packages = ["helicopter_cli", "helicopter_lighteval"]
+packages = ["helicopter_cli", "helicopter_lighteval", "helicopter_lm_eval"]
 
 [tool.setuptools.package-dir]
 helicopter_cli = "src/cli/helicopter_cli"
 helicopter_lighteval = "src/eval/lighteval"
+helicopter_lm_eval = "src/eval/lm_eval"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
