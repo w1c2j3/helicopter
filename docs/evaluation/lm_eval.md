@@ -232,5 +232,26 @@ IFEval 规则校验依赖（`langdetect`、`immutabledict` 和 `nltk`）以及 L
 selector、相同 task revision 和相同最大输入长度；本机 1.5B RWKV 对应的官方
 Qwen3.5 参数量包络仍是 0.8B Base 与 2B Base，而不是不存在的 1.5B 型号。
 
+### 与 LightEval 去重
+
+去重的唯一基准是 `configs/eval/lighteval.toml` 中的既有评测清单。能力补充套件
+不会再次运行以下 selector：
+
+| LightEval 维度 | 已纳入 LightEval 清单的 selector |
+| --- | --- |
+| 知识与常识 | `mmlu`、`mmlu_pro`、`mmlu_redux_2`、`mmlu_sr_question_answer`、`gpqa:diamond`、`gpqa:main`、`arc:challenge`、`arc:easy`、`hellaswag`、`bigbench_hard`、`agieval`、`truthfulqa:mc`、`winogrande`、`openbookqa`、`commonsenseqa`、`ceval_zho_mcf`、`kmmlu`、`med_qa`、`med_mcqa` |
+| 数学与推理 | `gsm8k`、`math_500`、`aime24`、`aime25`、`olympiad_bench`、`minerva_math`、`svamp`、`beyond_aime`、`brumo25`、`hmmt_feb_2025`、`math_odyssey`、`comp_math_24_25`、`gaokao_2023_english`、`answer_judge`、`simpleqa_verified` |
+| 代码 | `humaneval`、`humaneval_cn`、`humaneval_fix`、`humaneval_plus`、`mbpp`、`mbpp_plus`、`lcb:codegeneration` |
+| 指令遵循 | `ifeval`、`ifbench_test`、`ifbench_multiturn` |
+
+这里的“已纳入”表示 selector 属于 LightEval campaign 合同；实际执行时，固定
+LightEval 版本无法解析的 selector 会被明确记录为 `skipped`，不能记作成功出分。
+仓库测试会解析两份 TOML 并断言 selector 集合不相交，防止后续维护时重新引入
+重复任务。
+
+WMT14 同时报告 BLEU、chrF 和 TER。BLEU/chrF 越高越好，TER 越低越好；
+lm-eval 0.4.12 的上游 WMT YAML 未声明 TER 的方向，因此运行时会出现默认方向警告，
+但不会改变 TER 数值。报告和对比必须按“越低越好”解释 TER。
+
 `--dry-run` 会校验配置、selector、manifest、所有 replica 和 lm-eval 版本，并输出
 解析后的 task/group 类型及 output type，但不会下载数据集或执行评分。
