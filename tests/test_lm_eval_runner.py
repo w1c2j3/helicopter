@@ -118,6 +118,35 @@ def test_capability_suite_is_unlimited_and_disjoint_from_lighteval() -> None:
     ].tags
 
 
+def test_catalog_delta_suite_is_native_unlimited_and_exact() -> None:
+    with (ROOT / "configs/eval/lm_eval_catalog_delta.toml").open("rb") as stream:
+        config = tomllib.load(stream)
+    with (ROOT / "configs/eval/lighteval.toml").open("rb") as stream:
+        lighteval = tomllib.load(stream)
+
+    expected = ("gpqa_extended_zeroshot", "cmmlu")
+    manager, resolved = evaluate._resolve_tasks(tuple(config["tasks"]))
+
+    assert resolved == expected
+    assert "limit" not in config
+    assert config["log_samples"] is True
+    assert set(expected).isdisjoint(lighteval["benchmarks"])
+    gpqa = manager.task_index["gpqa_extended_zeroshot"].cfg
+    assert gpqa["dataset_name"] == "gpqa_extended"
+    assert gpqa["num_fewshot"] == 0
+    assert gpqa["output_type"] == "multiple_choice"
+    cmmlu = manager.task_index["cmmlu"].cfg
+    assert cmmlu["group"] == "cmmlu"
+    assert len(cmmlu["task"]) == 67
+    assert [metric["metric"] for metric in cmmlu["aggregate_metric_list"]] == [
+        "acc",
+        "acc_norm",
+    ]
+    assert all(
+        metric["weight_by_size"] for metric in cmmlu["aggregate_metric_list"]
+    )
+
+
 def test_capability_result_manifest_preserves_comparison_contract() -> None:
     result_path = ROOT / "docs/evaluation/lm_eval_capability_results.json"
     result = json.loads(result_path.read_text(encoding="utf-8"))

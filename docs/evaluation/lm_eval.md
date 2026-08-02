@@ -249,6 +249,26 @@ LightEval 版本无法解析的 selector 会被明确记录为 `skipped`，不�
 仓库测试会解析两份 TOML 并断言 selector 集合不相交，防止后续维护时重新引入
 重复任务。
 
+### 用户清单增量
+
+`configs/eval/lm_eval_catalog_delta.toml` 是用户补充清单经过两层过滤后的精确增量：
+先去除上表中已经归 LightEval 管理的项目，再去除固定 `lm-eval==0.4.12` 任务注册表
+不存在的项目。此前完成的能力补充套件（RACE、WMT14、LAMBADA、BLiMP、LongBench
+检索）与这份补充清单没有重叠。
+
+| 处理结果 | 用户清单项目 | lm-eval selector / 原因 |
+| --- | --- | --- |
+| 本轮正式评测 | GPQA-Extended | `gpqa_extended_zeroshot`，仅 Extended，0-shot multiple-choice `acc/acc_norm` |
+| 本轮正式评测 | CMMLU | `cmmlu`，67 个学科，0-shot multiple-choice，按样本量聚合 `acc/acc_norm` |
+| 不属于固定 lm-eval | AMC23 | `lm-eval==0.4.12` 注册表和任务源码均无该任务 |
+| 不属于固定 lm-eval | SWE-bench Verified、Multilingual、Pro | `lm-eval==0.4.12` 注册表和任务源码均无这些任务 |
+
+因此本轮 campaign 必须且只能解析为 `gpqa_extended_zeroshot` 与 `cmmlu`。不得用
+自建 YAML、外部 runner 或名称近似任务填补缺失项；若以后升级 lm-eval，需要单独
+评审协议和数据版本，不能静默改变本次结果合同。GPQA 数据集在 Hugging Face 上有
+访问条款，正式运行前必须接受条款并提供只读 token；镜像只能解决网络问题，不能
+绕过授权。
+
 WMT14 同时报告 BLEU、chrF 和 TER。BLEU/chrF 越高越好，TER 越低越好；
 lm-eval 0.4.12 的上游 WMT YAML 未声明 TER 的方向，因此运行时会出现默认方向警告，
 但不会改变 TER 数值。报告和对比必须按“越低越好”解释 TER。
