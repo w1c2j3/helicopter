@@ -79,7 +79,7 @@ def _leaf_tasks(manager, names):
             raise PublicationError(f"lm-eval task registry contains a cycle at {name}")
         entry = manager.task_index[name]
         kind = entry.kind.name.lower()
-        if kind == "task":
+        if kind in {"task", "py_task"}:
             if name not in leaves:
                 leaves.append(name)
             return

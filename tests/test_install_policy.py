@@ -69,6 +69,11 @@ class InstallPolicyTests(unittest.TestCase):
         self.assertIn('--group lm-eval', local)
         self.assertIn(".venv-lm-eval/", remote)
 
+        launcher = (ROOT / "scripts/run_rwkv_vllm.sh").read_text(encoding="utf-8")
+        self.assertNotIn("/home/creator", launcher)
+        self.assertIn('RWKV_MODEL_PATH:-${model_path}', launcher)
+        self.assertIn('VLLM_RWKV7_WKV_MODE:-fp16', launcher)
+
 
 if __name__ == "__main__":
     unittest.main()

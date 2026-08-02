@@ -461,7 +461,7 @@ class VLLMHttpPool:
 
         raw_top_logprobs = logprobs.get("top_logprobs")
         if not isinstance(raw_top_logprobs, list):
-            raw_top_logprobs = [None] * len(token_ids)
+            raw_top_logprobs = [None] * len(parsed_tokens)
         if len(raw_top_logprobs) != len(parsed_tokens):
             raise ValueError("prompt scoring top logprobs are misaligned")
         top_logprobs: list[Mapping[str, float] | None] = []

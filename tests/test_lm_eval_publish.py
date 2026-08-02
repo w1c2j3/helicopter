@@ -27,6 +27,17 @@ def test_task_metadata_expands_groups_to_leaf_tasks_without_loading_datasets():
     assert all(row["selector"] == "mmlu" for row in metadata)
 
 
+def test_task_metadata_accepts_python_task_leaves_without_loading_datasets():
+    from lm_eval.tasks import TaskManager
+
+    manager = TaskManager()
+    metadata = task_metadata(manager, ("squadv2",), ("squadv2",))
+
+    assert [row["task_name"] for row in metadata] == ["squadv2"]
+    assert metadata[0]["selector"] == "squadv2"
+    assert metadata[0]["module_family"] == "squadv2"
+
+
 def test_publish_unit_preserves_native_metrics_and_samples(tmp_path, monkeypatch):
     task = {
         "identity": f"{'a' * 64}:fp16:gsm8k",

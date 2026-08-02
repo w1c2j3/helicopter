@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from scoreboard_server.dtos.api.evaluation_results import (
     CampaignCreate,
     TaskPublication,
+    sample_outcome,
 )
 
 
@@ -103,11 +104,17 @@ def test_lm_eval_task_contract_accepts_native_sample_shape() -> None:
                         "task_name": "wikitext",
                         "specific": {"helicopter_document_index": 0},
                     },
-                    "metric": {},
-                    "model_response": {"loglikelihood": -10.0},
+                    "metric": {"word_perplexity,none": 12.5},
+                    "model_response": {
+                        "filtered_resps": [[-10.0, False]],
+                        "resps": [[[-10.0, False]]],
+                    },
                 }
             ],
         }
     )
 
     assert publication.artifact.evaluator_name == "lm-eval"
+    assert sample_outcome(
+        publication.details[0], publication.primary_metric
+    ) == "undetermined"

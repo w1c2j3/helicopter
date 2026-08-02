@@ -120,6 +120,17 @@ const logprobSample = {
   model_response: sharedFixture.standard_rows[1].model_response,
 };
 
+const lmEvalSample = {
+  ...sample,
+  id: "sample-lm-eval",
+  model_response: {
+    arguments: [["prompt", { until: ["\\n"] }]],
+    filtered_resps: ["native answer"],
+    resps: [["native answer"]],
+    target: "reference answer",
+  },
+};
+
 async function serveApi(page: Page): Promise<void> {
   const evaluations = [
     evaluation("small.pth", "fp16"),
@@ -148,20 +159,24 @@ async function serveApi(page: Page): Promise<void> {
       }),
     }),
   );
-  await page.route("**/api/evaluations/*/samples?*", (route) =>
-    route.fulfill({
+  await page.route("**/api/evaluations/*/samples?*", (route) => {
+    const parts = new URL(route.request().url()).pathname.split("/");
+    const evaluationId = decodeURIComponent(parts.at(-2) ?? "");
+    return route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
-        evaluation_id: evaluations[0].evaluation_id,
+        evaluation_id: evaluationId,
         primary_metric: "exact_match",
-        total: 2,
+        total: evaluationId.includes("large.pth") ? 1 : 2,
         offset: 0,
         limit: 25,
         next_offset: null,
-        items: [sample, logprobSample],
+        items: evaluationId.includes("large.pth")
+          ? [lmEvalSample]
+          : [sample, logprobSample],
       }),
-    }),
-  );
+    });
+  });
 }
 
 test("shows two weights, both WKV modes, native metrics and missing pairs", async ({
@@ -221,6 +236,10 @@ test("shows lm-eval provenance without a prompt boundary", async ({ page }) => {
   const details = page.getByRole("region", { name: "评估详情" });
   await expect(details.getByText("evaluator: lm-eval")).toBeVisible();
   await expect(details.getByText("prompt template: none")).toBeVisible();
+  await details.getByText("lm-eval native response").click();
+  await expect(
+    details.locator("details").filter({ hasText: "lm-eval native response" }),
+  ).toContainText('"native answer"');
 });
 
 test("loads every paginated evaluation before rendering the matrix", async ({

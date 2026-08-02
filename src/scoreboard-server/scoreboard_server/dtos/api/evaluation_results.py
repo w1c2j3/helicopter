@@ -661,6 +661,10 @@ def sample_outcome(detail: StandardDetail, primary_metric: str) -> AnswerOutcome
         response.get(key) not in (None, [])
         for key in ("logprobs", "argmax_logits_eq_gold")
     )
-    if not has_text and not has_logprob:
+    has_native_response = any(
+        response.get(key) not in (None, [], {})
+        for key in ("filtered_resps", "resps")
+    )
+    if not has_text and not has_logprob and not has_native_response:
         return "unanswered"
     return "undetermined"

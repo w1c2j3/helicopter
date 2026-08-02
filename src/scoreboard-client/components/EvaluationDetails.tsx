@@ -96,10 +96,12 @@ function SampleCard({
   sample,
   limit,
   turnBoundary,
+  evaluator,
 }: {
   sample: SampleDetail;
   limit: number;
   turnBoundary: string | null;
+  evaluator: "lighteval" | "lm-eval";
 }) {
   const completions = completionRows(sample, limit, turnBoundary);
   const logprobs = sample.model_response.logprobs;
@@ -162,6 +164,12 @@ function SampleCard({
             <dd><pre>{JSON.stringify(argmax ?? null)}</pre></dd>
           </dl>
         </section>
+      ) : null}
+      {evaluator === "lm-eval" ? (
+        <details className="completion native-response">
+          <summary>lm-eval native response</summary>
+          <pre>{JSON.stringify(sample.model_response, null, 2)}</pre>
+        </details>
       ) : null}
       {!completions.length ? <p>该样本没有生成 completion。</p> : null}
     </article>
@@ -273,6 +281,7 @@ export function EvaluationDetails() {
       {!page && !error ? <p>正在加载样本…</p> : null}
       {page?.items.map((sample) => (
         <SampleCard
+          evaluator={selected.model.evaluator ?? "lighteval"}
           key={sample.id}
           limit={outputLimit}
           sample={sample}

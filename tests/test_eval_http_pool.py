@@ -275,6 +275,68 @@ def test_pool_tokenizes_and_returns_aligned_prompt_logprobs(
     pool.close()
 
 
+def test_prompt_scoring_normalizes_implicit_prefix_without_top_logprobs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Response:
+        status_code = 200
+        text = ""
+        request = httpx.Request("POST", "http://test")
+
+        def __init__(self, payload: dict[str, object]):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+        def raise_for_status(self):
+            return None
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def get(self, path):
+            if path == "/health":
+                return Response({})
+            return Response({"data": [{"id": "rwkv-current"}]})
+
+        def post(self, path, *, json):
+            assert path == "/v1/completions"
+            return Response(
+                {
+                    "choices": [
+                        {
+                            "prompt_token_ids": [0, 11, 12],
+                            "logprobs": {
+                                "token_logprobs": [None, -0.25, -0.5],
+                            },
+                        }
+                    ]
+                }
+            )
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(http_pool.httpx, "Client", Client)
+    pool = VLLMHttpPool(
+        _manifest(
+            tmp_path,
+            [{"base_url": "http://10.0.0.1:8000", "max_concurrency": 1}],
+        )
+    )
+    pool.preflight()
+
+    scored = pool.score_tokens([11, 12], implicit_prefix_token_id=0)
+
+    assert scored.token_ids == (11, 12)
+    assert scored.token_logprobs == (None, -0.5)
+    assert scored.top_logprobs == (None, None)
+    pool.close()
+
+
 def test_pool_generates_text_from_pretokenized_prompt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
