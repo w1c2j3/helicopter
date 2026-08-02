@@ -279,5 +279,10 @@ lm-eval 0.4.12 的上游 WMT YAML 未声明 TER 的方向，因此运行时会�
 [`lm_eval_capability_results.md`](lm_eval_capability_results.md)；对应机器可读清单为
 [`lm_eval_capability_results.json`](lm_eval_capability_results.json)。
 
+用户清单过滤后的原生 lm-eval 增量执行状态与 CMMLU 完整对标结果见
+[`lm_eval_catalog_delta_results.md`](lm_eval_catalog_delta_results.md)；对应机器可读合同为
+[`lm_eval_catalog_delta_results.json`](lm_eval_catalog_delta_results.json)。GPQA-Extended
+在没有已授权只读 Hugging Face token 时明确记为 `blocked`，不会记作测评成功。
+
 `--dry-run` 会校验配置、selector、manifest、所有 replica 和 lm-eval 版本，并输出
 解析后的 task/group 类型及 output type，但不会下载数据集或执行评分。

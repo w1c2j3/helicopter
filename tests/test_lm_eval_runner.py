@@ -187,6 +187,68 @@ def test_capability_result_manifest_preserves_comparison_contract() -> None:
         assert set(model["metrics"]) == expected_tasks.keys()
 
 
+def test_catalog_delta_result_manifest_preserves_scope_and_comparison() -> None:
+    result_path = ROOT / "docs/evaluation/lm_eval_catalog_delta_results.json"
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+
+    scope = result["scope"]
+    protocol = result["protocol"]
+    task = protocol["task"]
+
+    assert result["schema_version"] == 1
+    assert scope["native_selectors"] == ["gpqa_extended_zeroshot", "cmmlu"]
+    assert scope["completed_selectors"] == ["cmmlu"]
+    assert scope["blocked"] == [
+        {
+            "selector": "gpqa_extended_zeroshot",
+            "dataset": "Idavidrein/gpqa",
+            "dataset_name": "gpqa_extended",
+            "status": "blocked",
+            "reason": (
+                "gated dataset requires accepted terms and an authorized "
+                "read-only Hugging Face token"
+            ),
+        }
+    ]
+    assert set(scope["excluded_non_native"]) == {
+        "AMC23",
+        "SWE-bench Verified",
+        "SWE-bench Multilingual",
+        "SWE-bench Pro",
+    }
+    assert protocol["lm_eval_version"] == "0.4.12"
+    assert protocol["datasets_version"] == "3.6.0"
+    assert protocol["limit"] is None
+    assert protocol["log_samples"] is True
+    assert task == {
+        "selector": "cmmlu",
+        "version": 1,
+        "leaf_task_count": 67,
+        "sample_count": 11582,
+        "choice_request_count": 46328,
+        "metrics": ["acc", "acc_norm"],
+    }
+
+    models = {model["comparison_role"]: model for model in result["models"]}
+    assert set(models) == {"target", "lower_bound", "upper_bound"}
+    assert {model["sample_record_count"] for model in models.values()} == {11582}
+    assert models["target"]["identity"]["weight_sha256"] == (
+        "22fe129988f6e98480b344075597259a13ae4201c1d8dedf987246772e613586"
+    )
+    assert models["lower_bound"]["identity"]["revision"] == (
+        "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68"
+    )
+    assert models["upper_bound"]["identity"]["revision"] == (
+        "b1485b2fa6dfa1287294f269f5fb618e03d52d7c"
+    )
+    assert models["target"]["metrics"]["acc"]["value"] < models["lower_bound"][
+        "metrics"
+    ]["acc"]["value"]
+    assert models["lower_bound"]["metrics"]["acc"]["value"] < models[
+        "upper_bound"
+    ]["metrics"]["acc"]["value"]
+
+
 def test_dry_run_preflights_without_starting_evaluation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
