@@ -349,17 +349,10 @@ helicopter eval evalscope \
   --agent-environment local
 ```
 
-For a fixed local smoke/benchmark run, use the repository script so the model
-catalog, local endpoint, native mode, and output layout stay consistent:
-
-```bash
-bash scripts/run_local_evalscope.sh general_fc 5 \
-  results/evalscope/local-general-fc-1p5b-20260727-limit5
-```
-
 For the current forwarded RWKV services, use the fixed 10,240-token context
-and the repository's 2,048-token no-COT generation configuration. The two
-services expose native RWKV tool calls through vLLM:
+and an explicit 2,048-token no-COT generation configuration. The two services
+expose native RWKV tool calls through vLLM. Keep generated output outside the
+repository, for example under `/home/rwkv/chase/eval-results/`:
 
 ```bash
 # G1h 7.2B
@@ -369,7 +362,7 @@ uv run --no-default-groups --group agent --no-sync helicopter eval evalscope \
   --model-catalog configs/models/g1h-single-replica.toml \
   --base-url http://127.0.0.1:29572/v1 \
   --api-key rwkv-skills --no-server --generation-config \
-  experiments/evalscope_agent/flower-nocot-generation-2048.json \
+  '{"max_tokens":2048,"temperature":0.0,"timeout":600}' \
   --strategy function_calling --tools bash --agent-environment local
 
 # G1h 13.3B: change only the model alias, catalog, and endpoint as configured
@@ -380,7 +373,7 @@ uv run --no-default-groups --group agent --no-sync helicopter eval evalscope \
   --model-catalog configs/models/g1h-single-replica.toml \
   --base-url http://127.0.0.1:29534/v1 \
   --api-key rwkv-skills --no-server --generation-config \
-  experiments/evalscope_agent/flower-nocot-generation-2048.json \
+  '{"max_tokens":2048,"temperature":0.0,"timeout":600}' \
   --strategy function_calling --tools bash --agent-environment local
 ```
 
@@ -393,7 +386,7 @@ messages and tool semantics unchanged:
 uv run --no-default-groups --group agent --no-sync helicopter eval evalscope \
   g1h-7.2b bfcl_v3 --model-catalog configs/models/g1h-single-replica.toml \
   --base-url http://127.0.0.1:29572/v1 --api-key rwkv-skills --no-server \
-  --generation-config experiments/evalscope_agent/flower-nocot-generation-2048.json \
+  --generation-config '{"max_tokens":2048,"temperature":0.0,"timeout":600}' \
   --parallel-candidate-router --tools bash --agent-environment local
 ```
 
@@ -486,8 +479,9 @@ For datasets whose official contract is a single-line answer (such as GAIA),
 the extractor accepts only a non-empty single-line raw response; a reasoning
 transcript is never truncated to manufacture a final answer.
 
-The requirement-by-requirement go/no-go matrix is maintained in
-[`experiments/evalscope_agent/ACCEPTANCE.md`](experiments/evalscope_agent/ACCEPTANCE.md).
+The requirement-by-requirement acceptance evidence is kept outside the Git
+working tree with each server run. The repository stores the implementation,
+configuration, and tests; generated reports and raw traces remain ignored.
 
 The curated directly runnable non-function-calling LightEval catalog is stored
 in the scoreboard database table `benchmark_catalog`. It keeps 30 diverse,
@@ -501,8 +495,6 @@ calling, and endpoint-incompatible perplexity suites stay out of this direct
 HF/LightEval catalog.
 
 ```bash
-uv run --group eval python scripts/seed_non_fc_lighteval_benchmarks_db.py
-uv run --group eval python scripts/verify_non_fc_lighteval_benchmarks_db.py
 helicopter eval batch --tasks-from-db --scoreboard --models g1g-1.5b
 ```
 
