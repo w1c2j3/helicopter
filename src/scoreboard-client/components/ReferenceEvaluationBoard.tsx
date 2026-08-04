@@ -5,8 +5,6 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import {
   BENCHMARK_CATALOG,
-  BENCHMARK_DOMAIN_LABELS,
-  BENCHMARK_DOMAIN_ORDER,
   benchmarkMatches,
 } from "../lib/benchmarkCatalog";
 import type { BenchmarkCatalogItem } from "../lib/benchmarkCatalog";
@@ -66,7 +64,7 @@ type AnswerRecord = {
 };
 
 const EXPERIMENT_TABS = [
-  "最新两个架构",
+  "前代 vs 当代",
   "Prompt template",
   "Fake CoT vs CoT",
   "fp16 vs fp32io16",
@@ -74,12 +72,12 @@ const EXPERIMENT_TABS = [
 ] as const;
 
 const DOMAIN_TABS = [
-  { key: "overview", label: "常规评估" },
+  { key: "all", label: "常规评估" },
   { key: "math", label: "数学" },
   { key: "knowledge", label: "知识" },
   { key: "instruction_following", label: "指令遵循" },
   { key: "coding", label: "编程" },
-  { key: "agent", label: "Agent" },
+  { key: "function_call", label: "FC" },
 ] as const;
 
 const OVERVIEW_BENCHMARKS = [
@@ -186,6 +184,12 @@ function catalogBenchmarks(matrix: LeaderboardMatrix, domainKey: string): Displa
   ));
 }
 
+function benchmarksForDomain(matrix: LeaderboardMatrix, domainKey: string): DisplayBenchmark[] {
+  return domainKey === "function_call"
+    ? displayBenchmarks(matrix, domainKey)
+    : catalogBenchmarks(matrix, domainKey);
+}
+
 function normalizedEvalMode(value: string): string {
   return value.toLowerCase().replace(/[^a-z]/g, "");
 }
@@ -280,19 +284,19 @@ function architectureLabel(architecture: Architecture): string {
 
 export function ReferenceEvaluationBoard({ matrix }: { matrix: LeaderboardMatrix }) {
   const groups = useMemo(() => groupsFromMatrix(matrix), [matrix]);
-  const [experiment, setExperiment] = useState<(typeof EXPERIMENT_TABS)[number]>("最新两个架构");
+  const [experiment, setExperiment] = useState<(typeof EXPERIMENT_TABS)[number]>("前代 vs 当代");
   const [domainKey, setDomainKey] = useState("all");
-  const benchmarks = useMemo(() => catalogBenchmarks(matrix, domainKey), [domainKey, matrix]);
+  const benchmarks = useMemo(() => benchmarksForDomain(matrix, domainKey), [domainKey, matrix]);
   const domainTabs = useMemo(
-    () => [
-      { key: "all", label: "全部", count: BENCHMARK_CATALOG.length },
-      ...BENCHMARK_DOMAIN_ORDER.map((key) => ({
-        key,
-        label: BENCHMARK_DOMAIN_LABELS[key],
-        count: BENCHMARK_CATALOG.filter((item) => item.domain === key).length,
-      })),
-    ],
-    [],
+    () => DOMAIN_TABS.map((item) => ({
+      ...item,
+      count: item.key === "all"
+        ? BENCHMARK_CATALOG.length
+        : item.key === "function_call"
+          ? displayBenchmarks(matrix, item.key).length
+          : BENCHMARK_CATALOG.filter((benchmark) => benchmark.domain === item.key).length,
+    })),
+    [matrix],
   );
   const [selection, setSelection] = useState<ScoreSelection | null>(null);
 
@@ -325,7 +329,7 @@ export function ReferenceEvaluationBoard({ matrix }: { matrix: LeaderboardMatrix
               key={item.key}
               onClick={() => changeDomain(item.key)}
             >
-              {item.label}（{item.count}）
+              {item.label}
             </button>
           ))}
         </nav>
@@ -335,9 +339,10 @@ export function ReferenceEvaluationBoard({ matrix }: { matrix: LeaderboardMatrix
             <strong className="catalog-heading">
               {domainTabs.find((item) => item.key === domainKey)?.label}（{benchmarks.length}） · {experiment}
             </strong>
-            <strong>{domainKey === "overview" ? "常规评估" : DOMAIN_TABS.find((item) => item.key === domainKey)?.label} · {experiment}</strong>
-            <span><b>各参数量最新两个架构</b> · 上一代在前，当前代在后；delta = 当前代 − 上一代。</span>
+            <strong>{DOMAIN_TABS.find((item) => item.key === domainKey)?.label} · {experiment}</strong>
+            <span><b>上一代 → 当前代</b> · 表头显示实际架构；delta = 当前代 − 上一代。</span>
           </div>
+          <span className="temporary-data-badge">数据库实测</span>
         </div>
 
         <div className="reference-table-scroll">
