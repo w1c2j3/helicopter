@@ -342,7 +342,6 @@ export function ReferenceEvaluationBoard({ matrix }: { matrix: LeaderboardMatrix
             <strong>{DOMAIN_TABS.find((item) => item.key === domainKey)?.label} · {experiment}</strong>
             <span><b>上一代 → 当前代</b> · 表头显示实际架构；delta = 当前代 − 上一代。</span>
           </div>
-          <span className="temporary-data-badge">数据库实测</span>
         </div>
 
         <div className="reference-table-scroll">
