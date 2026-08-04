@@ -72,11 +72,11 @@ const EXPERIMENT_TABS = [
 ] as const;
 
 const DOMAIN_TABS = [
-  { key: "all", label: "常规评估" },
-  { key: "math", label: "数学" },
-  { key: "knowledge", label: "知识" },
-  { key: "instruction_following", label: "指令遵循" },
-  { key: "coding", label: "编程" },
+  { key: "all", label: "Overview" },
+  { key: "math", label: "Math" },
+  { key: "knowledge", label: "Knowledge" },
+  { key: "instruction_following", label: "Instruction Following" },
+  { key: "coding", label: "Coding" },
   { key: "function_call", label: "FC" },
 ] as const;
 
