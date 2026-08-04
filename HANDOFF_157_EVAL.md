@@ -68,6 +68,41 @@ nvidia-smi
 ss -ltnp
 ```
 
+### 2026-08-04 审计快照
+
+本机可见的独立 `vllm-rwkv` 基线是
+`/home/chase/GitHub/vllm-rwkv`，Git commit 为 `56b463bf6`，但该工作区有
+大量未提交修改，不能直接作为干净版本。两台服务器的 checkout 均没有可用
+Git 元数据，必须用文件 hash 或启动进程记录版本。
+
+关键文件对比结果：
+
+| 文件 | 本机 | 8222 | 157 |
+|---|---|---|---|
+| `vllm/entrypoints/openai/cli_args.py` | `34d05d63` | `34d05d63` | `34d05d63` |
+| `vllm/transformers_utils/chat_templates/template_rwkv.jinja` | `cc65faee` | `cc65faee` | `cc65faee` |
+| `vllm/entrypoints/openai/api_server.py` | `f1382947` | `bd603ce8` | `b1879e9b` |
+| `vllm/tool_parsers/rwkv_tool_parser.py` | `156358e9` | `06862ecb` | `86dfc03b` |
+| `vllm/tokenizers/rwkv_defaults.py` | `5329835e` | `a6ce5497` | `a1b11bf3` |
+| `vllm/model_executor/models/rwkv7.py` | `fc650df2` | `e7980ffb` | `3cc5f5c7` |
+
+因此三份源码不是同一版本。157 的 `RWKVToolParser` 额外包含 canonical JSON
+和流式 tool-call 解析；8222 的 parser 不包含这一组扩展。本机 parser 也不能
+直接代表任一服务器。
+
+现场观察到的服务：
+
+| 主机/端口 | 服务模型 | 上下文 | native tool-call 启动参数 |
+|---|---|---:|---|
+| 8222:`18073` | `rwkv7-g1i_preview4922-13.3b-20260720-ctx12288` | 12288 | 已启用 `--enable-auto-tool-choice --tool-call-parser rwkv` |
+| 8222:`18134` | `rwkv7-g1h-13.3b-20260710-ctx10240` | 10240 | 当前命令行未见上述两个参数 |
+| 8222:`18136` | `rwkv7-g1g-13.3b-20260523-ctx8192` | 8192 | 当前命令行未见上述两个参数 |
+| 157:`19334` | `rwkv7-g1g-13.3b-20260523-ctx8192` | 8192 | 当前命令行未见上述两个参数 |
+| 157:`19372` | `rwkv7-g1g-7.2b-20260523-ctx8192` | 8192 | 当前命令行未见上述两个参数 |
+
+只有确认过 native parser 的服务才能用于 `function_calling` Agent 分数；没有
+tool-call 参数的服务不能因为 `/v1/models` 正常就被当作 Agent 服务。
+
 ## 四、`vllm-rwkv` 启动审计
 
 先阅读源码和现有启动脚本，再决定并发参数：
