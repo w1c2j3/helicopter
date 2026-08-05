@@ -85,7 +85,7 @@ benchmark_configs = [
 schema_version = 1
 selector = "gsm_plus"
 batch_size = 8
-max_gen_toks = 2048
+max_gen_toks = 512
 
 [prompt]
 profile = "assistant"
@@ -101,6 +101,9 @@ do_sample = false
 原生 metrics、group、sample 和 task config；`summary.json` 与 Scoreboard 会保留
 每个 benchmark 最终生效的配置。默认总入口的独立文件位于
 `configs/eval/lm_eval_benchmarks/`。
+
+新 G1I 权重的首批实测、prompt A/B、错例与 LongBench v2 上下文限制记录在
+`docs/evaluation/rwkv7_g1i_benchmark_tuning.md`。
 
 ### RWKV prompt
 
@@ -196,6 +199,10 @@ manifest schema 与 LightEval HTTP backend 相同。启动时会访问每个 rep
 4. 适配器验证评分返回 token 完全一致，忽略首 token 的 `null` logprob，只累加
    continuation 对应位置的自然对数概率。后续 rolling window 不以 EOT 开头时，
    RWKV-vLLM 自动补入的 EOT 会在返回结果中被正规化，避免 token 和 logprob 错位。
+
+RWKV tokenizer 可能在 context/continuation 边界合并 token，且远端 tokenizer 会对
+超长输入左截断。适配器会在上下文尾部的有界窗口重新分词后切分 continuation；不要
+使用 `len(tokenize(context))` 直接切整段 token，否则多选项可能被误判为空 continuation。
 
 HTTP client 不继承 shell proxy，避免本机或内网服务被全局代理转发。HTTP 429、
 5xx 和传输错误最多切换一个 replica 重试；其他 4xx 直接失败。

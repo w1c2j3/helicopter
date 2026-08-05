@@ -1,0 +1,18 @@
+schema_version = 1
+backend = "vllm_http"
+
+tasks = ["longbench2"]
+benchmark_configs = ["lm_eval_benchmarks/longbench2.toml"]
+output_dir = ".tmp/eval/lm-eval-longbench2-10-raw-final"
+batch_size = 16
+eot_token_id = 0
+max_gen_toks = 64
+limit = 10
+log_samples = true
+
+[prompt]
+profile = "none"
+generation_prompt = "none"
+
+[generation_kwargs]
+do_sample = false

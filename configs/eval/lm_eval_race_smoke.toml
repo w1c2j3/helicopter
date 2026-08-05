@@ -1,0 +1,17 @@
+schema_version = 1
+backend = "vllm_http"
+
+tasks = ["race"]
+benchmark_configs = ["lm_eval_benchmarks/race.toml"]
+output_dir = ".tmp/eval/lm-eval-race-100"
+batch_size = 16
+eot_token_id = 0
+limit = 100
+log_samples = true
+
+[prompt]
+profile = "none"
+generation_prompt = "none"
+
+[generation_kwargs]
+do_sample = false

@@ -87,6 +87,38 @@ class RWKVVLLMHttpLM(TemplateLM):
             tokens = tokens[-left_truncate_len:]
         return tokens
 
+    def _encode_pair(
+        self, context: str, continuation: str
+    ) -> tuple[list[int], list[int]]:
+        if not context:
+            raise ValueError("context cannot be empty")
+        trailing_spaces = len(context) - len(context.rstrip())
+        if trailing_spaces:
+            continuation = context[-trailing_spaces:] + continuation
+            context = context[:-trailing_spaces]
+
+        context_tokens = self.tok_encode(context)
+        boundary_characters = min(1024, max(1, self.max_length // 4))
+        boundary_context = context[-boundary_characters:]
+        boundary_context_tokens = self.tok_encode(boundary_context)
+        boundary_whole_tokens = self.tok_encode(boundary_context + continuation)
+        common_length = 0
+        for context_token, whole_token in zip(
+            boundary_context_tokens, boundary_whole_tokens
+        ):
+            if context_token != whole_token:
+                break
+            common_length += 1
+        replaced_context_tokens = len(boundary_context_tokens) - common_length
+        if replaced_context_tokens > len(context_tokens):
+            raise ValueError("RWKV tokenizer boundary exceeds encoded context")
+        stable_context = (
+            context_tokens[:-replaced_context_tokens]
+            if replaced_context_tokens
+            else context_tokens
+        )
+        return stable_context, boundary_whole_tokens[common_length:]
+
     def generate_until(self, requests, disable_tqdm: bool = False) -> list[str]:
         del disable_tqdm
         if not requests:

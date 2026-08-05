@@ -1,7 +1,7 @@
 schema_version = 1
 selector = "gsm_plus"
 batch_size = 8
-max_gen_toks = 2048
+max_gen_toks = 512
 
 [prompt]
 profile = "assistant"

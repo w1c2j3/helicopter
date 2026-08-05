@@ -1,13 +1,11 @@
 schema_version = 1
 selector = "longbench2"
-batch_size = 1
-max_gen_toks = 2048
+batch_size = 16
+max_gen_toks = 64
 
 [prompt]
-profile = "assistant"
-generation_prompt = "fake_think"
-system_instruction = "Use the full supplied context and follow the requested answer format."
-fewshot_as_multiturn = false
+profile = "none"
+generation_prompt = "none"
 
 [generation_kwargs]
 do_sample = false

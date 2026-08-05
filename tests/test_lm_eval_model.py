@@ -54,6 +54,40 @@ def test_public_loglikelihood_supports_multiple_choice_requests() -> None:
     assert model.loglikelihood([request]) == [(-2.0, True)]
 
 
+def test_loglikelihood_scores_rwkv_token_that_merges_across_pair_boundary() -> None:
+    class BoundaryMergingPool(Pool):
+        manifest = SimpleNamespace(max_model_len=128)
+
+        def tokenize(self, text: str):
+            if text == "Answer:":
+                return (10, 11)
+            if text == "Answer:A":
+                return (10, 12)
+            raise AssertionError(text)
+
+    model = RWKVVLLMHttpLM(
+        pool=BoundaryMergingPool(), eot_token_id=0, batch_size=1
+    )
+    request = SimpleNamespace(args=("Answer:", "A"))
+
+    assert model.loglikelihood([request]) == [(-1.0, True)]
+
+
+def test_pair_encoding_survives_remote_left_truncation() -> None:
+    class LeftTruncatingPool(Pool):
+        manifest = SimpleNamespace(max_model_len=8)
+
+        def tokenize(self, text: str):
+            return tuple(ord(character) for character in text)[-8:]
+
+    model = RWKVVLLMHttpLM(
+        pool=LeftTruncatingPool(), eot_token_id=0, batch_size=1
+    )
+    request = SimpleNamespace(args=("abcdefghijk", "A"))
+
+    assert model.loglikelihood([request]) == [(-1.0, True)]
+
+
 def test_tokenization_removes_remote_rwkv_prefix_token() -> None:
     class PrefixPool(Pool):
         def tokenize(self, text: str):

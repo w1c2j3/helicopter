@@ -1,0 +1,18 @@
+schema_version = 1
+backend = "vllm_http"
+
+tasks = ["gsm_plus"]
+benchmark_configs = ["lm_eval_benchmarks/gsm_plus.toml"]
+output_dir = ".tmp/eval/lm-eval-gsm-plus-100"
+batch_size = 8
+eot_token_id = 0
+max_gen_toks = 512
+limit = 100
+log_samples = true
+
+[prompt]
+profile = "none"
+generation_prompt = "none"
+
+[generation_kwargs]
+do_sample = false
