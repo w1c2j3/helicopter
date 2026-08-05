@@ -117,6 +117,16 @@ def test_rwkv_suite_uses_external_per_benchmark_prompt_configs() -> None:
         ROOT / "configs/eval/lm_eval_benchmarks/gsm_plus.toml"
     ).open("rb") as stream:
         gsm_plus = tomllib.load(stream)
+    with (ROOT / "configs/eval/lm_eval_benchmarks/drop.toml").open("rb") as stream:
+        drop = tomllib.load(stream)
+    with (
+        ROOT / "configs/eval/lm_eval_benchmarks/xquad.toml"
+    ).open("rb") as stream:
+        xquad = tomllib.load(stream)
+    with (
+        ROOT / "configs/eval/lm_eval_benchmarks/mgsm_cot_native.toml"
+    ).open("rb") as stream:
+        mgsm = tomllib.load(stream)
 
     assert rwkv_config["prompt"]["profile"] == "none"
     assert "wikitext" in rwkv_config["tasks"]
@@ -126,6 +136,10 @@ def test_rwkv_suite_uses_external_per_benchmark_prompt_configs() -> None:
     assert gsm_plus["selector"] == "gsm_plus"
     assert gsm_plus["prompt"]["profile"] == "assistant"
     assert gsm_plus["prompt"]["generation_prompt"] == "fake_think"
+    assert drop["prompt"]["profile"] == "none"
+    assert xquad["prompt"]["profile"] == "none"
+    assert xquad["dataset_path_override"] == "google/xquad"
+    assert mgsm["prompt"]["profile"] == "none"
     assert ppl_config["tasks"] == ["wikitext"]
     assert ppl_config["prompt"]["profile"] == "none"
 

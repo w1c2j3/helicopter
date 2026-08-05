@@ -4,9 +4,8 @@ batch_size = 8
 max_gen_toks = 2048
 
 [prompt]
-profile = "assistant"
-generation_prompt = "fake_think"
-fewshot_as_multiturn = false
+profile = "none"
+generation_prompt = "none"
 
 [generation_kwargs]
 do_sample = false

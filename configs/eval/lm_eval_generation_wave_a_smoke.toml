@@ -1,0 +1,22 @@
+schema_version = 1
+backend = "vllm_http"
+
+tasks = ["drop", "xquad", "mgsm_cot_native"]
+benchmark_configs = [
+  "lm_eval_benchmarks/drop.toml",
+  "lm_eval_benchmarks/xquad.toml",
+  "lm_eval_benchmarks/mgsm_cot_native.toml",
+]
+output_dir = ".tmp/eval/lm-eval-generation-wave-a-5"
+batch_size = 8
+eot_token_id = 0
+max_gen_toks = 512
+limit = 5
+log_samples = true
+
+[prompt]
+profile = "none"
+generation_prompt = "none"
+
+[generation_kwargs]
+do_sample = false

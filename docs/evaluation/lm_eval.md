@@ -390,9 +390,12 @@ INSTALL_COMPONENTS=lm-eval,dev scripts/install_local.sh
 ```
 
 `lm-eval` 依赖组固定安装 `lm-eval[ifeval,longbench]==0.4.12` 和
-`datasets==3.6.0`。前者把 IFEval 规则校验依赖（`langdetect`、`immutabledict` 和
+`datasets==3.6.0`，并安装与其他运行时一致的 `transformers`。前者把 IFEval
+规则校验依赖（`langdetect`、`immutabledict` 和
 `nltk`）以及 LongBench 的 `jieba`、`fuzzywuzzy`、`rouge` 带入独立环境；后者保留
 CMMLU 等上游 dataset-script 任务所需的加载能力（`datasets>=4` 已移除该能力）。
+XQuAD 的上游指标实现仍从 `transformers.data.metrics.squad_metrics` 导入 SQuAD
+归一化与 F1 逻辑，因此该依赖不能从 lm-eval 隔离环境中裁掉。
 部署时不应改为只安装基础 `lm-eval` 包，也不能放宽 datasets 上界。
 
 ## 能力补充套件

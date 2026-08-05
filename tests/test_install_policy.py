@@ -22,6 +22,10 @@ class InstallPolicyTests(unittest.TestCase):
             "datasets==3.6.0",
             manifest["dependency-groups"]["lm-eval"],
         )
+        self.assertIn(
+            "transformers>=5.5.3,!=5.6.0,<5.11",
+            manifest["dependency-groups"]["lm-eval"],
+        )
         self.assertTrue(
             any(
                 package["name"] == "datasets" and package["version"] == "3.6.0"
@@ -36,7 +40,15 @@ class InstallPolicyTests(unittest.TestCase):
         packages = {package["name"] for package in lock["package"]}
         self.assertGreaterEqual(
             packages,
-            {"fuzzywuzzy", "immutabledict", "jieba", "langdetect", "nltk", "rouge"},
+            {
+                "fuzzywuzzy",
+                "immutabledict",
+                "jieba",
+                "langdetect",
+                "nltk",
+                "rouge",
+                "transformers",
+            },
         )
 
     def test_verl_runtime_dependency_is_locked(self) -> None:

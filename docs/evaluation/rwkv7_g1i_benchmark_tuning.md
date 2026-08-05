@@ -144,6 +144,40 @@ XCOPA 两个选项的预测次数为 27/28，没有明显位置塌缩。XNLI 的
 固定样本 A/B 均显示 chat wrapper 不改善或显著退化 likelihood 结果，因此这里保留上游
 原生 base prompt，避免在 5 题/语言上继续过拟合。
 
+## 生成 Wave A
+
+固定每个 leaf `limit = 5` 实测 DROP、XQuAD 和 `mgsm_cot_native`。XQuAD 展开 12 个
+语言 leaf，MGSM 的固定 tag 同时展开 11 个 English-CoT 与 11 个 native-CoT leaf；加上
+DROP 共 175 个样本、35 个 leaf。最终保留的正式入口为
+`configs/eval/lm_eval_generation_wave_a_smoke.toml`，结果在
+`.tmp/eval/lm-eval-generation-wave-a-5`。
+
+| Benchmark | `assistant + fake_think` | 额外格式指令 | 原生 prompt（最终） |
+| --- | ---: | ---: | ---: |
+| DROP | EM 0%，F1 17.2% | 未测 | EM/F1 20.0% |
+| XQuAD | EM 11.7%，F1 13.1% | 未测 | EM 43.3%，F1 50.4% |
+| MGSM | flexible 35.5%，strict 0% | 25.5%，5.5% | 42.7%，22.7% |
+
+DROP 与 XQuAD 的上游 prompt 已包含问答结构；chat wrapper 会让模型输出一个孤立的
+`>`、解释性整句或与原文不一致的答案。相同固定样本切回原生 causal prompt 后，XQuAD
+更常直接续写答案 span，例如英文前三题由 1/3 exact 提高到 2/3 exact。XQuAD 上游 YAML
+仍引用无 namespace 的 `xquad`，独立配置只将数据集恢复为同一官方
+`google/xquad`；其 SQuAD EM/F1 实现依赖 `transformers.data.metrics.squad_metrics`，
+因此 lm-eval 独立环境现显式锁定兼容的 `transformers`。
+
+MGSM 的 strict filter 要求输出包含 `The answer is <number>`。chat wrapper 常以
+`\\boxed{}` 结束，导致 flexible 能抽取数字而 strict 全部失配；强制格式的 system
+instruction 虽修复少量 strict 样本，却使 flexible 下降 10 个百分点。原生 prompt 的
+few-shot 示例能更自然地诱导目标短语，并同时提高两项指标，因此最终不保留额外指令。
+原生 MGSM 在单独试跑时为 flexible/strict 40.0%/20.0%，在三任务正式重跑时为
+42.7%/22.7%；两次均为 greedy 且样本相同，这个约 2–3 点差异应视为服务并发或数值
+非确定性，而不是能力变化。
+
+Qwen3.5-0.8B/2B 的官方模型卡没有公开同名、同 lm-eval 协议的 DROP、XQuAD 或 MGSM
+结果，因此本轮不使用近似任务数字代替基线。CruxEval 会在本机执行模型生成的 Python；
+上游 reliability guard 明确不是安全沙箱，所以未把它混入本轮普通评测，后续需要在独立
+OS/container 沙箱中运行。
+
 ## 最终配置选择
 
 - GSM Plus：保留 `assistant` + `fake_think`，greedy，将上限从 2048 降为 512。
@@ -151,5 +185,6 @@ XCOPA 两个选项的预测次数为 27/28，没有明显位置塌缩。XNLI 的
 - LongBench v2：保留原生 base prompt，批大小 16，生成上限 64（该任务不生成）。
 - Belebele、XNLI、XCOPA：保留原生 base prompt；XNLI/XCOPA 仅修复到官方 namespace，
   不改变上游任务协议。
+- DROP、XQuAD、MGSM：三者均切回原生 base prompt；XQuAD 仅修复到官方 namespace。
 - 所有运行继续开启 `log_samples`；完整发布必须移除 smoke `limit` 并在同一 task
   version、split、上下文和 prompt 协议下比较。
