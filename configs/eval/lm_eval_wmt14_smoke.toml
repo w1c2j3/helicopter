@@ -1,0 +1,18 @@
+schema_version = 1
+backend = "vllm_http"
+
+tasks = ["wmt14-en-fr"]
+benchmark_configs = ["lm_eval_benchmarks/wmt14_en_fr.toml"]
+output_dir = ".tmp/eval/lm-eval-wmt14-en-fr-5"
+batch_size = 32
+eot_token_id = 0
+max_gen_toks = 256
+limit = 5
+log_samples = true
+
+[prompt]
+profile = "none"
+generation_prompt = "none"
+
+[generation_kwargs]
+do_sample = false

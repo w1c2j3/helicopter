@@ -202,6 +202,20 @@ Paloma 的 16 个语料 leaf 另用 `configs/eval/lm_eval_paloma_smoke.toml` 尝
 没有绕过门禁或用其他困惑度语料替代。Qwen3.5-0.8B/2B 官方模型卡也没有这些同名、
 同 lm-eval 协议结果，本轮不构造伪基线。
 
+## 翻译与开放生成状态
+
+`configs/eval/lm_eval_wmt14_smoke.toml` 在 WMT14 English-to-French 固定前五题得到
+BLEU 13.34、chrF 39.59、TER 79.28（TER 越低越好）。样本显示前三题基本保持法语并
+覆盖原意，第四题使用可接受的近义词；第五题则完全偏离原句，生成了一条英文汽车产业
+新闻。只有五题时 corpus BLEU 的 bootstrap 标准误为 8.31，因此这组数字仅用于检查
+生成与 corpus metric 链路，不能与完整 3003 题结果直接比较。
+
+FLORES 与 WMT14 已拆成独立 smoke 入口，避免 gated 数据集失败使先完成的 selector
+无法落盘。`configs/eval/lm_eval_flores_smoke.toml` 对应的官方 `facebook/flores` 当前
+需要授权，状态为 blocked；没有改用其他 FLORES 镜像或相似翻译集。RealToxicityPrompts
+的上游指标必须把生成文本发送给 Perspective API，当前没有 `PERSPECTIVE_API_KEY`，
+因此同样保持 blocked，没有执行无指标的生成后伪称 benchmark 已完成。
+
 ## 最终配置选择
 
 - GSM Plus：保留 `assistant` + `fake_think`，greedy，将上限从 2048 降为 512。
@@ -211,5 +225,6 @@ Paloma 的 16 个语料 leaf 另用 `configs/eval/lm_eval_paloma_smoke.toml` 尝
   不改变上游任务协议。
 - DROP、XQuAD、MGSM：三者均切回原生 base prompt；XQuAD 仅修复到官方 namespace。
 - WikiText、Pile-10k、LAMBADA、BLiMP：固定原生 base prompt；Paloma 保持 gated blocked。
+- WMT14：保留原生翻译 prompt；FLORES 与 RealToxicityPrompts 保持明确 blocked。
 - 所有运行继续开启 `log_samples`；完整发布必须移除 smoke `limit` 并在同一 task
   version、split、上下文和 prompt 协议下比较。
