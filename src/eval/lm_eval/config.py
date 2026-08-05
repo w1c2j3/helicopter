@@ -66,6 +66,7 @@ _BENCHMARK_FIELDS = {
     "confirm_run_unsafe_code",
     "trust_remote_dataset_code",
     "dataset_path_override",
+    "dataset_kwargs_override",
     "prompt",
     "generation_kwargs",
 }
@@ -130,6 +131,7 @@ class BenchmarkConfig:
     confirm_run_unsafe_code: bool
     trust_remote_dataset_code: bool
     dataset_path_override: str | None
+    dataset_kwargs_override: dict[str, object] | None
     prompt: PromptConfig
     generation_kwargs: dict[str, object] = field(default_factory=dict)
 
@@ -143,6 +145,7 @@ class BenchmarkConfig:
             "confirm_run_unsafe_code": self.confirm_run_unsafe_code,
             "trust_remote_dataset_code": self.trust_remote_dataset_code,
             "dataset_path_override": self.dataset_path_override,
+            "dataset_kwargs_override": self.dataset_kwargs_override,
             "prompt": self.prompt.public(),
             "generation_kwargs": dict(self.generation_kwargs),
         }
@@ -678,6 +681,13 @@ class LMEvalConfig:
             raise ConfigError(
                 f"benchmark dataset_path_override must be namespace/name in {path}"
             )
+        dataset_kwargs_override = raw.get("dataset_kwargs_override")
+        if dataset_kwargs_override is not None and not isinstance(
+            dataset_kwargs_override, dict
+        ):
+            raise ConfigError(
+                f"benchmark dataset_kwargs_override must be a table in {path}"
+            )
         configured_prompt = cls._prompt(raw.get("prompt"), prompt)
         configured_generation = dict(generation_kwargs)
         configured_generation.update(
@@ -692,6 +702,11 @@ class LMEvalConfig:
             confirm_run_unsafe_code=confirm_run_unsafe_code,
             trust_remote_dataset_code=trust_remote_dataset_code,
             dataset_path_override=dataset_path_override,
+            dataset_kwargs_override=(
+                dict(dataset_kwargs_override)
+                if dataset_kwargs_override is not None
+                else None
+            ),
             prompt=configured_prompt,
             generation_kwargs=configured_generation,
         )

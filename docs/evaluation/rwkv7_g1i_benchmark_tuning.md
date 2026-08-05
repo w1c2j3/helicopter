@@ -1,4 +1,4 @@
-# RWKV7 G1I benchmark 首批调优记录
+# RWKV7 G1I benchmark 调优与覆盖记录
 
 日期：2026-08-05
 
@@ -12,8 +12,9 @@
 - 评测器：`lm-eval==0.4.12`，所有正式运行保留 samples 和错例分析
 
 主入口为 `configs/eval/lm_eval.toml`，每个 selector 的独立参数位于
-`configs/eval/lm_eval_benchmarks/`。本记录只覆盖已实际运行的首批 benchmark，不能
-替代其余 selector 的正式结果。
+`configs/eval/lm_eval_benchmarks/`。本轮覆盖主入口的全部 28 个 selector：22 个已经
+实际运行 smoke，6 个保留明确 blocked 状态。所有带 `limit` 的数字都不能替代完整 split
+正式结果。
 
 ## 已验证结果
 
@@ -216,6 +217,72 @@ FLORES 与 WMT14 已拆成独立 smoke 入口，避免 gated 数据集失败使�
 的上游指标必须把生成文本发送给 Perspective API，当前没有 `PERSPECTIVE_API_KEY`，
 因此同样保持 blocked，没有执行无指标的生成后伪称 benchmark 已完成。
 
+## CMMLU 与同切片 Base 模型比较
+
+`configs/eval/lm_eval_cmmlu_smoke.toml` 固定每个 67 个学科 leaf 的前两题，共 134 题，
+RWKV acc/acc_norm 为 41.79%。四个选项的预测次数为 23/32/42/37，目标次数为
+27/40/34/33，没有出现单一选项塌缩。
+
+本地已有 Qwen3.5-0.8B-Base 与 Qwen3.5-2B-Base 的每 leaf 前一题结果。为避免把 RWKV
+134 题与 Qwen 67 题直接比较，另从 RWKV 记录中只取相同的 `doc_id = 0` 切片：
+
+| 模型 | 参数量 | 相同 67 题 acc |
+| --- | ---: | ---: |
+| RWKV7 G1I | 1.5B | 38.81% |
+| Qwen3.5-0.8B-Base | 0.8B | 47.76% |
+| Qwen3.5-2B-Base | 2B | 64.18% |
+
+三者使用同一 lm-eval task、同一题目顺序、原生 base prompt 和 likelihood 指标。在这个
+可比但很小的固定切片上，RWKV 落后 0.8B Base 8.96 个百分点、落后 2B Base 25.37 个
+百分点；不使用 Qwen 完整 split 数字替代该同切片比较。
+
+## 长上下文与剩余 selector
+
+### Babilong
+
+`configs/eval/lm_eval_babilong_smoke.toml` 对 20 个 QA leaf 各取一题，共 20 题，accuracy
+为 50.0%。本次样本 prompt 只有 728--2332 字符，是上游默认约 0--1K 档的数据，不是
+16K 长上下文验证。结果只能证明 task group、生成和 exact-match 链路可运行，不能据此
+声明模型具备 Babilong 长上下文能力。
+
+### InfiniteBench
+
+lm-eval 0.4.12 的 InfiniteBench 定义与当前官方数据集存在两处漂移：旧式 `features`
+schema 不兼容 `datasets 3.6`，并且四个英文 split 在 YAML 中写作 `*_en`、数据文件实际
+写作 `*_eng`。独立 benchmark TOML 现以标准 `datasets.Features` schema 和明确的
+`data_files` 映射恢复同一官方数据，不改题目、答案或 metric。
+
+固定 11 个 leaf 各一题做了四轮 prompt/停止符 A/B。下表的“均值”是 11 个 leaf score
+的本地等权诊断值，lm-eval 上游没有为该 group 输出正式 aggregate：
+
+| 协议 | 非零 leaf | 等权均值 | 诊断 |
+| --- | ---: | ---: | --- |
+| `assistant + fake_think`，上游 `until = "\n"` | 2/11 | 10.27% | thinking 预填被首个换行截断，多数输出只有 `>` |
+| 原生 causal prompt | 1/11 | 1.07% | 9/11 直接空输出 |
+| `assistant`，无 thinking 预填 | 1/11 | 1.04% | 多数输出停在 `<think>` 首行 |
+| `assistant + fake_think`，`until = "\nUser:"` | 4/11 | 20.46% | 最终配置，允许短答案跨过 thinking 预填换行 |
+
+最终 11 题中 longbook choice 与 long dialogue QA 各为 1.0，中文 longbook QA 为 0.12，
+longbook summary 为 0.1302，其余为 0。代表性失败包括 passkey 只输出 `The pass key is`
+而没有数值、KV retrieval 返回错误 UUID，以及 English longbook QA 回答 `Annalisa` 而
+参考为 `Peyton`。
+
+更重要的是，这 11 条最终 prompt 经实际 RWKV tokenizer 统计为 60,057--445,652
+tokens，中位数 125,364；11/11 都超过有效上限 16,382 并被左截断。因此这组结果主要
+测到“只保留长文末尾”的退化协议，不应当包装成完整 InfiniteBench 能力。结果目录为
+`.tmp/eval/lm-eval-infinitebench-1-final`。
+
+### 明确 blocked
+
+- RULER：上游在运行时用 `transformers.AutoTokenizer` 合成长短固定的数据；当前
+  RWKV HTTP backend 只暴露远端 `/tokenize`，没有可传给上游的本地 Hugging Face
+  tokenizer/pretrained 目录。用其他 tokenizer 会改变长度协议，因此保持 evaluator
+  incompatibility blocked。
+- CruxEval input/output：会执行模型生成的 Python；lm-eval reliability guard 明确不是
+  安全沙箱，未在宿主机开启 `confirm_run_unsafe_code`，需要独立 OS/container 沙箱。
+- Paloma、FLORES：官方数据集 gated，当前环境未获授权，不替换数据集。
+- RealToxicityPrompts：缺少 Perspective API key，不运行无指标替代版。
+
 ## 最终配置选择
 
 - GSM Plus：保留 `assistant` + `fake_think`，greedy，将上限从 2048 降为 512。
@@ -226,5 +293,10 @@ FLORES 与 WMT14 已拆成独立 smoke 入口，避免 gated 数据集失败使�
 - DROP、XQuAD、MGSM：三者均切回原生 base prompt；XQuAD 仅修复到官方 namespace。
 - WikiText、Pile-10k、LAMBADA、BLiMP：固定原生 base prompt；Paloma 保持 gated blocked。
 - WMT14：保留原生翻译 prompt；FLORES 与 RealToxicityPrompts 保持明确 blocked。
+- CMMLU：保留上游原生中文多选 prompt 与 likelihood 指标。
+- Babilong：保留 `assistant + fake_think`；当前 smoke 只覆盖默认短档。
+- InfiniteBench：保留 `assistant + fake_think`，覆盖官方数据 schema/split 漂移，并将
+  `until` 调为 `\nUser:`，避免 thinking 预填被单换行提前截断。
+- RULER 与 CruxEval：分别等待本地 tokenizer 接口与独立代码执行沙箱，不做协议替换。
 - 所有运行继续开启 `log_samples`；完整发布必须移除 smoke `limit` 并在同一 task
   version、split、上下文和 prompt 协议下比较。

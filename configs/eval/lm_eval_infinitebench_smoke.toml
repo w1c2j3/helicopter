@@ -1,0 +1,18 @@
+schema_version = 1
+backend = "vllm_http"
+
+tasks = ["infinitebench"]
+benchmark_configs = ["lm_eval_benchmarks/infinitebench.toml"]
+output_dir = ".tmp/eval/lm-eval-infinitebench-1-final"
+batch_size = 1
+eot_token_id = 0
+max_gen_toks = 2048
+limit = 1
+log_samples = true
+
+[prompt]
+profile = "none"
+generation_prompt = "none"
+
+[generation_kwargs]
+do_sample = false

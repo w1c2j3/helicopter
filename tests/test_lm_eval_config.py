@@ -156,6 +156,9 @@ confirm_run_unsafe_code = true
 trust_remote_dataset_code = true
 dataset_path_override = "canonical/wikitext"
 
+[dataset_kwargs_override]
+revision = "main"
+
 [prompt]
 generation_prompt = "fake_think"
 system_instruction = "Return only the requested answer."
@@ -199,6 +202,7 @@ temperature = 0.0
     assert benchmark.confirm_run_unsafe_code is True
     assert benchmark.trust_remote_dataset_code is True
     assert benchmark.dataset_path_override == "canonical/wikitext"
+    assert benchmark.dataset_kwargs_override == {"revision": "main"}
     assert benchmark.prompt.profile == "bot"
     assert benchmark.prompt.generation_prompt == "fake_think"
     assert benchmark.prompt.system_instruction == "Return only the requested answer."

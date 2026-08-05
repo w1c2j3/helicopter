@@ -1,0 +1,18 @@
+schema_version = 1
+backend = "vllm_http"
+
+tasks = ["babilong"]
+benchmark_configs = ["lm_eval_benchmarks/babilong.toml"]
+output_dir = ".tmp/eval/lm-eval-babilong-1"
+batch_size = 1
+eot_token_id = 0
+max_gen_toks = 256
+limit = 1
+log_samples = true
+
+[prompt]
+profile = "none"
+generation_prompt = "none"
+
+[generation_kwargs]
+do_sample = false

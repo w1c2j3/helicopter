@@ -35,17 +35,33 @@ def _remote_dataset_code(enabled: bool):
         datasets.config.HF_DATASETS_TRUST_REMOTE_CODE = previous
 
 
-def _evaluation_task_specs(manager, tasks: Sequence[str], override: str | None):
-    if override is None:
+def _evaluation_task_specs(
+    manager,
+    tasks: Sequence[str],
+    dataset_path_override: str | None,
+    dataset_kwargs_override: Mapping[str, object] | None,
+):
+    if dataset_path_override is None and dataset_kwargs_override is None:
         return list(tasks)
     specs: list[object] = []
+    overrides: dict[str, object] = {}
+    if dataset_path_override is not None:
+        overrides["dataset_path"] = dataset_path_override
+    if dataset_kwargs_override is not None:
+        dataset_kwargs = dict(dataset_kwargs_override)
+        features = dataset_kwargs.get("features")
+        if isinstance(features, Mapping):
+            from datasets import Features
+
+            dataset_kwargs["features"] = Features.from_dict(dict(features))
+        overrides["dataset_kwargs"] = dataset_kwargs
     for task_name in tasks:
         entry = manager.task_index.get(task_name)
         if entry is None:
-            raise ConfigError(f"unknown task for dataset_path_override: {task_name}")
+            raise ConfigError(f"unknown task for benchmark override: {task_name}")
         built = manager._factory.build(
             entry,
-            overrides={"dataset_path": override},
+            overrides=overrides,
             registry=manager.task_index,
         )
         if isinstance(built, list):
@@ -182,6 +198,7 @@ def run(*, config_path: Path, env: Mapping[str, str], dry_run: bool) -> int:
                             task_manager,
                             run_tasks,
                             benchmark.dataset_path_override if benchmark else None,
+                            benchmark.dataset_kwargs_override if benchmark else None,
                         ),
                         batch_size=batch_size,
                         limit=limit,

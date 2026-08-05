@@ -87,6 +87,9 @@ benchmark_configs = [
 若上游 task 仍使用 Hugging Face 已废弃的无 namespace 别名，可设置
 `dataset_path_override = "namespace/canonical-dataset"`。覆盖只作用于该 selector
 解析出的 leaf task，运行结束后恢复；它必须指向同一官方数据集，不能用相似数据替代。
+上游 YAML 若只因固定 `datasets==3.6.0` 的特征 schema 变化而无法加载，可用
+`[dataset_kwargs_override]` 替换该 selector 的 `dataset_kwargs`；必须保持相同数据、
+split 和字段语义，并在独立 benchmark 文件中记录完整 schema。
 
 ```toml
 schema_version = 1

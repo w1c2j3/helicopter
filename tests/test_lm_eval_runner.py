@@ -612,7 +612,7 @@ temperature = 0.2
     ]
 
 
-def test_dataset_path_override_builds_complete_task_objects() -> None:
+def test_benchmark_dataset_overrides_build_complete_task_objects() -> None:
     task = object()
     group = object()
     task_entry = SimpleNamespace(name="task", kind=SimpleNamespace(name="TASK"))
@@ -630,12 +630,31 @@ def test_dataset_path_override_builds_complete_task_objects() -> None:
     )
 
     assert evaluate._evaluation_task_specs(
-        manager, ("task", "group"), "canonical/dataset"
+        manager,
+        ("task", "group"),
+        "canonical/dataset",
+        {
+            "features": {
+                "answer": {
+                    "feature": {"dtype": "string", "_type": "Value"},
+                    "_type": "Sequence",
+                }
+            }
+        },
     ) == [task, group]
-    assert calls == [
-        (task_entry, {"dataset_path": "canonical/dataset"}, manager.task_index),
-        (group_entry, {"dataset_path": "canonical/dataset"}, manager.task_index),
-    ]
+    assert [call[0] for call in calls] == [task_entry, group_entry]
+    assert all(call[1]["dataset_path"] == "canonical/dataset" for call in calls)
+    assert all(call[2] is manager.task_index for call in calls)
+    assert all(
+        call[1]["dataset_kwargs"]["features"].to_dict()
+        == {
+            "answer": {
+                "feature": {"dtype": "string", "_type": "Value"},
+                "_type": "Sequence",
+            }
+        }
+        for call in calls
+    )
 
 
 def test_result_writer_preserves_raw_results_and_normalizes_metrics(

@@ -3,6 +3,47 @@ selector = "infinitebench"
 batch_size = 1
 max_gen_toks = 2048
 
+[dataset_kwargs_override]
+
+[dataset_kwargs_override.data_files]
+passkey = "passkey.jsonl"
+kv_retrieval = "kv_retrieval.jsonl"
+number_string = "number_string.jsonl"
+code_run = "code_run.jsonl"
+code_debug = "code_debug.jsonl"
+math_find = "math_find.jsonl"
+longdialogue_qa_en = "longdialogue_qa_eng.jsonl"
+longbook_qa_en = "longbook_qa_eng.jsonl"
+longbook_sum_en = "longbook_sum_eng.jsonl"
+longbook_choice_en = "longbook_choice_eng.jsonl"
+longbook_qa_chn = "longbook_qa_chn.jsonl"
+
+[dataset_kwargs_override.features.id]
+dtype = "int64"
+_type = "Value"
+
+[dataset_kwargs_override.features.context]
+dtype = "string"
+_type = "Value"
+
+[dataset_kwargs_override.features.input]
+dtype = "string"
+_type = "Value"
+
+[dataset_kwargs_override.features.answer]
+_type = "Sequence"
+
+[dataset_kwargs_override.features.answer.feature]
+dtype = "string"
+_type = "Value"
+
+[dataset_kwargs_override.features.options]
+_type = "Sequence"
+
+[dataset_kwargs_override.features.options.feature]
+dtype = "string"
+_type = "Value"
+
 [prompt]
 profile = "assistant"
 generation_prompt = "fake_think"
@@ -11,3 +52,4 @@ fewshot_as_multiturn = false
 
 [generation_kwargs]
 do_sample = false
+until = ["\nUser:"]
