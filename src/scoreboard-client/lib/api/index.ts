@@ -1,4 +1,5 @@
 import { adminBackpressure } from "./admin/backpressure";
+import { adminLogin, adminLogout, adminSession } from "./admin/auth";
 import { adminHealth } from "./admin/health";
 import { adminCancel } from "./admin/eval/cancel";
 import { adminDraft } from "./admin/eval/draft";
@@ -30,6 +31,9 @@ export const api = {
   scoreHistory,
   scoreHistoryDetail,
   adminHealth,
+  adminSession,
+  adminLogin,
+  adminLogout,
   adminOptions,
   adminDraft,
   adminStatus,

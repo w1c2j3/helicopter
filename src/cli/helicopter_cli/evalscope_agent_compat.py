@@ -1,9 +1,10 @@
-"""Strict wire compatibility for RWKV text tool calls and EvalScope FC.
+"""Wire compatibility for RWKV text tool calls and EvalScope FC.
 
 RWKV naive Chat can return a valid BFCL-style JSON function map in
 ``message.content``.  EvalScope's OpenAI FC adapters consume
-``message.tool_calls`` instead.  This module converts only schema-validated
-JSON; it never invents a function name, argument, or answer.
+``message.tool_calls`` instead.  This module only converts the transport
+shape; it does not validate schemas, judge correctness, repair arguments, or
+turn an exception into a score.
 """
 
 from __future__ import annotations
@@ -13,10 +14,10 @@ import uuid
 from typing import Any, Mapping
 
 
-def _compatible_tool_name(name: str, tools: list[Any]) -> str:
-    """Resolve only an exact or unique punctuation-equivalent tool name."""
+def _wire_tool_name(name: str, tools: list[Any]) -> str:
+    """Apply only the BFCL dot/underscore wire-name normalization."""
 
-    schemas = []
+    schemas: list[str] = []
     for tool in tools:
         if not isinstance(tool, Mapping):
             continue
@@ -32,9 +33,7 @@ def _compatible_tool_name(name: str, tools: list[Any]) -> str:
         for candidate in schemas
         if candidate.replace(".", "_") == name or candidate.replace("_", ".") == name
     ]
-    if len(equivalents) == 1:
-        return equivalents[0]
-    raise ValueError(f"function name {name!r} is not an exact or unique compatible tool name")
+    return equivalents[0] if len(equivalents) == 1 else name
 
 
 def adapt_tool_call_response(
@@ -42,7 +41,7 @@ def adapt_tool_call_response(
     *,
     tools: list[Any] | None,
 ) -> tuple[Any, dict[str, Any]]:
-    """Convert strict BFCL text calls in a completion response to tool_calls.
+    """Convert BFCL-shaped text calls in a completion response to tool_calls.
 
     The returned trace is diagnostic metadata.  The original response is
     still retained by the caller's upstream trace before the adapted response
@@ -62,8 +61,9 @@ def adapt_tool_call_response(
         return response, trace
 
     # Import lazily to keep the compatibility module independent of the
-    # router's import order; parse_candidates owns the strict schema checks.
-    from .parallel_candidate_proxy import parse_candidates
+    # router's import order.  This parser is transport-only; EvalScope/BFCL
+    # owns schema and correctness decisions.
+    from .parallel_candidate_proxy import parse_transport_candidates
 
     output = dict(response)
     output_choices = list(choices)
@@ -82,26 +82,30 @@ def adapt_tool_call_response(
         if not isinstance(content, str) or not content.strip():
             continue
         try:
-            candidates = parse_candidates(content, tools=tools)
+            candidates = parse_transport_candidates(content, tools=tools)
             native_calls = []
             for position, candidate in enumerate(candidates):
-                native_name = _compatible_tool_name(candidate.name, tools)
+                native_name = _wire_tool_name(candidate.name, tools)
                 native_calls.append(
                     {
                         "id": f"call_compat_{uuid.uuid4().hex}",
                         "type": "function",
                         "function": {
                             "name": native_name,
-                            "arguments": json.dumps(
-                                candidate.arguments,
-                                ensure_ascii=False,
-                                separators=(",", ":"),
+                            "arguments": (
+                                candidate.arguments_text
+                                if candidate.arguments_text is not None
+                                else json.dumps(
+                                    candidate.arguments,
+                                    ensure_ascii=False,
+                                    separators=(",", ":"),
+                                )
                             ),
                         },
                     }
                 )
         except ValueError as error:
-            trace["reason"] = "content was not a strictly valid schema-checked tool call"
+            trace["reason"] = "content was not a transport-recognizable tool call"
             trace["error"] = str(error)
             continue
         if not native_calls:

@@ -73,7 +73,7 @@ def test_adapt_accepts_unique_dot_underscore_tool_name_alias() -> None:
     assert adapted["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "uber.ride"
 
 
-def test_adapt_keeps_invalid_content_and_records_reason() -> None:
+def test_adapt_transports_schema_invalid_content_without_judging_it() -> None:
     response = {
         "choices": [
             {
@@ -85,9 +85,10 @@ def test_adapt_keeps_invalid_content_and_records_reason() -> None:
 
     adapted, trace = adapt_tool_call_response(response, tools=TOOLS)
 
-    assert adapted == response
-    assert trace["status"] == "unchanged"
-    assert "unknown fields" in trace["error"]
+    assert trace["status"] == "converted"
+    call = adapted["choices"][0]["message"]["tool_calls"][0]
+    assert call["function"]["name"] == "bash"
+    assert json.loads(call["function"]["arguments"]) == {"unknown": 1}
 
 
 def test_adapt_preserves_existing_native_tool_calls() -> None:

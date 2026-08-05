@@ -457,8 +457,8 @@ def build_manifest(
             "Curated directly runnable non-function-calling LightEval benchmark manifest. "
             "This file uses an explicit allowlist of widely used public benchmark families; it is "
             "not generated from arbitrary registry-name matches. Agent/tool-use benchmarks remain "
-            "in benchmarks/agent_benchmarks.json because they require official external harnesses "
-            "or custom judges rather than ordinary HF-backed LightEval task rows."
+            "in benchmarks/evalscope_agent_datasets.json because they require EvalScope's official "
+            "Agent/FC harnesses rather than ordinary HF-backed LightEval task rows."
         ),
         "target_per_domain": TARGET_PER_DOMAIN,
         "scope": CATALOG_SCOPE,

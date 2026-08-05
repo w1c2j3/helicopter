@@ -133,7 +133,7 @@ def patch_litellm_logprobs() -> None:
             "model": _served_model_name(self.model),
             "prompt": prompt,
             "max_tokens": 1,
-            "temperature": 0,
+            "temperature": 1e-5,
             "echo": True,
             "logprobs": 1,
         }

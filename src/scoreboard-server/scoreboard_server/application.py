@@ -10,6 +10,7 @@ from scoreboard_server.db.connection import close_db, init_db
 from scoreboard_server.db.repository import ScoreboardStore
 from scoreboard_server.db.settings import DatabaseSettings
 from scoreboard_server.routes.api import register_api_routes
+from scoreboard_server.services.api.admin.auth import install_admin_auth
 
 
 def create_app(
@@ -36,12 +37,20 @@ def create_app(
             await close_db()
 
     app = FastAPI(title="Helicopter Scoreboard", version="0.1.0", lifespan=lifespan)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    install_admin_auth(app)
+    cors_origins = [
+        item.strip().rstrip("/")
+        for item in (os.environ.get("SCOREBOARD_CORS_ORIGINS") or "").split(",")
+        if item.strip()
+    ]
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=True,
+            allow_methods=["GET", "POST"],
+            allow_headers=["Accept", "Content-Type", "X-RWKV-Admin-Request"],
+        )
     store = ScoreboardStore(settings=resolved)
     register_api_routes(app, store)
     return app

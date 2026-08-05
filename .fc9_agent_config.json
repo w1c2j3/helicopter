@@ -1,0 +1,1 @@
+{"strategy":"function_calling","tools":["bash"],"environment":"local","max_steps":10}

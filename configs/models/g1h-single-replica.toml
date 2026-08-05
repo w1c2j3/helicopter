@@ -1,4 +1,4 @@
-# Four-model evaluation inventory: exactly one endpoint per model.
+# Current g1h evaluation inventory: only the two active 8222 endpoints.
 # Keep credentials in .env; this file contains no secrets.
 
 [runtime]
@@ -10,27 +10,12 @@ max_num_seqs = 1024
 gpu_memory_utilization = 0.97
 
 [models.deployed]
-alias = "g1h-1.5b"
-
-[models."g1h-1.5b"]
-served_model_name = "rwkv7-g1h-1.5b-20260710-ctx10240"
-api_key_env = "HELICOPTER_EVAL_API_KEY"
-
-[[models."g1h-1.5b".replicas]]
-name = "157-gpu0"
-base_url = "http://127.0.0.1:19315/v1"
-
-[models."g1h-2.9b"]
-served_model_name = "rwkv7-g1h-2.9b-20260710-ctx10240"
-api_key_env = "HELICOPTER_EVAL_API_KEY"
-
-[[models."g1h-2.9b".replicas]]
-name = "157-gpu2"
-base_url = "http://127.0.0.1:19329/v1"
+alias = "g1h-7.2b"
 
 [models."g1h-7.2b"]
 served_model_name = "rwkv7-g1h-7.2b-20260710-ctx10240"
 api_key_env = "HELICOPTER_EVAL_API_KEY"
+max_num_seqs = 800
 
 [[models."g1h-7.2b".replicas]]
 name = "8222-gpu0-via-157"
@@ -39,7 +24,8 @@ base_url = "http://127.0.0.1:29572/v1"
 [models."g1h-13.3b"]
 served_model_name = "rwkv7-g1h-13.3b-20260710-ctx10240"
 api_key_env = "HELICOPTER_EVAL_API_KEY"
+max_num_seqs = 640
 
 [[models."g1h-13.3b".replicas]]
 name = "8222-gpu1-via-157"
-base_url = "http://127.0.0.1:29534/v1"
+base_url = "http://127.0.0.1:29533/v1"

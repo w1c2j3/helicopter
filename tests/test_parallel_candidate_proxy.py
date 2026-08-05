@@ -14,8 +14,11 @@ from helicopter_cli.parallel_candidate_proxy import (
     ParallelCandidateProxy,
     _aggregate_prompt,
     _candidate_prompt,
+    _response_usage,
     parse_candidate,
     parse_candidates,
+    parse_transport_candidate,
+    parse_transport_candidates,
 )
 from helicopter_cli.rwkv_agent_prompt import (
     LongContextConfig,
@@ -53,6 +56,16 @@ TOOLS = [
         },
     },
 ]
+
+
+def test_response_usage_is_present_when_upstream_omits_usage() -> None:
+    assert _response_usage(None) == {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+    usage = {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
+    assert _response_usage(usage) is usage
 
 
 def test_parse_candidate_is_strict_and_schema_bound() -> None:
@@ -98,6 +111,44 @@ def test_parse_candidate_is_strict_and_schema_bound() -> None:
             '{"name":"search","arguments":{"queries":[{"query":"wrong shape"}]}}',
             tools=search_tools,
         )
+
+
+def test_parse_transport_candidate_does_not_judge_schema() -> None:
+    candidate = parse_transport_candidate(
+        '{"name":"bash","arguments":{"command":null,"unknown":1}}',
+        tools=TOOLS,
+    )
+    assert candidate.name == "bash"
+    assert candidate.arguments == {"command": None, "unknown": 1}
+
+
+@pytest.mark.parametrize("arguments", ["1.25", 1.25, ["not", "an", "object"]])
+def test_parse_transport_candidate_preserves_non_object_arguments(arguments: object) -> None:
+    candidate = parse_transport_candidate(
+        json.dumps({"name": "bash", "arguments": arguments}),
+        tools=TOOLS,
+    )
+
+    assert candidate.arguments == {}
+    expected_text = (
+        arguments
+        if isinstance(arguments, str)
+        else json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+    )
+    assert candidate.arguments_text == expected_text
+
+
+def test_parse_transport_candidates_splits_adjacent_json_objects_without_judging() -> None:
+    candidates = parse_transport_candidates(
+        '{"name":"bash","arguments":{"command":"pwd"}}'
+        '{"name":"bash","arguments":{"command":"ls"}}',
+        tools=TOOLS,
+    )
+
+    assert [candidate.arguments for candidate in candidates] == [
+        {"command": "pwd"},
+        {"command": "ls"},
+    ]
 
 
 @pytest.mark.parametrize(
@@ -474,6 +525,49 @@ def test_parallel_candidate_route_preserves_recovered_agent_question(tmp_path: P
     assert seen_prompts
     assert "User: Find the answer from the corpus." in seen_prompts[0]
     assert "ChatMessageUser" not in seen_prompts[0]
+
+
+def test_parallel_candidate_route_preserves_multiple_transport_calls(tmp_path: Path) -> None:
+    proxy = ParallelCandidateProxy(
+        "http://127.0.0.1:1/v1",
+        api_key="secret",
+        trace_path=tmp_path / "parallel-multiple-transport.jsonl",
+    )
+
+    def fake_request(payload: dict[str, object]) -> tuple[int, dict[str, str], dict[str, object], dict[str, object]]:
+        return 200, {}, {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": (
+                        '{"name":"bash","arguments":{"command":"pwd"}}'
+                        '{"name":"bash","arguments":{"command":"ls"}}'
+                    ),
+                },
+                "finish_reason": "stop",
+            }]
+        }, {}
+
+    proxy._request_upstream = fake_request  # type: ignore[method-assign]
+    result, trace = proxy._route(
+        {
+            "model": "rwkv",
+            "messages": [{"role": "user", "content": "Run both commands."}],
+            "tools": [TOOLS[0]],
+            "tool_choice": "auto",
+            "max_tokens": 2048,
+        }
+    )
+
+    tool_calls = result["choices"][0]["message"]["tool_calls"]
+    assert [json.loads(call["function"]["arguments"]) for call in tool_calls] == [
+        {"command": "pwd"},
+        {"command": "ls"},
+    ]
+    assert trace["candidate_count"] == 0
+    assert trace["transport_candidate_count"] == 2
+    assert trace["transport_fallback_used"] is True
+    assert trace["native_fallback_used"] is False
 
 
 def test_rwkv_flower_json_prompt_uses_g1h_nocot_transcript() -> None:

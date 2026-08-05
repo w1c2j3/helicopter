@@ -125,7 +125,7 @@ def post_completion(
         "model": model_name,
         "prompt": prompt,
         "max_tokens": output_tokens,
-        "temperature": 0,
+        "temperature": 1e-5,
         "stream": False,
     }
     if ignore_eos:

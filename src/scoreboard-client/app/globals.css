@@ -3187,6 +3187,80 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   padding: 0 9px;
 }
 
+.admin-auth-shell {
+  display: grid;
+  min-height: min(620px, calc(100vh - 130px));
+  place-items: center;
+  padding: 32px 16px;
+}
+
+.admin-auth-card {
+  width: min(420px, 100%);
+  padding: 28px;
+  border: 1px solid #344257;
+  border-radius: 12px;
+  background: #0e1622;
+  box-shadow: 0 20px 70px rgb(0 0 0 / 35%);
+}
+
+.admin-auth-card h2 {
+  margin: 10px 0 8px;
+  color: #eef5ff;
+}
+
+.admin-auth-card p,
+.admin-auth-checking {
+  color: #8fa3bf;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.admin-auth-badge {
+  color: #7dacff;
+  font: 700 10px var(--mono);
+  letter-spacing: 0.14em;
+}
+
+.admin-auth-card form {
+  display: grid;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.admin-auth-card form label {
+  color: #aebed4;
+  font-size: 12px;
+}
+
+.admin-auth-card form input {
+  height: 40px;
+  border: 1px solid #42536d;
+  border-radius: 6px;
+  background: #111b29;
+  color: #eef5ff;
+  padding: 0 11px;
+}
+
+.admin-auth-card form button,
+.admin-logout {
+  height: 36px;
+  border: 1px solid #4c6fa5;
+  border-radius: 6px;
+  background: #17335d;
+  color: #eaf2ff;
+  cursor: pointer;
+}
+
+.admin-auth-card form button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.admin-logout {
+  padding: 0 14px;
+  background: #172233;
+}
+
 .task-admin-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;
@@ -3495,5 +3569,440 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 
   .benchmark-picker {
     grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* Responsive layout pass: fluid chrome, readable data tables, and touch-safe controls. */
+html,
+body {
+  min-width: 320px;
+  overflow-x: hidden;
+}
+
+.app-shell,
+.reference-shell.dashboard-shell {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  padding-right: clamp(8px, 1.5vw, 28px);
+  padding-left: clamp(8px, 1.5vw, 28px);
+}
+
+.app-header,
+.app-header > div,
+.reference-dashboard,
+.reference-card,
+.task-admin-page,
+.task-admin-layout,
+.task-composer,
+.run-monitor {
+  min-width: 0;
+}
+
+.page-nav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.comparison-card,
+.answer-details {
+  padding-right: clamp(12px, 4vw, 78px);
+  padding-left: clamp(12px, 4vw, 78px);
+}
+
+.reference-table-scroll,
+.answer-table-wrap,
+.experiment-tabs,
+.reference-domain-tabs {
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.reference-table-scroll,
+.answer-table-wrap {
+  max-width: 100%;
+}
+
+.reference-score-table,
+.answer-table {
+  width: max-content;
+  max-width: none;
+}
+
+.reference-score-table {
+  min-width: max(1060px, 100%);
+}
+
+.answer-table {
+  min-width: max(910px, 100%);
+}
+
+.task-form-grid select,
+.gpu-manual input,
+.benchmark-tools input,
+.runtime-fields input,
+.admin-auth-card input {
+  width: 100%;
+  min-width: 0;
+}
+
+@media (min-width: 1680px) {
+  .reference-score-table {
+    font-size: 12px;
+  }
+
+  .reference-score-table th,
+  .reference-score-table td {
+    height: 42px;
+  }
+
+  .compact-score {
+    font-size: 11px;
+  }
+
+  .task-admin-layout {
+    grid-template-columns: minmax(0, 1fr) clamp(320px, 22vw, 420px);
+    gap: 16px;
+  }
+}
+
+@media (max-width: 1050px) {
+  .reference-shell.dashboard-shell .app-header {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .reference-shell.dashboard-shell .page-nav {
+    width: 100%;
+    justify-content: flex-start;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding-bottom: 3px;
+  }
+
+  .reference-shell.dashboard-shell .page-nav a {
+    flex: 0 0 auto;
+  }
+
+  .task-composer > header,
+  .run-monitor > header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 760px) {
+  body {
+    font-size: 13px;
+  }
+
+  .app-shell,
+  .reference-shell.dashboard-shell {
+    padding: 12px 8px 36px;
+  }
+
+  .app-header h1,
+  .reference-shell.dashboard-shell .app-header h1 {
+    font-size: clamp(18px, 6vw, 21px);
+  }
+
+  .page-nav {
+    width: 100%;
+    justify-content: flex-start;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: thin;
+  }
+
+  .reference-shell.dashboard-shell .page-nav a {
+    flex: 0 0 auto;
+    min-width: 108px;
+    padding: 0 12px;
+  }
+
+  .experiment-tabs {
+    justify-content: flex-start;
+  }
+
+  .experiment-tabs button {
+    min-height: 42px;
+    padding: 0 14px;
+  }
+
+  .reference-domain-tabs button {
+    flex: 0 0 auto;
+    padding-right: 13px;
+    padding-left: 13px;
+  }
+
+  .comparison-card,
+  .answer-details {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .comparison-heading {
+    gap: 8px;
+  }
+
+  .temporary-data-badge {
+    white-space: normal;
+  }
+
+  .sampling-card > div,
+  .modal-sampling > div {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .answer-category-tabs {
+    display: flex;
+    overflow-x: auto;
+  }
+
+  .answer-category-tabs button {
+    flex: 0 0 150px;
+  }
+
+  .reference-modal > header {
+    min-height: 60px;
+    height: auto;
+    gap: 10px;
+    padding: 10px 12px;
+  }
+
+  .reference-modal > header strong {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .reference-modal-grid {
+    max-height: calc(96dvh - 60px);
+  }
+
+  .context-main,
+  .context-sidebar {
+    padding: 12px;
+  }
+
+  .context-key-values {
+    grid-template-columns: 1fr;
+  }
+
+  .context-key-values dd {
+    margin-bottom: 4px;
+  }
+
+  .task-admin-intro {
+    padding: 12px;
+  }
+
+  .task-admin-intro > div,
+  .task-admin-intro {
+    align-items: stretch;
+  }
+
+  .admin-logout {
+    width: 100%;
+  }
+
+  .admin-auth-shell {
+    min-height: calc(100dvh - 120px);
+    padding: 16px 0;
+  }
+
+  .admin-auth-card {
+    padding: 20px 16px;
+  }
+
+  .task-step {
+    padding: 11px 10px;
+  }
+
+  .task-form-grid label,
+  .gpu-manual,
+  .runtime-fields label:not(.task-check) {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .gpu-picker {
+    grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  }
+
+  .benchmark-tools {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .benchmark-tools input {
+    flex: 1 1 100%;
+  }
+
+  .benchmark-tools button {
+    flex: 1 1 auto;
+    min-height: 34px;
+  }
+
+  .benchmark-tools span {
+    flex: 1 1 100%;
+    margin-left: 0;
+  }
+
+  .binding-line,
+  .task-payload {
+    flex-wrap: wrap;
+  }
+
+  .task-payload {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .task-start {
+    width: calc(100% - 20px);
+    min-height: 42px;
+    margin-right: 10px;
+    margin-left: 10px;
+  }
+
+  .monitor-actions button {
+    min-height: 36px;
+  }
+
+  .model-deploy-summary,
+  .run-monitor dl {
+    grid-template-columns: minmax(70px, auto) minmax(0, 1fr);
+  }
+
+  .model-deploy-summary dd,
+  .run-monitor dd {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+}
+
+@media (max-width: 480px) {
+  .benchmark-picker,
+  .gpu-picker {
+    grid-template-columns: 1fr;
+  }
+
+  .monitor-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .selection-chips > span,
+  .task-payload span {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+}
+
+/* Vertical responsiveness: scale working areas with the viewport height. */
+.app-shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.reference-table-scroll {
+  height: clamp(360px, 55dvh, 860px);
+  max-height: none;
+}
+
+.answer-table-wrap {
+  max-height: clamp(280px, 48dvh, 680px);
+}
+
+.task-admin-page {
+  min-height: calc(100vh - 118px);
+  min-height: calc(100dvh - 118px);
+}
+
+.task-admin-layout {
+  min-height: calc(100vh - 196px);
+  min-height: calc(100dvh - 196px);
+}
+
+.benchmark-picker {
+  height: clamp(190px, 28dvh, 380px);
+  max-height: none;
+}
+
+.run-monitor {
+  max-height: calc(100vh - 126px);
+  max-height: calc(100dvh - 126px);
+  overflow-y: auto;
+}
+
+.admin-log {
+  max-height: clamp(220px, 34dvh, 480px);
+}
+
+.reference-modal {
+  max-height: min(92vh, 1100px);
+  max-height: min(92dvh, 1100px);
+}
+
+.reference-modal-grid {
+  max-height: calc(min(92vh, 1100px) - 68px);
+  max-height: calc(min(92dvh, 1100px) - 68px);
+}
+
+@media (max-height: 760px) and (min-width: 761px) {
+  .app-shell,
+  .reference-shell.dashboard-shell {
+    padding-top: 14px;
+    padding-bottom: 24px;
+  }
+
+  .reference-shell.dashboard-shell .app-header {
+    min-height: 44px;
+    margin-bottom: 10px;
+  }
+
+  .reference-table-scroll {
+    height: max(300px, calc(100dvh - 250px));
+  }
+
+  .task-admin-intro {
+    margin-bottom: 8px;
+  }
+
+  .benchmark-picker {
+    height: clamp(150px, 24dvh, 220px);
+  }
+
+  .admin-log {
+    max-height: clamp(150px, 26dvh, 240px);
+  }
+}
+
+@media (max-width: 760px) {
+  .reference-table-scroll {
+    height: clamp(300px, 52dvh, 620px);
+  }
+
+  .answer-table-wrap {
+    max-height: clamp(240px, 46dvh, 520px);
+  }
+
+  .task-admin-page,
+  .task-admin-layout {
+    min-height: 0;
+  }
+
+  .benchmark-picker {
+    height: clamp(220px, 38dvh, 420px);
+  }
+
+  .run-monitor {
+    max-height: none;
+  }
+
+  .admin-log {
+    max-height: clamp(200px, 40dvh, 420px);
   }
 }

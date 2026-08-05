@@ -7,16 +7,19 @@ import os
 
 from fastapi import HTTPException
 
-
-def auth_required() -> bool:
-    return bool((os.environ.get("RWKV_ADMIN_API_KEY") or "").strip())
+from .auth import admin_session_active, auth_required
 
 
 def check_admin_auth(authorization: str | None) -> None:
-    expected = (os.environ.get("RWKV_ADMIN_API_KEY") or "").strip()
-    if not expected:
+    if not auth_required():
         return
+    if admin_session_active():
+        return
+    # Retain the legacy bearer key only for non-session deployments. The
+    # public deployment configures password sessions and never sends this key
+    # to the browser.
+    expected = (os.environ.get("RWKV_ADMIN_API_KEY") or "").strip()
     supplied = authorization or ""
-    if hmac.compare_digest(supplied, f"Bearer {expected}"):
+    if expected and hmac.compare_digest(supplied, f"Bearer {expected}"):
         return
     raise HTTPException(status_code=401, detail="unauthorized")

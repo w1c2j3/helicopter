@@ -111,8 +111,10 @@ def is_multilingual_package_available(language: str):
 def raise_if_package_not_available(package: Requirement | Extra, *, language: str = None, object_name: str = None):
     prefix = "You" if object_name is None else f"Through the use of {object_name}, you"
 
-    if package == Extra.MULTILINGUAL and ((language is not None) or (not is_multilingual_package_available(language))):
-        raise ImportError(prefix + not_installed_error_message(package)[3:])
+    if package == Extra.MULTILINGUAL:
+        if not is_multilingual_package_available(language):
+            raise ImportError(prefix + not_installed_error_message(package)[3:])
+        return
 
     if not is_package_available(package):
         raise ImportError(prefix + not_installed_error_message(package)[3:])

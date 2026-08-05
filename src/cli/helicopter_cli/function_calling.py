@@ -558,7 +558,7 @@ def evaluate_sample(
         "tools": sample.tools,
         "tool_choice": "auto",
         "parallel_tool_calls": sample.parallel_tool_calls,
-        "temperature": 0,
+        "temperature": 1e-5,
         "max_tokens": max_new_tokens,
     }
     started = time.monotonic()
@@ -856,7 +856,7 @@ def run_function_calling_eval(args: Any, *, root: Path, env: dict[str, str], con
         raise SystemExit("database function-calling pipeline requires one benchmark per process")
     sampling_config = {
         "max_new_tokens": max_new_tokens,
-        "temperature": 0,
+        "temperature": 1e-5,
         "mode": "openai_tool_calls",
     }
     scoreboard_task_id: str | None = None

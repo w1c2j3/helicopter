@@ -8,7 +8,7 @@ binary = "evalscope"
 eval_type = "openai_api"
 eval_batch_size = 1
 request_timeout = 1800
-generation_config = { max_tokens = 2048, temperature = 0.0, timeout = 1800 }
+generation_config = { max_tokens = 2048, temperature = 1e-5, timeout = 1800 }
 
 [evalscope.dataset_args.terminal_bench_v2_1.extra_params]
 environment_type = "docker"

@@ -190,7 +190,7 @@ def _persist_evalscope_scoreboard(
     try:
         model_name = _served_model_name(args, config=config)
         try:
-            benchmarks = _datasets(args, config)
+            benchmarks = _datasets(args, config, root=root)
         except SystemExit:
             # ``--report-only`` can be used against the historical BFCL run
             # without repeating its positional dataset argument.
@@ -236,7 +236,7 @@ def _json_mapping(value: Any, *, root: Path, name: str) -> dict[str, Any]:
     return dict(parsed)
 
 
-def _datasets(args: Any, config: dict[str, Any]) -> list[str]:
+def _datasets(args: Any, config: dict[str, Any], *, root: Path) -> list[str]:
     settings = table(config, "evalscope")
     raw = getattr(args, "datasets", None)
     if not raw:
@@ -250,6 +250,13 @@ def _datasets(args: Any, config: dict[str, Any]) -> list[str]:
         values.extend(part.strip() for part in str(item).split(",") if part.strip())
     if not values:
         raise SystemExit("no EvalScope datasets given: pass dataset names or set [evalscope].datasets")
+    allowed = {str(row["name"]) for row in load_agent_catalog(root, getattr(args, "dataset_catalog", None))}
+    unsupported = sorted(set(values) - allowed)
+    if unsupported:
+        raise SystemExit(
+            "EvalScope is restricted to the Agent/FC catalog; unsupported dataset(s): "
+            + ", ".join(unsupported)
+        )
     return values
 
 
@@ -357,7 +364,7 @@ def build_evalscope_plan(
     if not getattr(args, "model", None):
         raise SystemExit("eval evalscope requires a model alias")
     settings = table(config, "evalscope")
-    datasets = _datasets(args, config)
+    datasets = _datasets(args, config, root=root)
     model = resolve_model_entry(config, args.model)
     served_model_name = str(
         pick(

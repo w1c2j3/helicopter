@@ -1,5 +1,3 @@
-import { getAdminToken } from "./admin_token";
-
 const SERVER_API_BASE = process.env.SCOREBOARD_API_BASE_URL || "http://127.0.0.1:7860";
 const BROWSER_API_BASE = process.env.NEXT_PUBLIC_SCOREBOARD_API_BASE_URL || "";
 
@@ -31,14 +29,15 @@ export async function postJson<T>(path: string, body?: unknown): Promise<T> {
 }
 
 function adminHeaders(extra?: Record<string, string>): Record<string, string> {
-  const headers: Record<string, string> = { Accept: "application/json", ...extra };
-  const token = getAdminToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
-  return headers;
+  return { Accept: "application/json", "X-RWKV-Admin-Request": "1", ...extra };
 }
 
 export async function getJsonAuth<T>(path: string): Promise<T> {
-  const res = await fetch(apiUrl(path), { headers: adminHeaders(), cache: "no-store" });
+  const res = await fetch(apiUrl(path), {
+    headers: adminHeaders(),
+    cache: "no-store",
+    credentials: "same-origin",
+  });
   if (!res.ok) {
     throw new Error(`${res.status}: ${await errText(res)}`);
   }
@@ -50,6 +49,7 @@ export async function postJsonAuth<T>(path: string, body?: unknown): Promise<T> 
     method: "POST",
     headers: adminHeaders({ "Content-Type": "application/json" }),
     body: body === undefined ? undefined : JSON.stringify(body),
+    credentials: "same-origin",
   });
   if (!res.ok) {
     throw new Error(`${res.status}: ${await errText(res)}`);

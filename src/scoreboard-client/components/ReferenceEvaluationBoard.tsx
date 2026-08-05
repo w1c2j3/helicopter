@@ -180,7 +180,7 @@ function catalogBenchmarks(matrix: LeaderboardMatrix, domainKey: string): Displa
   return requested.map((spec) => displayCatalogBenchmark(
     matrix,
     spec,
-    spec.domain === "knowledge" || spec.domain === "math" ? "CoT" : "NoCoT",
+    spec.domain === "math" || spec.key === "livecodebench" ? "CoT" : "NoCoT",
   ));
 }
 

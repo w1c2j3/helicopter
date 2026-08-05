@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-import { getAdminToken, setAdminToken } from "../lib/admin_token";
 import { api } from "../lib/api";
 import type { AdminEvalOptionsResponse } from "../lib/dtos/api/admin/eval/options";
 import type { AdminEvalStatusResponse } from "../lib/dtos/api/admin/eval/status";
@@ -20,6 +19,7 @@ function statusClass(status: string): string {
 }
 
 export function AdminPage() {
+  const [authState, setAuthState] = useState<"checking" | "authenticated" | "unauthenticated">("checking");
   const [options, setOptions] = useState<AdminEvalOptionsResponse | null>(null);
   const [status, setStatus] = useState<AdminEvalStatusResponse | null>(null);
   const [draft, setDraft] = useState<Record<string, unknown>>({});
@@ -34,17 +34,36 @@ export function AdminPage() {
         setConnectionError(null);
       })
       .catch((error: unknown) => {
-        setConnectionError(error instanceof Error ? error.message : String(error));
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.startsWith("401:")) setAuthState("unauthenticated");
+        else setConnectionError(message);
       });
   };
 
   useEffect(() => {
+    api.adminSession()
+      .then((session) => setAuthState(session.authenticated ? "authenticated" : "unauthenticated"))
+      .catch(() => setAuthState("unauthenticated"));
+  }, []);
+
+  useEffect(() => {
+    if (authState !== "authenticated") return undefined;
     load();
     const timer = window.setInterval(() => {
-      api.adminStatus().then(setStatus).catch(() => undefined);
+      api.adminStatus().then(setStatus).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.startsWith("401:")) setAuthState("unauthenticated");
+      });
     }, 3000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [authState]);
+
+  if (authState === "checking") {
+    return <AdminLogin state="checking" onAuthenticated={() => setAuthState("authenticated")} />;
+  }
+  if (authState === "unauthenticated") {
+    return <AdminLogin state="login" onAuthenticated={() => setAuthState("authenticated")} />;
+  }
 
   const running = !!status && !TERMINAL.has(status.status);
 
@@ -55,7 +74,20 @@ export function AdminPage() {
           <strong>评测任务管理</strong>
           <span>本地 vllm-rwkv · 单模型权重部署 · 多 benchmark 批量评测</span>
         </div>
-        <TokenField onChange={load} />
+        <button
+          type="button"
+          className="admin-logout"
+          onClick={() => {
+            void api.adminLogout().finally(() => {
+              setOptions(null);
+              setStatus(null);
+              setDraft({});
+              setAuthState("unauthenticated");
+            });
+          }}
+        >
+          退出管理
+        </button>
       </section>
 
       {connectionError ? (
@@ -74,6 +106,68 @@ export function AdminPage() {
         />
         <RunMonitor status={status} onStatus={setStatus} />
       </div>
+    </div>
+  );
+}
+
+function AdminLogin({
+  state,
+  onAuthenticated,
+}: {
+  state: "checking" | "login";
+  onAuthenticated: () => void;
+}) {
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!password || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const result = await api.adminLogin(password);
+      setPassword("");
+      if (result.authenticated) onAuthenticated();
+      else setError("认证失败，请重新输入密码。");
+    } catch (requestError: unknown) {
+      const message = requestError instanceof Error ? requestError.message : String(requestError);
+      if (message.startsWith("429:")) setError("尝试次数过多，请稍后再试。");
+      else if (message.startsWith("401:")) setError("管理员密码不正确。");
+      else setError(`认证服务不可用：${message}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="admin-auth-shell">
+      <section className="admin-auth-card">
+        <div className="admin-auth-badge">SECURE ADMIN</div>
+        <h2>任务管理认证</h2>
+        <p>管理操作会部署模型并启动真实评测。密码仅发送至后端验证，不会保存在浏览器中。</p>
+        {state === "checking" ? (
+          <div className="admin-auth-checking">正在验证管理会话…</div>
+        ) : (
+          <form onSubmit={(event) => void submit(event)}>
+            <label htmlFor="admin-password">管理员密码</label>
+            <input
+              id="admin-password"
+              type="password"
+              value={password}
+              maxLength={256}
+              autoComplete="current-password"
+              autoFocus
+              onChange={(event) => setPassword(event.target.value)}
+            />
+            {error ? <div className="error-bar">{error}</div> : null}
+            <button type="submit" disabled={!password || submitting}>
+              {submitting ? "正在验证…" : "进入任务管理"}
+            </button>
+          </form>
+        )}
+      </section>
     </div>
   );
 }
@@ -319,25 +413,5 @@ function RunMonitor({
       </div>
       {status.log_tail.length ? <pre className="admin-log">{status.log_tail.join("\n")}</pre> : null}
     </aside>
-  );
-}
-
-function TokenField({ onChange }: { onChange: () => void }) {
-  const [value, setValue] = useState(getAdminToken());
-  return (
-    <label className="admin-token">
-      <span>Admin Token</span>
-      <input
-        type="password"
-        value={value}
-        placeholder="未启用鉴权可留空"
-        onChange={(event) => {
-          const next = event.target.value.trim();
-          setValue(next);
-          setAdminToken(next);
-        }}
-        onBlur={onChange}
-      />
-    </label>
   );
 }

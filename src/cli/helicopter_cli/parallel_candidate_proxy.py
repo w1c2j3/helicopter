@@ -4,11 +4,15 @@ The proxy is deliberately an evaluation-layer adapter.  It does not alter the
 EvalScope task, system messages, or tool semantics.  It embeds the original
 conversation verbatim in short routing prompts, asks the upstream model for
 strict JSON candidates without sending OpenAI ``tools`` fields, and exposes a
-validated candidate as a normal OpenAI ``message.tool_calls`` response.
+candidate as a normal OpenAI ``message.tool_calls`` response.
 
 Every source request, candidate request/response, aggregate request/response,
-selection decision, and final response is written to JSONL.  A malformed or
-unvalidated candidate is never turned into a tool call.
+selection decision, and final response is written to JSONL.  Strictly valid
+candidates are preferred for routing; a syntactically recognizable call that
+fails the tool schema is still transported as a native tool call so the
+benchmark can score the invalid arguments instead of receiving a text
+fallback.  The transport layer does not decide whether a name or argument is
+correct; it only preserves the model's call shape for the evaluator.
 """
 
 from __future__ import annotations
@@ -69,6 +73,15 @@ class Candidate:
     arguments: dict[str, Any]
     confidence: float
     evidence: str
+    arguments_text: str | None = None
+
+
+def _candidate_arguments_text(candidate: Candidate) -> str:
+    """Serialize arguments without changing an invalid raw payload."""
+
+    if candidate.arguments_text is not None:
+        return candidate.arguments_text
+    return json.dumps(candidate.arguments, ensure_ascii=False, separators=(",", ":"))
 
 
 # Match the official RWKV NoCoT function-calling prefill used by rwkv-skills.
@@ -136,6 +149,19 @@ def _sum_upstream_usage(traces: list[Any]) -> dict[str, int] | None:
         for key in total:
             total[key] += usage[key]
     return total if found else None
+
+
+def _response_usage(usage: dict[str, int] | None) -> dict[str, int]:
+    """Return OpenAI usage metadata required by strict FC consumers.
+
+    Some upstream responses, especially empty non-tool completions, omit
+    ``usage`` entirely. The response adapter must still return a valid
+    OpenAI envelope because BFCL reads the field before it can score the
+    model's actual message/tool-call content. Zeroes are telemetry-only;
+    they never alter content, tool calls, arguments, or evaluator results.
+    """
+
+    return usage or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
 
 def _json_default(value: Any) -> Any:
@@ -494,6 +520,136 @@ def parse_candidate(text: str, *, tools: list[Any]) -> Candidate:
     candidates = parse_candidates(text, tools=tools)
     if len(candidates) != 1:
         raise ValueError("candidate native tool_calls must contain exactly one call")
+    return candidates[0]
+
+
+def _transport_candidate_values(value: dict[str, Any] | list[Any]) -> list[dict[str, Any]]:
+    """Normalize candidate wire shapes without applying the tool schema.
+
+    The benchmark must see a structured tool call even when its arguments are
+    wrong.  Schema validation is useful for candidate selection, but applying
+    it to the transport boundary turns ordinary model mistakes (for example
+    ``null`` for an optional numeric argument) into a text response that the
+    BFCL adapter cannot score.  This helper only performs shape normalization;
+    the caller still decides how the call should be scored.
+    """
+
+    values = value if isinstance(value, list) else [value]
+    output: list[dict[str, Any]] = []
+    candidate_fields = {"name", "arguments", "confidence", "evidence", "id", "tool_call_id", "tool_calls"}
+    for item in values:
+        if not isinstance(item, dict):
+            raise ValueError("completion JSON array candidate must be an object")
+        if "tool_calls" in item:
+            calls = item.get("tool_calls")
+            if not isinstance(calls, list) or not calls:
+                raise ValueError("candidate native tool_calls must contain at least one call")
+            for call in calls:
+                if not isinstance(call, Mapping):
+                    raise ValueError("candidate native tool call must be an object")
+                function = call.get("function")
+                if not isinstance(function, Mapping):
+                    raise ValueError("candidate native tool call must contain function")
+                name = function.get("name")
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError("candidate native function name must be a non-empty string")
+                output.append({"name": name.strip(), "arguments": function.get("arguments", {})})
+        elif len(item) == 1 and next(iter(item)) not in candidate_fields:
+            name, arguments = next(iter(item.items()))
+            output.append({"name": name, "arguments": arguments})
+        else:
+            output.append(item)
+    return output
+
+
+def _parse_transport_candidate_value(value: dict[str, Any], *, tools: list[Any]) -> Candidate:
+    """Parse one known-tool call while preserving schema-invalid arguments."""
+
+    name = value.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("candidate name must be a non-empty string")
+    # Transport normalization deliberately does not resolve the name against
+    # the supplied schema.  Whether a tool exists, and whether its arguments
+    # are correct, belongs to EvalScope/BFCL rather than this adapter.
+    name = name.strip()
+    arguments = value.get("arguments", {})
+    arguments_text: str | None = None
+    if isinstance(arguments, str):
+        raw_arguments = arguments
+        try:
+            parsed_arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            # Preserve the raw transport payload.  EvalScope can expose its
+            # parse error to the benchmark rather than this adapter deciding
+            # what the malformed payload means.
+            arguments_text = raw_arguments
+            arguments = {}
+        else:
+            if isinstance(parsed_arguments, dict):
+                arguments = parsed_arguments
+            else:
+                # A JSON scalar/array is still a valid transport payload, but
+                # it is not a function-arguments object.  Keep the exact text
+                # for the native tool-call envelope; schema/correctness
+                # handling remains EvalScope/BFCL's responsibility.
+                arguments_text = raw_arguments
+                arguments = {}
+    elif not isinstance(arguments, dict):
+        arguments_text = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+        arguments = {}
+    confidence = value.get("confidence", 0.0)
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        confidence = 0.0
+    confidence = max(0.0, min(1.0, float(confidence)))
+    evidence = value.get("evidence", "")
+    if not isinstance(evidence, str):
+        evidence = ""
+    return Candidate(
+        name=name,
+        arguments=dict(arguments),
+        confidence=confidence,
+        evidence=evidence,
+        arguments_text=arguments_text,
+    )
+
+
+def parse_transport_candidates(text: str, *, tools: list[Any]) -> list[Candidate]:
+    """Normalize known-tool calls without schema validation for transport."""
+
+    try:
+        value = _json_value(text)
+    except ValueError as error:
+        # Some BFCL parallel/multiple outputs are emitted as adjacent JSON
+        # objects (``{...}{...}``) rather than a JSON array.  Split only
+        # complete top-level JSON values; this changes transport shape and
+        # leaves all correctness/schema decisions to EvalScope/BFCL.
+        source = str(text or "").strip()
+        decoder = json.JSONDecoder()
+        values: list[Any] = []
+        while source:
+            try:
+                item, end = decoder.raw_decode(source)
+            except json.JSONDecodeError:
+                break
+            values.append(item)
+            source = source[end:].lstrip()
+            if source.startswith(","):
+                source = source[1:].lstrip()
+        if len(values) < 2 or source or not all(isinstance(item, dict) for item in values):
+            raise error
+        value = values
+    values = _transport_candidate_values(value)
+    if not values:
+        raise ValueError("completion JSON array must contain at least one candidate")
+    return [_parse_transport_candidate_value(item, tools=tools) for item in values]
+
+
+def parse_transport_candidate(text: str, *, tools: list[Any]) -> Candidate:
+    """Normalize exactly one known-tool call without schema validation."""
+
+    candidates = parse_transport_candidates(text, tools=tools)
+    if len(candidates) != 1:
+        raise ValueError("candidate transport payload must contain exactly one call")
     return candidates[0]
 
 
@@ -939,8 +1095,9 @@ class ParallelCandidateProxy:
         shards = [schemas[index : index + size] for index in range(0, len(schemas), size)]
         candidate_traces: list[dict[str, Any]] = []
         valid_candidates: list[Candidate] = []
+        transport_candidates: list[Candidate] = []
 
-        def ask(shard: list[dict[str, Any]]) -> tuple[dict[str, Any], Candidate | None]:
+        def ask(shard: list[dict[str, Any]]) -> tuple[dict[str, Any], list[Candidate]]:
             prompt, prompt_trace = _candidate_prompt(shard, routed_messages, config=self.config)
             if prompt_trace["prompt_over_budget"]:
                 return {
@@ -950,7 +1107,7 @@ class ParallelCandidateProxy:
                     "finish_reason": "prompt_over_budget",
                     "prompt_trace": prompt_trace,
                     "error": f"candidate prompt length {len(prompt)} exceeds {self.config.prompt_max_chars}",
-                }, None
+                }, []
             payload = self._upstream_payload(source, prompt, max_tokens=self.config.candidate_max_tokens)
             status, _headers, body, raw = self._request_upstream(payload)
             completion = self._completion_text(body)
@@ -968,28 +1125,44 @@ class ParallelCandidateProxy:
             }
             try:
                 candidate = parse_candidate(completion, tools=shard)
+                candidates = [candidate]
             except ValueError as exc:
                 trace["error"] = str(exc)
-                candidate = None
+                trace["schema_valid"] = False
+                try:
+                    candidates = parse_transport_candidates(completion, tools=shard)
+                except ValueError as transport_exc:
+                    trace["transport_error"] = str(transport_exc)
+                    candidates = []
+                else:
+                    trace["transport_candidates"] = [asdict(item) for item in candidates]
             else:
+                trace["schema_valid"] = True
                 trace["candidate"] = asdict(candidate)
             if status != 200 and "error" not in trace:
                 trace["error"] = f"upstream HTTP status {status}"
-                candidate = None
-            return trace, candidate
+                candidates = []
+            return trace, candidates
 
         with ThreadPoolExecutor(max_workers=min(max(1, self.config.batch_size), len(shards))) as executor:
             futures = [executor.submit(ask, shard) for shard in shards]
             for future in as_completed(futures):
-                trace, candidate = future.result()
+                trace, candidates = future.result()
                 candidate_traces.append(trace)
-                if candidate is not None:
-                    valid_candidates.append(candidate)
+                if candidates:
+                    if trace.get("schema_valid") is True:
+                        valid_candidates.extend(candidates)
+                    else:
+                        # This is transport-only recovery.  It is not a
+                        # correctness decision and must not be described as a
+                        # schema-valid candidate in the trace.
+                        transport_candidates.extend(candidates)
         candidate_traces.sort(key=lambda item: str(item.get("tools", [{}])[0].get("name", "")))
 
         aggregate_trace: dict[str, Any] = {}
         selected_candidates: list[Candidate] = []
         fallback_used = False
+        transport_fallback_used = False
         aggregate_completion = ""
         if valid_candidates:
             aggregate, aggregate_prompt_trace = _aggregate_prompt(
@@ -1022,6 +1195,11 @@ class ParallelCandidateProxy:
         if not selected_candidates and self.config.fallback_to_highest_confidence and valid_candidates:
             selected_candidates = [max(valid_candidates, key=lambda item: item.confidence)]
             fallback_used = True
+        if not selected_candidates and transport_candidates:
+            # Preserve a syntactically identifiable call for the evaluator.
+            # Do not validate, repair, or reinterpret its name/arguments here.
+            selected_candidates = list(transport_candidates)
+            transport_fallback_used = True
 
         model = str(source.get("model") or "")
         usage = _sum_upstream_usage(
@@ -1035,6 +1213,7 @@ class ParallelCandidateProxy:
             "config": asdict(self.config),
             "context": context_trace,
             "candidate_count": len(valid_candidates),
+            "transport_candidate_count": len(transport_candidates),
             "candidate_shards": candidate_traces,
             "aggregate": aggregate_trace,
             "selected": (
@@ -1046,6 +1225,7 @@ class ParallelCandidateProxy:
             ),
             "selected_candidates": [asdict(item) for item in selected_candidates],
             "fallback_used": fallback_used,
+            "transport_fallback_used": transport_fallback_used,
         }
         if usage is not None:
             route_trace["usage"] = usage
@@ -1073,8 +1253,7 @@ class ParallelCandidateProxy:
                     }
                 ],
             }
-            if usage is not None:
-                response["usage"] = usage
+            response["usage"] = _response_usage(usage)
             return response, route_trace
 
         response = {
@@ -1094,7 +1273,7 @@ class ParallelCandidateProxy:
                                 "type": "function",
                                 "function": {
                                     "name": candidate.name,
-                                    "arguments": json.dumps(candidate.arguments, ensure_ascii=False, separators=(",", ":")),
+                                    "arguments": _candidate_arguments_text(candidate),
                                 },
                             }
                             for candidate in selected_candidates
@@ -1104,8 +1283,7 @@ class ParallelCandidateProxy:
                 }
             ],
         }
-        if usage is not None:
-            response["usage"] = usage
+        response["usage"] = _response_usage(usage)
         return response, route_trace
 
     def close(self) -> None:
@@ -1119,4 +1297,12 @@ class ParallelCandidateProxy:
         self._thread = None
 
 
-__all__ = ["Candidate", "ParallelCandidateConfig", "ParallelCandidateProxy", "parse_candidate", "parse_candidates"]
+__all__ = [
+    "Candidate",
+    "ParallelCandidateConfig",
+    "ParallelCandidateProxy",
+    "parse_candidate",
+    "parse_candidates",
+    "parse_transport_candidate",
+    "parse_transport_candidates",
+]

@@ -362,7 +362,7 @@ uv run --no-default-groups --group agent --no-sync helicopter eval evalscope \
   --model-catalog configs/models/g1h-single-replica.toml \
   --base-url http://127.0.0.1:29572/v1 \
   --api-key rwkv-skills --no-server --generation-config \
-  '{"max_tokens":2048,"temperature":0.0,"timeout":600}' \
+  '{"max_tokens":2048,"temperature":1e-5,"timeout":600}' \
   --strategy function_calling --tools bash --agent-environment local
 
 # G1h 13.3B: change only the model alias, catalog, and endpoint as configured
@@ -371,9 +371,9 @@ uv run --no-default-groups --group agent --no-sync helicopter eval evalscope \
   --config configs/example.toml \
   g1h-13.3b general_fc \
   --model-catalog configs/models/g1h-single-replica.toml \
-  --base-url http://127.0.0.1:29534/v1 \
+  --base-url http://127.0.0.1:29533/v1 \
   --api-key rwkv-skills --no-server --generation-config \
-  '{"max_tokens":2048,"temperature":0.0,"timeout":600}' \
+  '{"max_tokens":2048,"temperature":1e-5,"timeout":600}' \
   --strategy function_calling --tools bash --agent-environment local
 ```
 
@@ -386,7 +386,7 @@ messages and tool semantics unchanged:
 uv run --no-default-groups --group agent --no-sync helicopter eval evalscope \
   g1h-7.2b bfcl_v3 --model-catalog configs/models/g1h-single-replica.toml \
   --base-url http://127.0.0.1:29572/v1 --api-key rwkv-skills --no-server \
-  --generation-config '{"max_tokens":2048,"temperature":0.0,"timeout":600}' \
+  --generation-config '{"max_tokens":2048,"temperature":1e-5,"timeout":600}' \
   --parallel-candidate-router --tools bash --agent-environment local
 ```
 
@@ -484,9 +484,9 @@ working tree with each server run. The repository stores the implementation,
 configuration, and tests; generated reports and raw traces remain ignored.
 
 The curated directly runnable non-function-calling LightEval catalog is stored
-in the scoreboard database table `benchmark_catalog`. It keeps 30 diverse,
-recognized public benchmark rows each for math, coding/CS, instruction/task
-following, and knowledge. The allowlist is generated from common task families
+in the scoreboard database table `benchmark_catalog`. It keeps 100 recognized
+public benchmark rows each for math, coding/CS, instruction/task following, and
+knowledge. These are the only LightEval domains in this evaluation. The allowlist is generated from common task families
 available in the pinned LightEval source, such as MATH, GSM8K/MGSM, AIME,
 OlympiadBench, LiveCodeBench and CS exam suites, IFEval/IFBench/BBH/BIG-Bench,
 MMLU/GPQA/ARC, TruthfulQA/OpenBookQA, and Natural Questions/TriviaQA/SQuAD-style
@@ -495,19 +495,17 @@ calling, and endpoint-incompatible perplexity suites stay out of this direct
 HF/LightEval catalog.
 
 ```bash
-helicopter eval batch --tasks-from-db --scoreboard --models g1g-1.5b
+helicopter eval batch --tasks-from-db --benchmark-scope direct_hf_lighteval_non_function_calling \
+  --benchmark-fields math --benchmark-fields coding \
+  --benchmark-fields instruction_following --benchmark-fields knowledge \
+  --scoreboard --models g1h-7.2b
 ```
 
-The agent benchmark scope is tracked separately from the runnable LightEval task
-registry:
+Agent and function-calling benchmarks are an EvalScope-only scope. The pinned
+EvalScope registry is the only Agent benchmark list:
 
 ```bash
-helicopter eval lighteval-tasks coverage \
-  --source benchmarks/agent_benchmarks.json \
-  --format summary
-helicopter eval lighteval-tasks coverage \
-  --source benchmarks/agent_benchmarks.json \
-  --format jsonl
+helicopter eval evalscope --list-datasets --format summary
 ```
 
 Only rows with direct LightEval coverage can be run through `eval run`. Rows
