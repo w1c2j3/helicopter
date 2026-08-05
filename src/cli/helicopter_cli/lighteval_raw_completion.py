@@ -178,23 +178,39 @@ def _render_prompt(template: str, query: str, *, task_name: str | None = None) -
     return template.format(query=str(query))
 
 
-def _official_query(doc: Any) -> str:
-    """Materialize LightEval's ``Doc.instruction`` before the RWKV wrapper.
+def _benchmark_query(doc: Any) -> str:
+    """Return only the benchmark query; do not materialize LightEval metadata."""
 
-    LightEval's PromptManager removes a duplicated instruction prefix from
-    ``Doc.query`` and then prepends the instruction exactly once.  The raw
-    completion bridge must do the same because it owns the final
-    ``User/Assistant`` text wrapper.
-    """
+    # ``Doc.instruction`` is LightEval's own prompt metadata.  The raw
+    # completion bridge owns the final RWKV User/Assistant wrapper, so
+    # materializing that field here would prepend a task prompt before the
+    # user question and violate the raw-question contract.
+    return str(getattr(doc, "query", "") or "")
 
-    query = str(getattr(doc, "query", "") or "")
-    instruction = getattr(doc, "instruction", None)
-    if instruction is None:
-        return query
-    instruction = str(instruction)
-    if query.startswith(instruction):
-        query = query[len(instruction) :].strip()
-    return instruction + query
+
+def _validate_raw_question_contract(task_name: str | None, prompt: str) -> None:
+    policy = _task_request_policy(task_name)
+    if not policy.get("benchmark_config_path"):
+        return
+    lowered = prompt.casefold()
+    forbidden_cues = (
+        "answer the following multiple choice question",
+        "the following are multiple choice questions",
+        "think step by step before answering",
+        "let's think step by step",
+        "solve the problem using one clean solution path",
+    )
+    found = next((cue for cue in forbidden_cues if cue in lowered), None)
+    if found is not None:
+        raise RuntimeError(
+            f"benchmark {_canonical_task_name(task_name)!r} violates the raw-question "
+            f"contract with an added cue: {found!r}"
+        )
+    if re.search(r"\nanswer:\s*\n+assistant:", prompt, flags=re.IGNORECASE):
+        raise RuntimeError(
+            f"benchmark {_canonical_task_name(task_name)!r} violates the raw-question "
+            "contract with an added trailing Answer: cue"
+        )
 
 
 def _configured_multi_turn_template(task_name: str | None) -> str | None:
@@ -768,7 +784,7 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
             disable=self.disable_tqdm,
         ):
             split_docs = list(split)
-            contexts = [_official_query(doc) for doc in split_docs]
+            contexts = [_benchmark_query(doc) for doc in split_docs]
             task_names = [str(getattr(doc, "task_name", "") or dataset_name) for doc in split_docs]
             templates = [
                 _configured_prompt_template(task_name, default_template)
@@ -778,6 +794,8 @@ def greedy_until(self: LiteLLMClient, docs: list[Any]) -> list[ModelResponse]:
                 _render_prompt(template, context, task_name=task_name)
                 for template, context, task_name in zip(templates, contexts, task_names)
             ]
+            for task_name, prompt_text in zip(task_names, prompts):
+                _validate_raw_question_contract(task_name, prompt_text)
             max_tokens = split[0].generation_size
             rollout_n = int(split[0].num_samples)
             stops = split[0].stop_sequences
