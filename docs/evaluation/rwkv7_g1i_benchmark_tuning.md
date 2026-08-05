@@ -87,10 +87,69 @@ RWKV 数字只是固定 200 题、16384 上下文的工程验证，不能据 27.
 [Qwen3.5-2B-Base](https://huggingface.co/Qwen/Qwen3.5-2B-Base)模型卡没有公开同协议
 LongBench v2、GSM Plus 或 RACE 表，因此不使用其他 benchmark 数字进行替代比较。
 
+## 多选 Wave A
+
+固定 `limit = 20` 实测 MuSR、LogiQA2、WMDP、BBQ 和 ToxiGen。Qwen3.5 官方模型卡
+没有公开这些同名、同协议结果，因此这里只做协议和 prompt A/B，不借用其他任务分数
+作为目标。
+
+| Benchmark | 原生 prompt | `assistant` prompt | 最终选择 |
+| --- | ---: | ---: | --- |
+| MuSR | acc_norm 33.3%（60 题） | 26.7% | 原生 |
+| LogiQA2 | acc 30.0%，acc_norm 30.0% | 20.0%，25.0% | 原生 |
+| WMDP | acc 28.3%（60 题） | 25.0% | 原生 |
+| ToxiGen | acc/acc_norm 50.0% | 60.0%/50.0% | 原生；normalized 无改善 |
+| BBQ likelihood | acc 45.0% | 不适用 | 保留上游原生协议并注明偏差 |
+
+MuSR 的 60 题来自 murder mysteries、object placements、team allocation 各 20 题；
+所有 continuation 都有有效 logprob。错例分析现按 `acc_norm` 的字符长度归一化规则恢复
+模型选择，不再把 likelihood-only 样本误报为空输出。LogiQA2 需要 Hugging Face 自定义
+loader；审阅确认 loader 只下载官方 GitHub JSONL 并解析字段后，在该 selector 独立设置
+`trust_remote_dataset_code = true`，运行结束立即恢复默认拒绝状态。
+
+ToxiGen 的原生与 chat 协议都在 20 题中 18 次预测 `Yes`，说明 50% normalized accuracy
+掩盖了明显标签偏置，不能只看聚合分数。WMDP 三个 leaf 分别为 bio 25%、chem 30%、
+cyber 30%，当前抽样接近四选一随机水平，chat wrapper 没有改善。
+
+上游 BBQ likelihood task 为每题加入 12 个 continuation：两个实体答案加十种
+`Unknown` 同义表达。20 题中模型从未选择 unknown，ambiguous accuracy 0%、
+disambiguated accuracy 90%；总分 45% 同时受 continuation 长度影响。额外测试上游
+`bbq_generate`：`assistant + fake_think` 为 10%，去掉 thinking 并加入“信息不足回答
+Unknown”指令后为 35%，但 ambiguous accuracy 仍为 0%。因此没有用较低的生成分数
+替换正式 selector，也不把 45% 解释为无偏的知识/推理能力。
+
+## 多语种多选 smoke
+
+固定每个 leaf `limit = 5` 验证 Belebele、XNLI 和 XCOPA 的完整 group 展开、官方数据集
+加载与 RWKV likelihood 链路。结果分别写入
+`.tmp/eval/lm-eval-multilingual-choice-5` 和
+`.tmp/eval/lm-eval-xnli-xcopa-5`：
+
+| Benchmark | 语言/leaf | 样本 | 结果 |
+| --- | ---: | ---: | ---: |
+| Belebele | 122 | 610 | acc/acc_norm 32.13% |
+| XNLI | 15 | 75 | acc 44.0% |
+| XCOPA | 11 | 55 | acc 40.0% |
+
+XNLI 和 XCOPA 的上游 lm-eval YAML 仍引用 Hugging Face 已废弃的无 namespace 数据集
+别名。独立 benchmark 配置把它们分别映射回同一官方数据集 `facebook/xnli` 和
+`cambridgeltl/xcopa`；评测器通过 lm-eval 0.4.12 的 task factory 构造完整 group，
+没有改写 task 的 prompt、split、指标或语言列表。所有 335 个候选 continuation 都返回
+有效 logprob。
+
+XCOPA 两个选项的预测次数为 27/28，没有明显位置塌缩。XNLI 的三个选项预测次数为
+43/9/23，而本次固定前五题在 15 种语言重复后的标签次数为 15/30/30，存在明显的首选项
+偏置。由于每种语言只有五题，逐语言分数的标准误很大；这组数字只证明协议可运行并暴露
+偏置，不能作为正式多语种能力排名。此前 MuSR、LogiQA2、WMDP 和 LongBench v2 的
+固定样本 A/B 均显示 chat wrapper 不改善或显著退化 likelihood 结果，因此这里保留上游
+原生 base prompt，避免在 5 题/语言上继续过拟合。
+
 ## 最终配置选择
 
 - GSM Plus：保留 `assistant` + `fake_think`，greedy，将上限从 2048 降为 512。
 - RACE：保留原生 base prompt 和上游多选 likelihood，不做抽样过拟合。
 - LongBench v2：保留原生 base prompt，批大小 16，生成上限 64（该任务不生成）。
+- Belebele、XNLI、XCOPA：保留原生 base prompt；XNLI/XCOPA 仅修复到官方 namespace，
+  不改变上游任务协议。
 - 所有运行继续开启 `log_samples`；完整发布必须移除 smoke `limit` 并在同一 task
   version、split、上下文和 prompt 协议下比较。

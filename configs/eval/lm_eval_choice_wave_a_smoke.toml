@@ -1,0 +1,30 @@
+schema_version = 1
+backend = "vllm_http"
+
+tasks = [
+  "leaderboard_musr",
+  "logiqa2",
+  "wmdp",
+  "bbq",
+  "toxigen",
+]
+benchmark_configs = [
+  "lm_eval_benchmarks/leaderboard_musr.toml",
+  "lm_eval_benchmarks/logiqa2.toml",
+  "lm_eval_benchmarks/wmdp.toml",
+  "lm_eval_benchmarks/bbq.toml",
+  "lm_eval_benchmarks/toxigen.toml",
+]
+output_dir = ".tmp/eval/lm-eval-choice-wave-a-20"
+batch_size = 32
+eot_token_id = 0
+max_gen_toks = 64
+limit = 20
+log_samples = true
+
+[prompt]
+profile = "none"
+generation_prompt = "none"
+
+[generation_kwargs]
+do_sample = false

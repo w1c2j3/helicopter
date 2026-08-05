@@ -495,6 +495,8 @@ selector = "gsm8k"
 batch_size = 1
 max_gen_toks = 1024
 limit = 1
+confirm_run_unsafe_code = true
+trust_remote_dataset_code = true
 
 [prompt]
 profile = "assistant"
@@ -545,8 +547,11 @@ temperature = 0.2
             return None
 
     def simple_evaluate(**kwargs):
-        calls.append(kwargs)
+        import datasets.config
+
+        kwargs["dataset_trust"] = datasets.config.HF_DATASETS_TRUST_REMOTE_CODE
         task_name = kwargs["tasks"][0]
+        calls.append(kwargs)
         return {
             "config": {"model": "rwkv-current"},
             "results": {task_name: {"acc,none": 0.5}},
@@ -565,11 +570,14 @@ temperature = 0.2
         == 0
     )
 
-    assert [call["tasks"] for call in calls] == [["hellaswag"], ["gsm8k"]]
+    assert calls[0]["tasks"] == ["hellaswag"]
+    assert calls[1]["tasks"] == ["gsm8k"]
     assert calls[0]["batch_size"] == 3
     assert calls[0]["limit"] == 2
     assert calls[0]["apply_chat_template"] is False
     assert calls[0]["gen_kwargs"] == {"do_sample": False}
+    assert calls[0]["confirm_run_unsafe_code"] is False
+    assert calls[0]["dataset_trust"] is False
     assert calls[1]["batch_size"] == 1
     assert calls[1]["limit"] == 1
     assert calls[1]["num_fewshot"] == 4
@@ -579,12 +587,40 @@ temperature = 0.2
     assert calls[1]["apply_chat_template"] is True
     assert calls[1]["fewshot_as_multiturn"] is False
     assert calls[1]["gen_kwargs"] == {"do_sample": True, "temperature": 0.2}
+    assert calls[1]["confirm_run_unsafe_code"] is True
+    assert calls[1]["dataset_trust"] is True
     results = json.loads((output_dir / "results.json").read_text(encoding="utf-8"))
     assert set(results["results"]) == {"hellaswag", "gsm8k"}
     summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
     assert [row["selector"] for row in summary["benchmark_configs"]] == [
         "hellaswag",
         "gsm8k",
+    ]
+
+
+def test_dataset_path_override_builds_complete_task_objects() -> None:
+    task = object()
+    group = object()
+    task_entry = SimpleNamespace(name="task", kind=SimpleNamespace(name="TASK"))
+    group_entry = SimpleNamespace(name="group", kind=SimpleNamespace(name="GROUP"))
+    calls: list[tuple[object, dict[str, str], object]] = []
+
+    class Factory:
+        def build(self, entry, *, overrides, registry):
+            calls.append((entry, overrides, registry))
+            return [task] if entry is task_entry else group
+
+    manager = SimpleNamespace(
+        task_index={"task": task_entry, "group": group_entry},
+        _factory=Factory(),
+    )
+
+    assert evaluate._evaluation_task_specs(
+        manager, ("task", "group"), "canonical/dataset"
+    ) == [task, group]
+    assert calls == [
+        (task_entry, {"dataset_path": "canonical/dataset"}, manager.task_index),
+        (group_entry, {"dataset_path": "canonical/dataset"}, manager.task_index),
     ]
 
 

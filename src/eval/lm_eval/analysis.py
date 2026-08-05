@@ -38,7 +38,9 @@ def build_task_records(
         if outcome is not None:
             metric_name, metric_value = outcome
             if metric_value > 0:
-                record = _sample_record(task_name, sample_index, row)
+                record = _sample_record(
+                    task_name, sample_index, row, judgement_metric=metric_name
+                )
                 record.update(
                     {
                         "status": "correct",
@@ -47,7 +49,9 @@ def build_task_records(
                     }
                 )
             else:
-                record = _bad_case(task_name, sample_index, row)
+                record = _bad_case(
+                    task_name, sample_index, row, judgement_metric=metric_name
+                )
                 record["status"] = "incorrect"
                 record["judgement_metric"] = metric_name
                 record["judgement_value"] = metric_value
@@ -374,9 +378,12 @@ def _binary_metrics(row: Mapping[str, object]) -> dict[str, float]:
 
 
 def _sample_record(
-    task_name: str, sample_index: int, row: Mapping[str, object]
+    task_name: str,
+    sample_index: int,
+    row: Mapping[str, object],
+    judgement_metric: str | None = None,
 ) -> dict[str, object]:
-    detail = _choice_detail(row)
+    detail = _choice_detail(row, judgement_metric)
     if detail is None:
         detail = {
             "model_answer": _response_text(row),
@@ -396,9 +403,12 @@ def _sample_record(
 
 
 def _bad_case(
-    task_name: str, sample_index: int, row: Mapping[str, object]
+    task_name: str,
+    sample_index: int,
+    row: Mapping[str, object],
+    judgement_metric: str | None = None,
 ) -> dict[str, object]:
-    detail = _choice_detail(row)
+    detail = _choice_detail(row, judgement_metric)
     if detail is not None:
         error_type = (
             "grammar_preference_reversal"
@@ -522,39 +532,73 @@ def _why_wrong(error_type: str, detail: Mapping[str, object]) -> str:
     }.get(error_type, error_type)
 
 
-def _choice_detail(row: Mapping[str, object]) -> dict[str, object] | None:
-    target = row.get("target")
+def _choice_detail(
+    row: Mapping[str, object], judgement_metric: str | None = None
+) -> dict[str, object] | None:
     arguments = row.get("arguments")
     responses = row.get("filtered_resps")
     if (
-        not isinstance(target, int)
-        or isinstance(target, bool)
-        or not isinstance(arguments, list)
+        not isinstance(arguments, list)
         or not isinstance(responses, list)
-        or not arguments
+        or len(arguments) < 2
         or len(arguments) != len(responses)
-        or target < 0
-        or target >= len(arguments)
     ):
+        return None
+    target = _choice_target_index(row, arguments)
+    if target is None:
         return None
     scores = [_first_number(response) for response in responses]
     if any(score is None for score in scores):
         return None
-    numeric_scores = [float(score) for score in scores if score is not None]
-    predicted = max(range(len(numeric_scores)), key=numeric_scores.__getitem__)
+    raw_scores = [float(score) for score in scores if score is not None]
     choices = [
         _display_choice(row, index, _argument_continuation(argument))
         for index, argument in enumerate(arguments)
     ]
+    if judgement_metric == "acc_norm":
+        lengths = [
+            max(1, len(choice.strip())) if isinstance(choice, str) else 1
+            for choice in choices
+        ]
+        numeric_scores = [
+            score / length for score, length in zip(raw_scores, lengths, strict=True)
+        ]
+        scoring = "character_length_normalized_loglikelihood"
+    else:
+        numeric_scores = raw_scores
+        scoring = "loglikelihood"
+    predicted = max(range(len(numeric_scores)), key=numeric_scores.__getitem__)
     return {
         "model_answer": choices[predicted],
         "standard_answer": choices[target],
         "predicted_choice_index": predicted,
         "expected_choice_index": target,
         "choice_scores": numeric_scores,
+        "raw_choice_scores": raw_scores,
+        "choice_scoring": scoring,
         "score_margin_over_target": numeric_scores[predicted] - numeric_scores[target],
         "choices": choices,
     }
+
+
+def _choice_target_index(
+    row: Mapping[str, object], arguments: Sequence[object]
+) -> int | None:
+    target = row.get("target")
+    if isinstance(target, int) and not isinstance(target, bool):
+        return target if 0 <= target < len(arguments) else None
+    doc = row.get("doc")
+    if isinstance(doc, Mapping):
+        answer_index = doc.get("answer_index")
+        if isinstance(answer_index, int) and not isinstance(answer_index, bool):
+            return answer_index if 0 <= answer_index < len(arguments) else None
+    if isinstance(target, str):
+        normalized_target = target.strip()
+        for index, argument in enumerate(arguments):
+            continuation = _argument_continuation(argument)
+            if isinstance(continuation, str) and continuation.strip() == normalized_target:
+                return index
+    return None
 
 
 def _display_choice(

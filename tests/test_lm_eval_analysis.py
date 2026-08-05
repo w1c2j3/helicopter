@@ -87,6 +87,35 @@ def test_task_records_include_every_model_answer_and_wrong_reason() -> None:
     assert records[1]["status"] == "correct"
 
 
+def test_choice_analysis_uses_string_target_and_acc_norm_scoring() -> None:
+    samples = [
+        {
+            "doc_id": 3,
+            "doc": {
+                "answer_choice": "Long answer",
+                "answer_index": 0,
+                "choices": "['Long answer', 'No']",
+            },
+            "arguments": [["prompt", " Long answer"], ["prompt", " No"]],
+            "filtered_resps": [[-4.0, False], [-1.5, False]],
+            "target": "Long answer",
+            "acc_norm": 1,
+        }
+    ]
+
+    records = build_task_records("leaderboard_musr_example", samples)
+
+    assert records[0]["status"] == "correct"
+    assert records[0]["model_answer"] == " Long answer"
+    assert records[0]["standard_answer"] == " Long answer"
+    assert records[0]["expected_choice_index"] == 0
+    assert records[0]["predicted_choice_index"] == 0
+    assert records[0]["choice_scoring"] == (
+        "character_length_normalized_loglikelihood"
+    )
+    assert records[0]["raw_choice_scores"] == [-4.0, -1.5]
+
+
 def test_filter_variants_collapse_to_one_record_with_raw_output() -> None:
     raw_output = "Reasoning through the problem. The final answer is 18."
     common = {

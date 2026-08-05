@@ -63,6 +63,9 @@ _BENCHMARK_FIELDS = {
     "batch_size",
     "max_gen_toks",
     "limit",
+    "confirm_run_unsafe_code",
+    "trust_remote_dataset_code",
+    "dataset_path_override",
     "prompt",
     "generation_kwargs",
 }
@@ -124,6 +127,9 @@ class BenchmarkConfig:
     batch_size: int
     max_gen_toks: int
     limit: int | None
+    confirm_run_unsafe_code: bool
+    trust_remote_dataset_code: bool
+    dataset_path_override: str | None
     prompt: PromptConfig
     generation_kwargs: dict[str, object] = field(default_factory=dict)
 
@@ -134,6 +140,9 @@ class BenchmarkConfig:
             "batch_size": self.batch_size,
             "max_gen_toks": self.max_gen_toks,
             "limit": self.limit,
+            "confirm_run_unsafe_code": self.confirm_run_unsafe_code,
+            "trust_remote_dataset_code": self.trust_remote_dataset_code,
+            "dataset_path_override": self.dataset_path_override,
             "prompt": self.prompt.public(),
             "generation_kwargs": dict(self.generation_kwargs),
         }
@@ -649,6 +658,26 @@ class LMEvalConfig:
             or configured_limit <= 0
         ):
             raise ConfigError(f"benchmark limit must be a positive integer in {path}")
+        confirm_run_unsafe_code = raw.get("confirm_run_unsafe_code", False)
+        if not isinstance(confirm_run_unsafe_code, bool):
+            raise ConfigError(
+                f"benchmark confirm_run_unsafe_code must be a boolean in {path}"
+            )
+        trust_remote_dataset_code = raw.get("trust_remote_dataset_code", False)
+        if not isinstance(trust_remote_dataset_code, bool):
+            raise ConfigError(
+                f"benchmark trust_remote_dataset_code must be a boolean in {path}"
+            )
+        dataset_path_override = raw.get("dataset_path_override")
+        if dataset_path_override is not None and (
+            not isinstance(dataset_path_override, str)
+            or dataset_path_override != dataset_path_override.strip()
+            or dataset_path_override.count("/") != 1
+            or any(not part for part in dataset_path_override.split("/"))
+        ):
+            raise ConfigError(
+                f"benchmark dataset_path_override must be namespace/name in {path}"
+            )
         configured_prompt = cls._prompt(raw.get("prompt"), prompt)
         configured_generation = dict(generation_kwargs)
         configured_generation.update(
@@ -660,6 +689,9 @@ class LMEvalConfig:
             batch_size=configured_batch_size,
             max_gen_toks=configured_max_gen_toks,
             limit=configured_limit,
+            confirm_run_unsafe_code=confirm_run_unsafe_code,
+            trust_remote_dataset_code=trust_remote_dataset_code,
+            dataset_path_override=dataset_path_override,
             prompt=configured_prompt,
             generation_kwargs=configured_generation,
         )

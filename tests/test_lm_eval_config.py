@@ -152,6 +152,9 @@ selector = "wikitext"
 batch_size = 8
 max_gen_toks = 32
 limit = 3
+confirm_run_unsafe_code = true
+trust_remote_dataset_code = true
+dataset_path_override = "canonical/wikitext"
 
 [prompt]
 generation_prompt = "fake_think"
@@ -193,6 +196,9 @@ temperature = 0.0
     assert benchmark.batch_size == 8
     assert benchmark.max_gen_toks == 32
     assert benchmark.limit == 3
+    assert benchmark.confirm_run_unsafe_code is True
+    assert benchmark.trust_remote_dataset_code is True
+    assert benchmark.dataset_path_override == "canonical/wikitext"
     assert benchmark.prompt.profile == "bot"
     assert benchmark.prompt.generation_prompt == "fake_think"
     assert benchmark.prompt.system_instruction == "Return only the requested answer."

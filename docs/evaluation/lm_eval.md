@@ -79,13 +79,23 @@ benchmark_configs = [
 ```
 
 每个文件必须声明唯一 `selector`，并可覆盖批大小、生成长度、smoke limit、prompt
-和生成参数：
+和生成参数。只有经过审阅且确实依赖 Hugging Face 自定义 loader 的 benchmark 才可
+显式设置 `trust_remote_dataset_code = true`；它只在该 selector 加载期间生效并立即
+恢复。lm-eval 自身标记为 unsafe 的 task 则使用独立的
+`confirm_run_unsafe_code = true`。两个开关默认均为 `false` 并写入结果摘要：
+
+若上游 task 仍使用 Hugging Face 已废弃的无 namespace 别名，可设置
+`dataset_path_override = "namespace/canonical-dataset"`。覆盖只作用于该 selector
+解析出的 leaf task，运行结束后恢复；它必须指向同一官方数据集，不能用相似数据替代。
 
 ```toml
 schema_version = 1
 selector = "gsm_plus"
 batch_size = 8
 max_gen_toks = 512
+confirm_run_unsafe_code = false
+trust_remote_dataset_code = false
+dataset_path_override = "namespace/canonical-dataset"
 
 [prompt]
 profile = "assistant"

@@ -1,0 +1,21 @@
+schema_version = 1
+backend = "vllm_http"
+
+tasks = ["xnli", "xcopa"]
+benchmark_configs = [
+  "lm_eval_benchmarks/xnli.toml",
+  "lm_eval_benchmarks/xcopa.toml",
+]
+output_dir = ".tmp/eval/lm-eval-xnli-xcopa-5"
+batch_size = 32
+eot_token_id = 0
+max_gen_toks = 64
+limit = 5
+log_samples = true
+
+[prompt]
+profile = "none"
+generation_prompt = "none"
+
+[generation_kwargs]
+do_sample = false

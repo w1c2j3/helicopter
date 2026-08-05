@@ -6,6 +6,7 @@ import json
 import os
 import stat
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -20,6 +21,38 @@ from .analysis import (
 )
 from .config import ConfigError, LMEvalConfig
 from .model import RWKVVLLMHttpLM
+
+
+@contextmanager
+def _remote_dataset_code(enabled: bool):
+    import datasets.config
+
+    previous = datasets.config.HF_DATASETS_TRUST_REMOTE_CODE
+    datasets.config.HF_DATASETS_TRUST_REMOTE_CODE = enabled
+    try:
+        yield
+    finally:
+        datasets.config.HF_DATASETS_TRUST_REMOTE_CODE = previous
+
+
+def _evaluation_task_specs(manager, tasks: Sequence[str], override: str | None):
+    if override is None:
+        return list(tasks)
+    specs: list[object] = []
+    for task_name in tasks:
+        entry = manager.task_index.get(task_name)
+        if entry is None:
+            raise ConfigError(f"unknown task for dataset_path_override: {task_name}")
+        built = manager._factory.build(
+            entry,
+            overrides={"dataset_path": override},
+            registry=manager.task_index,
+        )
+        if isinstance(built, list):
+            specs.extend(built)
+        else:
+            specs.append(built)
+    return specs
 
 
 def run(*, config_path: Path, env: Mapping[str, str], dry_run: bool) -> int:
@@ -140,21 +173,31 @@ def run(*, config_path: Path, env: Mapping[str, str], dry_run: bool) -> int:
                     prompt_profile=prompt.profile,
                     generation_prompt=prompt.generation_prompt,
                 )
-                part = lm_eval.simple_evaluate(
-                    model=model,
-                    tasks=list(run_tasks),
-                    batch_size=batch_size,
-                    limit=limit,
-                    log_samples=config.log_samples or config.publish,
-                    task_manager=task_manager,
-                    num_fewshot=prompt.num_fewshot,
-                    system_instruction=prompt.system_instruction,
-                    apply_chat_template=prompt.apply_chat_template,
-                    fewshot_as_multiturn=prompt.fewshot_as_multiturn,
-                    gen_kwargs=(
-                        dict(generation_kwargs) if generation_kwargs else None
-                    ),
-                )
+                with _remote_dataset_code(
+                    benchmark.trust_remote_dataset_code if benchmark else False
+                ):
+                    part = lm_eval.simple_evaluate(
+                        model=model,
+                        tasks=_evaluation_task_specs(
+                            task_manager,
+                            run_tasks,
+                            benchmark.dataset_path_override if benchmark else None,
+                        ),
+                        batch_size=batch_size,
+                        limit=limit,
+                        log_samples=config.log_samples or config.publish,
+                        task_manager=task_manager,
+                        num_fewshot=prompt.num_fewshot,
+                        system_instruction=prompt.system_instruction,
+                        apply_chat_template=prompt.apply_chat_template,
+                        fewshot_as_multiturn=prompt.fewshot_as_multiturn,
+                        gen_kwargs=(
+                            dict(generation_kwargs) if generation_kwargs else None
+                        ),
+                        confirm_run_unsafe_code=(
+                            benchmark.confirm_run_unsafe_code if benchmark else False
+                        ),
+                    )
                 if part is None:
                     selector = benchmark.selector if benchmark else ",".join(config.tasks)
                     raise RuntimeError(f"lm-eval returned no results for {selector}")
