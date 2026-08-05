@@ -4,12 +4,14 @@ import hashlib
 import os
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 from urllib.parse import urlsplit
 
 from helicopter_lighteval.http_pool import PoolError, PoolManifest
+
+from .prompts import GENERATION_PROMPTS, PROMPT_PROFILES, get_prompt_profile
 
 
 _CONFIG_FIELDS = {
@@ -26,6 +28,43 @@ _CONFIG_FIELDS = {
     "weights",
     "wkv_modes",
     "pool_manifests",
+    "prompt",
+    "generation_kwargs",
+    "task_include_paths",
+    "benchmark_configs",
+}
+_PROMPT_FIELDS = {
+    "profile",
+    "generation_prompt",
+    "system_instruction",
+    "num_fewshot",
+    "fewshot_as_multiturn",
+}
+_GENERATION_FIELDS = {
+    "do_sample",
+    "max_gen_toks",
+    "max_new_tokens",
+    "min_p",
+    "num_beams",
+    "seed",
+    "temperature",
+    "top_k",
+    "top_p",
+    "until",
+    "presence_penalty",
+    "frequency_penalty",
+    "repetition_penalty",
+    "penalty_decay",
+    "ignore_eos",
+}
+_BENCHMARK_FIELDS = {
+    "schema_version",
+    "selector",
+    "batch_size",
+    "max_gen_toks",
+    "limit",
+    "prompt",
+    "generation_kwargs",
 }
 _ENV_REFERENCE = re.compile(r"^\$\{([A-Z][A-Z0-9_]*)\}$")
 
@@ -44,6 +83,63 @@ class ExecutionUnit:
 
 
 @dataclass(frozen=True)
+class PromptConfig:
+    profile: str = "none"
+    generation_prompt: str = "none"
+    system_instruction: str | None = None
+    num_fewshot: int | None = None
+    fewshot_as_multiturn: bool = True
+
+    @property
+    def apply_chat_template(self) -> bool:
+        return self.profile != "none"
+
+    @property
+    def stop(self) -> str | None:
+        return get_prompt_profile(self.profile).stop
+
+    def public(self) -> dict[str, object]:
+        profile = get_prompt_profile(self.profile)
+        instruction_sha256 = (
+            hashlib.sha256(self.system_instruction.encode("utf-8")).hexdigest()
+            if self.system_instruction is not None
+            else None
+        )
+        return {
+            "profile": self.profile,
+            "profile_sha256": profile.sha256,
+            "generation_prompt": self.generation_prompt,
+            "system_instruction": self.system_instruction,
+            "system_instruction_sha256": instruction_sha256,
+            "num_fewshot": self.num_fewshot,
+            "fewshot_as_multiturn": self.fewshot_as_multiturn,
+            "stop": profile.stop,
+        }
+
+
+@dataclass(frozen=True)
+class BenchmarkConfig:
+    selector: str
+    path: Path
+    batch_size: int
+    max_gen_toks: int
+    limit: int | None
+    prompt: PromptConfig
+    generation_kwargs: dict[str, object] = field(default_factory=dict)
+
+    def public(self) -> dict[str, object]:
+        return {
+            "selector": self.selector,
+            "path": str(self.path),
+            "batch_size": self.batch_size,
+            "max_gen_toks": self.max_gen_toks,
+            "limit": self.limit,
+            "prompt": self.prompt.public(),
+            "generation_kwargs": dict(self.generation_kwargs),
+        }
+
+
+@dataclass(frozen=True)
 class LMEvalConfig:
     tasks: tuple[str, ...]
     output_dir: Path
@@ -59,6 +155,10 @@ class LMEvalConfig:
     scoreboard_url: str | None = None
     scoreboard_token: str | None = None
     backend: str = "vllm_http"
+    prompt: PromptConfig = field(default_factory=PromptConfig)
+    generation_kwargs: dict[str, object] = field(default_factory=dict)
+    task_include_paths: tuple[Path, ...] = ()
+    benchmarks: tuple[BenchmarkConfig, ...] = ()
 
     @classmethod
     def read(
@@ -120,7 +220,7 @@ class LMEvalConfig:
             or eot_token_id < 0
         ):
             raise ConfigError("eot_token_id must be a non-negative integer")
-        log_samples = raw.get("log_samples", False)
+        log_samples = raw.get("log_samples", True)
         if not isinstance(log_samples, bool):
             raise ConfigError("log_samples must be a boolean")
         max_gen_toks = raw.get("max_gen_toks", 256)
@@ -141,6 +241,65 @@ class LMEvalConfig:
             raise ConfigError("publish must be a boolean")
         if publish and limit is not None:
             raise ConfigError("published evaluation must not set limit")
+
+        prompt = cls._prompt(raw.get("prompt"))
+        generation_kwargs = cls._generation_kwargs(raw.get("generation_kwargs"))
+        configured_benchmark_paths = raw.get("benchmark_configs")
+        benchmarks = (
+            tuple(
+                cls._benchmark_config(
+                    value,
+                    path.parent,
+                    prompt=prompt,
+                    generation_kwargs=generation_kwargs,
+                    batch_size=batch_size,
+                    max_gen_toks=max_gen_toks,
+                    limit=limit,
+                )
+                for value in cls._strings(
+                    configured_benchmark_paths, "benchmark_configs"
+                )
+            )
+            if configured_benchmark_paths is not None
+            else ()
+        )
+        if benchmarks:
+            selectors = tuple(benchmark.selector for benchmark in benchmarks)
+            missing_benchmarks = sorted(set(tasks) - set(selectors))
+            extra_benchmarks = sorted(set(selectors) - set(tasks))
+            duplicate_benchmarks = sorted(
+                selector
+                for selector in set(selectors)
+                if selectors.count(selector) > 1
+            )
+            if duplicate_benchmarks:
+                raise ConfigError(
+                    "duplicate benchmark config selectors: "
+                    + ", ".join(duplicate_benchmarks)
+                )
+            if missing_benchmarks or extra_benchmarks:
+                details = []
+                if missing_benchmarks:
+                    details.append("missing " + ", ".join(missing_benchmarks))
+                if extra_benchmarks:
+                    details.append("unexpected " + ", ".join(extra_benchmarks))
+                raise ConfigError(
+                    "benchmark configs must match tasks exactly: " + "; ".join(details)
+                )
+        configured_task_paths = raw.get("task_include_paths")
+        task_include_paths = (
+            tuple(
+                cls._task_include_path(
+                    cls._expand_environment(value, env, "task_include_paths"),
+                    path.parent,
+                )
+                for value in cls._strings(
+                    configured_task_paths, "task_include_paths"
+                )
+            )
+            if configured_task_paths is not None
+            else ()
+        )
 
         configured_manifests = raw.get("pool_manifests")
         if configured_manifests is None:
@@ -170,6 +329,18 @@ class LMEvalConfig:
                     "max_gen_toks must be smaller than the effective vLLM context length"
                 )
             manifests.append(manifest)
+        for benchmark in benchmarks:
+            if benchmark.max_gen_toks >= min(
+                manifest.max_model_len - 2 for manifest in manifests
+            ):
+                raise ConfigError(
+                    f"benchmark {benchmark.selector} max_gen_toks must be smaller "
+                    "than the effective vLLM context length"
+                )
+            if publish and benchmark.limit is not None:
+                raise ConfigError(
+                    f"published benchmark {benchmark.selector} must not set limit"
+                )
 
         configured_weights = raw.get("weights")
         weights: tuple[tuple[Path, str], ...] = ()
@@ -279,7 +450,234 @@ class LMEvalConfig:
             execution_units=tuple(units),
             scoreboard_url=scoreboard_url,
             scoreboard_token=scoreboard_token,
+            prompt=prompt,
+            generation_kwargs=generation_kwargs,
+            task_include_paths=task_include_paths,
+            benchmarks=benchmarks,
         )
+
+    @staticmethod
+    def _prompt(raw: object, base: PromptConfig | None = None) -> PromptConfig:
+        if raw is None:
+            return base or PromptConfig()
+        if not isinstance(raw, dict):
+            raise ConfigError("prompt must be a TOML table")
+        unknown = sorted(set(raw) - _PROMPT_FIELDS)
+        if unknown:
+            raise ConfigError("unknown prompt fields: " + ", ".join(unknown))
+        profile = raw.get("profile", base.profile if base is not None else "none")
+        if not isinstance(profile, str) or profile not in PROMPT_PROFILES:
+            raise ConfigError(
+                "prompt.profile must be one of: " + ", ".join(PROMPT_PROFILES)
+            )
+        default_generation = (
+            base.generation_prompt
+            if base is not None and profile == base.profile
+            else "open_think" if profile != "none" else "none"
+        )
+        generation_prompt = raw.get("generation_prompt", default_generation)
+        if (
+            not isinstance(generation_prompt, str)
+            or generation_prompt not in GENERATION_PROMPTS
+        ):
+            raise ConfigError(
+                "prompt.generation_prompt must be one of: "
+                + ", ".join(GENERATION_PROMPTS)
+            )
+        if profile == "none" and generation_prompt != "none":
+            raise ConfigError(
+                "prompt.generation_prompt requires an enabled RWKV prompt profile"
+            )
+        system_instruction = raw.get(
+            "system_instruction", base.system_instruction if base is not None else None
+        )
+        if system_instruction is not None and (
+            not isinstance(system_instruction, str)
+            or not system_instruction.strip()
+            or system_instruction != system_instruction.strip()
+        ):
+            raise ConfigError(
+                "prompt.system_instruction must be non-empty trimmed text"
+            )
+        num_fewshot = raw.get(
+            "num_fewshot", base.num_fewshot if base is not None else None
+        )
+        if num_fewshot is not None and (
+            not isinstance(num_fewshot, int)
+            or isinstance(num_fewshot, bool)
+            or num_fewshot < 0
+        ):
+            raise ConfigError("prompt.num_fewshot must be a non-negative integer")
+        fewshot_as_multiturn = raw.get(
+            "fewshot_as_multiturn",
+            base.fewshot_as_multiturn if base is not None else True,
+        )
+        if not isinstance(fewshot_as_multiturn, bool):
+            raise ConfigError("prompt.fewshot_as_multiturn must be a boolean")
+        return PromptConfig(
+            profile=profile,
+            generation_prompt=generation_prompt,
+            system_instruction=system_instruction,
+            num_fewshot=num_fewshot,
+            fewshot_as_multiturn=fewshot_as_multiturn,
+        )
+
+    @staticmethod
+    def _generation_kwargs(raw: object) -> dict[str, object]:
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict):
+            raise ConfigError("generation_kwargs must be a TOML table")
+        unknown = sorted(set(raw) - _GENERATION_FIELDS)
+        if unknown:
+            raise ConfigError(
+                "unknown generation_kwargs fields: " + ", ".join(unknown)
+            )
+        if "max_gen_toks" in raw and "max_new_tokens" in raw:
+            raise ConfigError(
+                "generation_kwargs cannot set both max_gen_toks and max_new_tokens"
+            )
+        for name in ("max_gen_toks", "max_new_tokens", "top_k", "seed"):
+            value = raw.get(name)
+            if value is not None and (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or (name != "seed" and value <= 0)
+            ):
+                raise ConfigError(f"generation_kwargs.{name} must be an integer")
+        for name in ("do_sample", "ignore_eos"):
+            value = raw.get(name)
+            if value is not None and not isinstance(value, bool):
+                raise ConfigError(f"generation_kwargs.{name} must be a boolean")
+        for name in (
+            "temperature",
+            "top_p",
+            "min_p",
+            "presence_penalty",
+            "frequency_penalty",
+            "repetition_penalty",
+            "penalty_decay",
+        ):
+            value = raw.get(name)
+            if value is not None and (
+                not isinstance(value, (int, float)) or isinstance(value, bool)
+            ):
+                raise ConfigError(f"generation_kwargs.{name} must be numeric")
+        num_beams = raw.get("num_beams")
+        if num_beams is not None and num_beams != 1:
+            raise ConfigError("generation_kwargs.num_beams must be 1")
+        until = raw.get("until")
+        if until is not None and not (
+            isinstance(until, str)
+            and until
+            or isinstance(until, list)
+            and until
+            and all(isinstance(value, str) and value for value in until)
+        ):
+            raise ConfigError(
+                "generation_kwargs.until must be non-empty text or an array of text"
+            )
+        return dict(raw)
+
+    @classmethod
+    def _benchmark_config(
+        cls,
+        raw_path: str,
+        config_root: Path,
+        *,
+        prompt: PromptConfig,
+        generation_kwargs: dict[str, object],
+        batch_size: int,
+        max_gen_toks: int,
+        limit: int | None,
+    ) -> BenchmarkConfig:
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            path = config_root / path
+        if path.is_symlink():
+            raise ConfigError("benchmark config paths must not contain symlinks")
+        try:
+            path = path.resolve(strict=True)
+        except FileNotFoundError as error:
+            raise ConfigError(f"benchmark config is missing: {path}") from error
+        if not path.is_file():
+            raise ConfigError("benchmark config path must be a regular file")
+        try:
+            with path.open("rb") as stream:
+                raw = tomllib.load(stream)
+        except tomllib.TOMLDecodeError as error:
+            raise ConfigError(f"invalid benchmark TOML {path}: {error}") from error
+        unknown = sorted(set(raw) - _BENCHMARK_FIELDS)
+        if unknown:
+            raise ConfigError(
+                f"unknown benchmark config fields in {path}: " + ", ".join(unknown)
+            )
+        missing = sorted({"schema_version", "selector"} - set(raw))
+        if missing:
+            raise ConfigError(
+                f"missing benchmark config fields in {path}: " + ", ".join(missing)
+            )
+        if isinstance(raw["schema_version"], bool) or raw["schema_version"] != 1:
+            raise ConfigError(f"benchmark schema_version must be 1 in {path}")
+        selector = raw["selector"]
+        if (
+            not isinstance(selector, str)
+            or not selector
+            or selector != selector.strip()
+        ):
+            raise ConfigError(f"benchmark selector must be non-empty trimmed text in {path}")
+        configured_batch_size = raw.get("batch_size", batch_size)
+        if (
+            not isinstance(configured_batch_size, int)
+            or isinstance(configured_batch_size, bool)
+            or configured_batch_size <= 0
+        ):
+            raise ConfigError(f"benchmark batch_size must be a positive integer in {path}")
+        configured_max_gen_toks = raw.get("max_gen_toks", max_gen_toks)
+        if (
+            not isinstance(configured_max_gen_toks, int)
+            or isinstance(configured_max_gen_toks, bool)
+            or configured_max_gen_toks <= 0
+        ):
+            raise ConfigError(
+                f"benchmark max_gen_toks must be a positive integer in {path}"
+            )
+        configured_limit = raw.get("limit", limit)
+        if configured_limit is not None and (
+            not isinstance(configured_limit, int)
+            or isinstance(configured_limit, bool)
+            or configured_limit <= 0
+        ):
+            raise ConfigError(f"benchmark limit must be a positive integer in {path}")
+        configured_prompt = cls._prompt(raw.get("prompt"), prompt)
+        configured_generation = dict(generation_kwargs)
+        configured_generation.update(
+            cls._generation_kwargs(raw.get("generation_kwargs"))
+        )
+        return BenchmarkConfig(
+            selector=selector,
+            path=path,
+            batch_size=configured_batch_size,
+            max_gen_toks=configured_max_gen_toks,
+            limit=configured_limit,
+            prompt=configured_prompt,
+            generation_kwargs=configured_generation,
+        )
+
+    @staticmethod
+    def _task_include_path(raw: str, config_root: Path) -> Path:
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = config_root / path
+        if path.is_symlink():
+            raise ConfigError("task_include_paths must not contain symlinks")
+        try:
+            resolved = path.resolve(strict=True)
+        except FileNotFoundError as error:
+            raise ConfigError(f"task include path is missing: {path}") from error
+        if not resolved.is_dir():
+            raise ConfigError("task_include_paths must contain directories")
+        return resolved
 
     @staticmethod
     def _manifest_path(raw: str) -> Path:
@@ -371,4 +769,20 @@ class LMEvalConfig:
             ],
             "scoreboard_url": self.scoreboard_url,
             "scoreboard_token": "[REDACTED]" if self.scoreboard_token else None,
+            "prompt": self.prompt.public(),
+            "generation_kwargs": dict(self.generation_kwargs),
+            "task_include_paths": [str(path) for path in self.task_include_paths],
+            "benchmark_configs": [
+                benchmark.public() for benchmark in self.benchmarks
+            ],
         }
+
+    def benchmark_for_selector(self, selector: str) -> BenchmarkConfig | None:
+        return next(
+            (
+                benchmark
+                for benchmark in self.benchmarks
+                if benchmark.selector == selector
+            ),
+            None,
+        )

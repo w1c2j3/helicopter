@@ -13,4 +13,7 @@ output_dir = ".tmp/eval/lm-eval-qwen35"
 batch_size = 64
 eot_token_id = 0
 max_gen_toks = 2048
-log_samples = false
+log_samples = true
+
+[prompt]
+profile = "none"

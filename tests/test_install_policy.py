@@ -72,7 +72,20 @@ class InstallPolicyTests(unittest.TestCase):
         launcher = (ROOT / "scripts/run_rwkv_vllm.sh").read_text(encoding="utf-8")
         self.assertNotIn("/home/creator", launcher)
         self.assertIn('RWKV_MODEL_PATH:-${model_path}', launcher)
+        self.assertIn('rwkv7-g1i-1.5b-20260805-ctx16384.pth', launcher)
         self.assertIn('VLLM_RWKV7_WKV_MODE:-fp16', launcher)
+        self.assertIn('.tmp/runtime', launcher)
+        self.assertIn('rwkv-vllm-pool.json', launcher)
+        self.assertIn('"max_model_len": int(', launcher)
+
+        eval_launcher = (ROOT / "scripts/run_lm_eval.sh").read_text(encoding="utf-8")
+        self.assertIn('configs/eval/lm_eval.toml', eval_launcher)
+        self.assertIn('manifest_is_healthy', eval_launcher)
+        self.assertIn('trap cleanup EXIT', eval_launcher)
+        self.assertIn(
+            'export HELICOPTER_VLLM_POOL_MANIFEST="${manifest_path}"',
+            eval_launcher,
+        )
 
         workflow = (ROOT / ".github/workflows/tests.yml").read_text(encoding="utf-8")
         self.assertIn("--group test --group lm-eval", workflow)

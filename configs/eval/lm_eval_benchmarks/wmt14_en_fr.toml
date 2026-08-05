@@ -1,0 +1,11 @@
+schema_version = 1
+selector = "wmt14-en-fr"
+batch_size = 32
+max_gen_toks = 256
+
+[prompt]
+profile = "none"
+generation_prompt = "none"
+
+[generation_kwargs]
+do_sample = false

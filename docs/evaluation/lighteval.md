@@ -6,6 +6,10 @@
 helicopter eval --evaluator lighteval --config ./configs/eval/lighteval.toml
 ```
 
+固定本地 RWKV-vLLM 服务可先在另一个终端运行
+`./scripts/run_rwkv_vllm.sh`。脚本自动生成 `.tmp/runtime/rwkv-vllm-pool.json`，
+评测入口自动发现该清单；本地 `backend = "vllm_http"` 不需要额外配置 endpoint。
+
 公开 CLI 会把评估委托给独立的 `.venv-lighteval`。LightEval 及其数学解析依赖不会
 安装进 Verl 使用的训练 `.venv`；可用 `HELICOPTER_EVAL_PYTHON` 显式覆盖该解释器。
 `--evaluator` 省略时仍默认使用 `lighteval`，兼容现有训练验证命令。
@@ -126,7 +130,8 @@ TOML 只选择稳定的 backend；动态 endpoint 和每 replica 容量只存在
 manifest，不写进仓库或 `.env.remote`。manifest 必须是绝对路径下的普通文件；
 endpoint 必须是无凭据、无 path/query/fragment 的 HTTP(S) origin，且不能重复。
 训练器以 `0600` 创建唯一临时 manifest，外部评估结束后删除。固定推理服务也使用
-同一 schema，由服务生命周期控制面生成 manifest 后复用相同评估入口。
+同一 schema；项目启动脚本默认生成本地清单，服务生命周期控制面也可生成自定义
+清单。显式的 `HELICOPTER_VLLM_POOL_MANIFEST` 始终优先于本地自动发现路径。
 
 评估启动时会对全部 replica 请求 `/health` 和 `/v1/models`；任一 replica
 不可用、model id 不一致或 WKV mode 不匹配都会 fail closed。实际生成请求使用

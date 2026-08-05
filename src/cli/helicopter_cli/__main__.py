@@ -18,6 +18,9 @@ from .paths import find_root
 from .runner import run_command
 
 
+LOCAL_POOL_MANIFEST = Path(".tmp/runtime/rwkv-vllm-pool.json")
+
+
 def add_runtime_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--env-file", default=DEFAULT_ENV_FILE, help="dotenv file to load first"
@@ -121,6 +124,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         except (OSError, UnicodeError) as error:
             parser.error(f"cannot securely read eval private environment file: {error}")
+        if not eval_env.get("HELICOPTER_VLLM_POOL_MANIFEST"):
+            local_manifest = root / LOCAL_POOL_MANIFEST
+            if local_manifest.is_file() and not local_manifest.is_symlink():
+                eval_env["HELICOPTER_VLLM_POOL_MANIFEST"] = str(local_manifest)
         config_path = Path(args.config).expanduser()
         if not config_path.is_absolute():
             config_path = Path.cwd() / config_path

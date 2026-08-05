@@ -1,0 +1,16 @@
+schema_version = 1
+selector = "gpqa_extended_cot_zeroshot"
+batch_size = 8
+max_gen_toks = 4096
+
+[prompt]
+profile = "bot"
+generation_prompt = "open_think"
+fewshot_as_multiturn = false
+
+[generation_kwargs]
+do_sample = true
+temperature = 0.96
+top_p = 0.3
+top_k = 50
+seed = 42

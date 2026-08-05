@@ -1,0 +1,13 @@
+schema_version = 1
+selector = "babilong"
+batch_size = 1
+max_gen_toks = 256
+
+[prompt]
+profile = "assistant"
+generation_prompt = "fake_think"
+system_instruction = "Use the supplied facts and return only the requested answer."
+fewshot_as_multiturn = false
+
+[generation_kwargs]
+do_sample = false

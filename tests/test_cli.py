@@ -139,6 +139,82 @@ class EvaluationCliTests(unittest.TestCase):
         self.assertEqual(command[1:3], ["-m", "helicopter_lm_eval"])
         self.assertEqual(command[-1], "--dry-run")
 
+    def test_eval_auto_discovers_local_vllm_pool_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / cli_main.LOCAL_POOL_MANIFEST
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("{}\n", encoding="utf-8")
+            with (
+                mock.patch.object(cli_main, "find_root", return_value=root),
+                mock.patch.object(cli_main, "find_env_path", return_value=None),
+                mock.patch.object(
+                    cli_main,
+                    "load_env",
+                    return_value=(
+                        {"HELICOPTER_LM_EVAL_PYTHON": "/python"},
+                        None,
+                    ),
+                ),
+                mock.patch.object(cli_main.os, "access", return_value=True),
+                mock.patch.object(cli_main, "run_command", return_value=0) as run,
+            ):
+                result = cli_main.main(
+                    [
+                        "eval",
+                        "--evaluator",
+                        "lm-eval",
+                        "--config",
+                        "configs/eval/lm_eval.toml",
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            run.call_args.kwargs["env"]["HELICOPTER_VLLM_POOL_MANIFEST"],
+            str(manifest),
+        )
+
+    def test_eval_explicit_pool_manifest_wins_over_local_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            local_manifest = root / cli_main.LOCAL_POOL_MANIFEST
+            local_manifest.parent.mkdir(parents=True)
+            local_manifest.write_text("{}\n", encoding="utf-8")
+            explicit_manifest = root / "remote-pool.json"
+            with (
+                mock.patch.object(cli_main, "find_root", return_value=root),
+                mock.patch.object(cli_main, "find_env_path", return_value=None),
+                mock.patch.object(
+                    cli_main,
+                    "load_env",
+                    return_value=(
+                        {
+                            "HELICOPTER_LM_EVAL_PYTHON": "/python",
+                            "HELICOPTER_VLLM_POOL_MANIFEST": str(explicit_manifest),
+                        },
+                        None,
+                    ),
+                ),
+                mock.patch.object(cli_main.os, "access", return_value=True),
+                mock.patch.object(cli_main, "run_command", return_value=0) as run,
+            ):
+                result = cli_main.main(
+                    [
+                        "eval",
+                        "--evaluator",
+                        "lm-eval",
+                        "--config",
+                        "configs/eval/lm_eval.toml",
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            run.call_args.kwargs["env"]["HELICOPTER_VLLM_POOL_MANIFEST"],
+            str(explicit_manifest),
+        )
+
 
 class InferPlanTests(unittest.TestCase):
     def test_example_config_builds_vllm_command(self) -> None:

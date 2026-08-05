@@ -1,0 +1,13 @@
+schema_version = 1
+selector = "xquad"
+batch_size = 16
+max_gen_toks = 256
+
+[prompt]
+profile = "assistant"
+generation_prompt = "fake_think"
+system_instruction = "Return only the answer span requested by the question."
+fewshot_as_multiturn = false
+
+[generation_kwargs]
+do_sample = false

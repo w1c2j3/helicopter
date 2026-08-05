@@ -39,6 +39,20 @@ def _write_manifest(tmp_path: Path) -> Path:
     return path
 
 
+def test_single_execution_unit_uses_configured_output_directory(
+    tmp_path: Path,
+) -> None:
+    unit = SimpleNamespace(weight_sha256="a" * 64, wkv_mode="fp16")
+
+    assert (
+        evaluate._unit_output_dir(tmp_path, unit, 0, total_units=1)
+        == tmp_path
+    )
+    assert evaluate._unit_output_dir(
+        tmp_path, unit, 0, total_units=2
+    ) == tmp_path / ("a" * 64) / "fp16"
+
+
 def test_task_resolution_accepts_common_request_types_and_groups() -> None:
     manager, resolved = evaluate._resolve_tasks(
         ("wikitext", "hellaswag", "gsm8k", "mmlu")
@@ -63,6 +77,59 @@ def test_task_resolution_supports_globs_and_rejects_unknown_selectors() -> None:
         evaluate._resolve_tasks(("does-not-exist",))
 
 
+def test_task_resolution_loads_project_task_include_path(tmp_path: Path) -> None:
+    task_dir = tmp_path / "tasks"
+    task_dir.mkdir()
+    (task_dir / "rwkv_smoke.yaml").write_text(
+        "\n".join(
+            [
+                "task: rwkv_smoke",
+                "dataset_path: json",
+                "output_type: generate_until",
+                "test_split: test",
+                'doc_to_text: "{{question}}"',
+                'doc_to_target: "{{answer}}"',
+                "metric_list:",
+                "  - metric: exact_match",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    manager, resolved = evaluate._resolve_tasks(("rwkv_smoke",), (task_dir,))
+
+    assert resolved == ("rwkv_smoke",)
+    assert manager.task_index["rwkv_smoke"].yaml_path == (
+        task_dir / "rwkv_smoke.yaml"
+    )
+
+
+def test_rwkv_suite_uses_external_per_benchmark_prompt_configs() -> None:
+    with (ROOT / "configs/eval/lm_eval.toml").open("rb") as stream:
+        rwkv_config = tomllib.load(stream)
+    with (ROOT / "configs/eval/lm_eval_ppl.toml").open("rb") as stream:
+        ppl_config = tomllib.load(stream)
+    with (
+        ROOT / "configs/eval/lm_eval_benchmarks/wikitext.toml"
+    ).open("rb") as stream:
+        wikitext = tomllib.load(stream)
+    with (
+        ROOT / "configs/eval/lm_eval_benchmarks/gsm_plus.toml"
+    ).open("rb") as stream:
+        gsm_plus = tomllib.load(stream)
+
+    assert rwkv_config["prompt"]["profile"] == "none"
+    assert "wikitext" in rwkv_config["tasks"]
+    assert len(rwkv_config["tasks"]) == len(rwkv_config["benchmark_configs"])
+    assert wikitext["selector"] == "wikitext"
+    assert wikitext["prompt"]["profile"] == "none"
+    assert gsm_plus["selector"] == "gsm_plus"
+    assert gsm_plus["prompt"]["profile"] == "assistant"
+    assert gsm_plus["prompt"]["generation_prompt"] == "fake_think"
+    assert ppl_config["tasks"] == ["wikitext"]
+    assert ppl_config["prompt"]["profile"] == "none"
+
+
 def test_qwen35_alignment_suite_uses_stable_unlimited_selectors() -> None:
     with (ROOT / "configs/eval/lm_eval_qwen35.toml").open("rb") as stream:
         config = tomllib.load(stream)
@@ -79,6 +146,7 @@ def test_qwen35_alignment_suite_uses_stable_unlimited_selectors() -> None:
 
     assert resolved == expected
     assert "limit" not in config
+    assert config["log_samples"] is True
     assert manager.task_index["mmlu_pro"].cfg["group"] == "mmlu_pro"
     assert manager.task_index["mmlu_redux_generative"].cfg["group"] == (
         "mmlu_redux_generative"
@@ -317,6 +385,18 @@ def test_run_dispatches_choice_and_generation_tasks_to_harness(
                 "batch_size = 4",
                 "max_gen_toks = 512",
                 "limit = 1",
+                "",
+                "[prompt]",
+                'profile = "assistant"',
+                'generation_prompt = "fake_think"',
+                'system_instruction = "Use the requested format."',
+                "num_fewshot = 2",
+                "fewshot_as_multiturn = false",
+                "",
+                "[generation_kwargs]",
+                "do_sample = true",
+                "temperature = 0.8",
+                "top_p = 0.9",
             ]
         ),
         encoding="utf-8",
@@ -363,13 +443,149 @@ def test_run_dispatches_choice_and_generation_tasks_to_harness(
     assert calls[0]["tasks"] == ["hellaswag", "gsm8k"]
     assert calls[0]["batch_size"] == 4
     assert calls[0]["limit"] == 1
+    assert calls[0]["num_fewshot"] == 2
+    assert calls[0]["system_instruction"] == "Use the requested format."
+    assert calls[0]["apply_chat_template"] is True
+    assert calls[0]["fewshot_as_multiturn"] is False
+    assert calls[0]["gen_kwargs"] == {
+        "do_sample": True,
+        "temperature": 0.8,
+        "top_p": 0.9,
+    }
     model = calls[0]["model"]
     assert model.max_gen_toks == 512
-    assert json.loads((output_dir / "summary.json").read_text())["tasks"] == [
+    summary = json.loads((output_dir / "summary.json").read_text())
+    assert summary["tasks"] == ["hellaswag", "gsm8k"]
+    assert summary["prompt"]["profile"] == "assistant"
+    assert summary["generation_kwargs"]["temperature"] == 0.8
+    assert closed == [True]
+
+
+def test_run_applies_and_merges_per_benchmark_configs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import lm_eval
+
+    manifest = _write_manifest(tmp_path)
+    output_dir = tmp_path / "results"
+    benchmark_dir = tmp_path / "benchmarks"
+    benchmark_dir.mkdir()
+    (benchmark_dir / "hellaswag.toml").write_text(
+        """
+schema_version = 1
+selector = "hellaswag"
+batch_size = 3
+limit = 2
+
+[prompt]
+profile = "none"
+generation_prompt = "none"
+num_fewshot = 0
+
+[generation_kwargs]
+do_sample = false
+""".strip(),
+        encoding="utf-8",
+    )
+    (benchmark_dir / "gsm8k.toml").write_text(
+        """
+schema_version = 1
+selector = "gsm8k"
+batch_size = 1
+max_gen_toks = 1024
+limit = 1
+
+[prompt]
+profile = "assistant"
+generation_prompt = "fake_think"
+system_instruction = "Return the final number after reasoning."
+num_fewshot = 4
+fewshot_as_multiturn = false
+
+[generation_kwargs]
+do_sample = true
+temperature = 0.2
+""".strip(),
+        encoding="utf-8",
+    )
+    config = tmp_path / "eval.toml"
+    config.write_text(
+        "\n".join(
+            [
+                "schema_version = 1",
+                'backend = "vllm_http"',
+                'tasks = ["hellaswag", "gsm8k"]',
+                'benchmark_configs = ["benchmarks/hellaswag.toml", "benchmarks/gsm8k.toml"]',
+                f'output_dir = "{output_dir}"',
+                "batch_size = 4",
+                "max_gen_toks = 512",
+                "log_samples = false",
+                "",
+                "[prompt]",
+                'profile = "bot"',
+                'generation_prompt = "open_think"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    calls: list[dict[str, object]] = []
+
+    class Pool:
+        total_capacity = 2
+
+        def __init__(self, configured_manifest):
+            self.manifest = configured_manifest
+            self.model_id = "rwkv-current"
+
+        def preflight(self):
+            return self.model_id
+
+        def close(self):
+            return None
+
+    def simple_evaluate(**kwargs):
+        calls.append(kwargs)
+        task_name = kwargs["tasks"][0]
+        return {
+            "config": {"model": "rwkv-current"},
+            "results": {task_name: {"acc,none": 0.5}},
+            "versions": {task_name: 1},
+        }
+
+    monkeypatch.setattr(evaluate, "VLLMHttpPool", Pool)
+    monkeypatch.setattr(lm_eval, "simple_evaluate", simple_evaluate)
+
+    assert (
+        evaluate.run(
+            config_path=config,
+            env={"HELICOPTER_VLLM_POOL_MANIFEST": str(manifest)},
+            dry_run=False,
+        )
+        == 0
+    )
+
+    assert [call["tasks"] for call in calls] == [["hellaswag"], ["gsm8k"]]
+    assert calls[0]["batch_size"] == 3
+    assert calls[0]["limit"] == 2
+    assert calls[0]["apply_chat_template"] is False
+    assert calls[0]["gen_kwargs"] == {"do_sample": False}
+    assert calls[1]["batch_size"] == 1
+    assert calls[1]["limit"] == 1
+    assert calls[1]["num_fewshot"] == 4
+    assert calls[1]["system_instruction"] == (
+        "Return the final number after reasoning."
+    )
+    assert calls[1]["apply_chat_template"] is True
+    assert calls[1]["fewshot_as_multiturn"] is False
+    assert calls[1]["gen_kwargs"] == {"do_sample": True, "temperature": 0.2}
+    results = json.loads((output_dir / "results.json").read_text(encoding="utf-8"))
+    assert set(results["results"]) == {"hellaswag", "gsm8k"}
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    assert [row["selector"] for row in summary["benchmark_configs"]] == [
         "hellaswag",
         "gsm8k",
     ]
-    assert closed == [True]
 
 
 def test_result_writer_preserves_raw_results_and_normalizes_metrics(

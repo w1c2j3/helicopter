@@ -118,3 +118,68 @@ def test_lm_eval_task_contract_accepts_native_sample_shape() -> None:
     assert sample_outcome(
         publication.details[0], publication.primary_metric
     ) == "undetermined"
+
+
+def test_lm_eval_task_contract_accepts_rwkv_prompt_profile() -> None:
+    task = _task()
+    payload = {
+        "schema_version": "lm-eval-task-v1",
+        "campaign_id": "campaign",
+        "task": task,
+        "artifact": {
+            "evaluator": {"name": "lm-eval", "version": "0.4.12"},
+            "results_path": "results.json",
+            "details_paths": ["samples/0000.json"],
+        },
+        "task_config": {
+            "original_num_docs": 1,
+            "effective_num_docs": 1,
+            "skipped_multiselect_docs": 0,
+        },
+        "model": {
+            "weight_sha256": "a" * 64,
+            "weight_display_name": "model.pth",
+            "wkv_mode": "fp16",
+            "prompt_template": "bot",
+            "gemm_policy": "fp16-accumulation",
+            "gpu": "remote-vllm-pool",
+            "max_num_seqs": 8,
+            "max_num_batched_tokens": 8192,
+            "dependency_versions": {
+                "lm-eval": "0.4.12",
+                "vllm": "0.23.1.dev0",
+                "torch": "2.11.0",
+            },
+            "evaluator": "lm-eval",
+        },
+        "sampling_config": {
+            "prompt": {"profile": "bot", "generation_prompt": "fake_think"}
+        },
+        "primary_metric": "word_perplexity,none",
+        "aggregates": {"word_perplexity,none": 12.5},
+        "diagnostics": {
+            "samples": 1,
+            "completions": 0,
+            "truncated": 0,
+            "non_truncated": 0,
+            "truncation_rate": 0.0,
+            "turn_boundary_violations": 0,
+            "turn_boundary_violation_rate": 0.0,
+        },
+        "details": [
+            {
+                "sample_index": 0,
+                "document_index": 0,
+                "doc": {
+                    "task_name": "wikitext",
+                    "specific": {"helicopter_document_index": 0},
+                },
+                "metric": {"word_perplexity,none": 12.5},
+                "model_response": {"filtered_resps": []},
+            }
+        ],
+    }
+
+    publication = TaskPublication.model_validate(payload)
+
+    assert publication.model.prompt_template == "bot"

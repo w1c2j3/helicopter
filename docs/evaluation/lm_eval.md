@@ -5,16 +5,23 @@
 `loglikelihood`、`loglikelihood_rolling` 和 `generate_until`。因此可以直接运行
 HellaSwag、ARC、MMLU、TruthfulQA、GSM8K、IFEval、WikiText 等常见 harness task。
 
-```bash
-helicopter eval \
-  --evaluator lm-eval \
-  --config configs/eval/lm_eval.toml \
-  --dry-run
+开箱即用的本地入口只有一条命令：
 
-helicopter eval \
-  --evaluator lm-eval \
-  --config configs/eval/lm_eval.toml
+```bash
+./scripts/run_lm_eval.sh
 ```
+
+它会自动复用健康的本地服务；没有服务时会启动 RWKV-vLLM、等待就绪、执行评测，
+最后回收自己启动的服务。服务日志写入 `.tmp/runtime/rwkv-vllm.log`。要运行另一份
+配置，只需把 TOML 路径作为第一个参数：
+
+```bash
+./scripts/run_lm_eval.sh configs/eval/lm_eval_ppl.toml
+```
+
+本地运行不需要手写 endpoint、pool manifest 或 `.env.local`。首次运行或改完配置后，
+可在命令末尾加 `--dry-run` 做配置、任务和服务预检。已有固定服务时也可直接执行
+`.venv/bin/helicopter eval --evaluator lm-eval --config configs/eval/lm_eval.toml`。
 
 `lm-eval` 固定为 `0.4.12`，安装在独立的 `.venv-lm-eval`。可通过
 `HELICOPTER_LM_EVAL_PYTHON` 覆盖解释器路径。LightEval 仍是
@@ -26,12 +33,20 @@ helicopter eval \
 schema_version = 1
 backend = "vllm_http"
 
-tasks = ["arc_easy", "hellaswag", "mmlu", "gsm8k", "wikitext"]
+tasks = ["arc_easy", "hellaswag", "mmlu", "gsm8k", "ifeval"]
 output_dir = ".tmp/eval/lm-eval"
 batch_size = 64
 eot_token_id = 0
 max_gen_toks = 2048
-log_samples = false
+log_samples = true
+
+[prompt]
+profile = "bot"
+generation_prompt = "open_think"
+fewshot_as_multiturn = true
+
+[generation_kwargs]
+do_sample = false
 ```
 
 - `tasks` 接受 lm-eval task、group、tag 和 glob pattern；每个 selector 必须至少
@@ -46,10 +61,107 @@ log_samples = false
   `max_gen_toks` 或 `max_new_tokens` 优先；提示词会从左侧截断，为输出保留空间。
 - `limit` 是可选的正整数，只用于本地 smoke test；`publish = true` 时配置解析会
   直接拒绝 `limit`，防止将抽样结果发布成完整评测。
-- `log_samples` 默认关闭；启用时原始 lm-eval sample 信息会进入结果文件。
+- `log_samples` 默认开启；原始 lm-eval sample 信息会进入结果文件并生成错例分析。
+  只有 WikiText/Pile 等没有逐题二元答案的纯 PPL 诊断才应显式关闭。
+- `task_include_paths` 可选，加载仓库维护的自定义 lm-eval task 目录；相对路径以当前
+  TOML 所在目录为基准。标准对标配置不得借此静默替换上游同名 task。
+
+### 逐 benchmark 配置
+
+总入口通过 `benchmark_configs` 引用每个 benchmark 的独立 TOML：
+
+```toml
+tasks = ["wikitext", "gsm_plus"]
+benchmark_configs = [
+  "lm_eval_benchmarks/wikitext.toml",
+  "lm_eval_benchmarks/gsm_plus.toml",
+]
+```
+
+每个文件必须声明唯一 `selector`，并可覆盖批大小、生成长度、smoke limit、prompt
+和生成参数：
+
+```toml
+schema_version = 1
+selector = "gsm_plus"
+batch_size = 8
+max_gen_toks = 2048
+
+[prompt]
+profile = "assistant"
+generation_prompt = "fake_think"
+fewshot_as_multiturn = false
+
+[generation_kwargs]
+do_sample = false
+```
+
+加载器要求 `tasks` 与外部配置中的 selector 一一对应，并拒绝缺失、额外、重复或
+解析到同一 task 的配置。运行时每个 selector 单独调用 lm-eval，完成后再无损合并
+原生 metrics、group、sample 和 task config；`summary.json` 与 Scoreboard 会保留
+每个 benchmark 最终生效的配置。默认总入口的独立文件位于
+`configs/eval/lm_eval_benchmarks/`。
+
+### RWKV prompt
+
+项目在 `src/eval/lm_eval/prompts.py` 中维护与 RWKV-vLLM 一致的 prompt renderer。
+TOML 的 `[prompt]` 表控制实际协议：
+
+```toml
+[prompt]
+# none 保留 lm-eval 原生 base-model prompt；其余值启用 RWKV chat renderer。
+profile = "bot" # none | bot | assistant | function_calling
+generation_prompt = "open_think" # none | open_think | fake_think
+system_instruction = "Follow the requested answer format."
+num_fewshot = 2
+fewshot_as_multiturn = true
+```
+
+- `none` 是 schema 默认值，不加 chat template，适合与官方 lm-eval causal LM
+  baseline 对比。
+- `bot`、`assistant` 和 `function_calling` 使用仓库维护的 RWKV 角色格式，并自动把
+  对应的用户回合边界加入 generation stop。
+- `open_think` 在回答前写入 `<think`；`fake_think` 写入 `<think></think`；`none`
+  只写 assistant 起始标记。概率型多选和生成式推理对 thinking prefix 的需求不同，
+  不应在同一个正式结果中混用后再与标准 baseline 直接比较。
+- `system_instruction`、最终生效的 profile SHA-256、few-shot 和 generation prompt
+  都写入 `summary.json` 与 Scoreboard sampling config，保证结果可回溯。
+- 上游明确固定为 0-shot 的 task 不会被 `num_fewshot` 强制覆盖；这是 lm-eval 的原生
+  安全行为。
+
+需要修改某个 benchmark 自身的 `doc_to_text`、`description` 或 few-shot 样例时，
+在仓库中维护自定义 task YAML，并通过配置加载：
+
+```toml
+task_include_paths = ["../../tasks/lm_eval"]
+tasks = ["rwkv_gsm8k"]
+```
+
+不要直接编辑 `.venv-lm-eval/site-packages/lm_eval/tasks`；环境重建会丢失修改，也无法
+从结果中证明实际使用了哪份 prompt。
+
+### 生成参数
+
+`[generation_kwargs]` 会通过 lm-eval 原生 `gen_kwargs` 覆盖所有生成类 task 的 YAML
+参数，评分型 task 不受影响：
+
+```toml
+[generation_kwargs]
+do_sample = true
+temperature = 0.96
+top_p = 0.76
+top_k = 32
+min_p = 0.0
+presence_penalty = 1.0
+frequency_penalty = 0.1
+repetition_penalty = 1.0
+penalty_decay = 0.988
+seed = 1234
+```
 
 生成请求支持 harness 常用的 `until`、`max_gen_toks`、`max_new_tokens`、
-`do_sample`、`temperature`、`top_p`、`top_k`、`min_p` 和 `seed`。当前后端只支持
+`do_sample`、`temperature`、`top_p`、`top_k`、`min_p`、`seed` 以及 RWKV penalty
+参数。当前后端只支持
 单路生成，task 若要求 `num_beams > 1` 会明确失败，而不是静默改变评估语义。
 `do_sample = false` 会编码为 `temperature = 1.0, top_k = 1`：它仍是逐 token
 argmax，但同时兼容 RWKV-vLLM 的 rapid sampler（该 sampler 不接受
@@ -57,7 +169,12 @@ argmax，但同时兼容 RWKV-vLLM 的 rapid sampler（该 sampler 不接受
 
 ## HTTP 协议
 
-运行前必须在私有 `.env.local` 或 `.env.remote` 中提供绝对路径：
+本地使用 `./scripts/run_rwkv_vllm.sh` 时无需配置本节内容。启动器会根据实际的
+host、port、上下文长度、并发、模型 SHA-256 和 WKV mode 自动生成
+`.tmp/runtime/rwkv-vllm-pool.json`，`helicopter eval` 在未显式指定清单时自动使用它。
+
+训练期、远程服务或多 replica 部署仍应在私有 `.env.local` 或 `.env.remote` 中提供
+受控清单的绝对路径：
 
 ```dotenv
 HELICOPTER_VLLM_POOL_MANIFEST=/run/helicopter/vllm-pool.json
@@ -65,6 +182,7 @@ HELICOPTER_VLLM_POOL_MANIFEST=/run/helicopter/vllm-pool.json
 
 manifest schema 与 LightEval HTTP backend 相同。启动时会访问每个 replica 的
 `/health` 和 `/v1/models`，确保所有 endpoint 可用并且只服务同一个 model id。
+显式的 `HELICOPTER_VLLM_POOL_MANIFEST` 始终优先于本地自动发现路径。
 
 评估使用以下接口：
 
@@ -86,9 +204,13 @@ RWKV-vLLM 会为 decoder prompt 内部增加一个 token，并且对
 `echo + max_tokens=0` 的请求仍保留至少一个生成位置。因此适配器暴露的有效长度为
 manifest `max_model_len - 2`，rolling window 再保留一个条件 token。
 
-默认保持 lm-eval base-model 语义：harness 构造的 prompt 不会被适配器再次套一层
-chat template。这一点对基于 continuation 概率的多选指标很重要，也使结果能与
-lm-eval 的其他 causal LM 后端直接比较。
+`prompt.profile = "none"` 保持 lm-eval base-model 语义：harness 构造的 prompt
+不会被适配器再次套一层 chat template。这一点对基于 continuation 概率的多选指标
+很重要，也使结果能与 lm-eval 的其他 causal LM 后端直接比较。通用
+`configs/eval/lm_eval.toml` 展示 RWKV `bot` 调优协议；Qwen、capability、catalog
+delta、PPL 和生产对标配置显式锁定 `none`，避免历史协议漂移。
+WikiText 等 PPL task 不得套 RWKV chat prompt，否则指标不再是标准语料困惑度；应使用
+`configs/eval/lm_eval_ppl.toml` 单独运行。
 
 ## Qwen3.5 对齐套件
 
@@ -151,12 +273,53 @@ selector、task version、few-shot、无 chat template、确定性解码、数�
 
 - `results.json`：lm-eval `simple_evaluate` 的完整可序列化结果。
 - `summary.json`：稳定的项目级摘要，包含 lm-eval 版本、model id、global step、
-  WKV mode、上下文长度、task 版本和 metrics。
+  WKV mode、上下文长度、prompt profile、生成参数、task 版本和 metrics。
+- `error_analysis.json`：按 task 与 task family 汇总可判定样本的正确/错误数、错误率、
+  错误类型和生成质量诊断。
+- `bad_cases.json`：确定性抽取的代表性错例，包含 `task_name + doc_id`、模型答案、
+  标准答案、选择题各选项分数和错误 margin，可回查原始 sample。
+- `error_analysis.md`：有界的人类可读错例报告，每个 task family 最多展示三例，
+  防止大型 group 的叶子任务淹没其他能力问题。
+- `benchmarks/<task>/report.md`：每个实际执行 task 的独立摘要与前 20 条错例，直接打开
+  即可查看问题、模型答案、标准答案和判错原因。
+- `benchmarks/<task>/records.jsonl`：该 task 的全部逐题记录；每行包含 `doc_id`、
+  `status`、`model_answer`、`standard_answer`、判定 metric、选项分数和 prompt 摘要。
+- `benchmarks/<task>/errors.jsonl`：该 task 的全部错误和生成质量异常，不做抽样。
 
 默认配置仍只写本地，不创建 Scoreboard campaign。每个执行单元会写出
 `results.json`、`summary.json`、`artifacts.json`，启用 `log_samples` 时还会按 task
-写入 `samples/*.json`。WikiText-only 运行仍可使用
+写入 `samples/*.json`，并自动生成上述三份错误分析产物。连续生成指标（如 BLEU、
+chrF、TER）不会被强行转成二元“答错”；报告只将重复循环、元回答和极低参考重合
+列为 quality diagnostics。loglikelihood task 没有自由生成答案时，报告会保留目标词
+及其分数并明确将 `model_answer` 置空，不伪造模型回答。WikiText-only 运行仍可使用
 `configs/eval/lm_eval_ppl.toml`。
+
+评测完成后最常用的查看方式：
+
+```bash
+# 看有哪些 benchmark 日志及错误数
+jq '.benchmark_artifacts[] | {task_name, samples, errors, report_path}' \
+  .tmp/eval/lm-eval/artifacts.json
+
+# 直接看某个 benchmark 的人类可读报告
+less .tmp/eval/lm-eval/benchmarks/gsm8k/report.md
+
+# 筛选某个 benchmark 的全部错误：模型答案、标准答案、判错原因
+jq -c '{doc_id, question, model_answer, standard_answer, why_wrong}' \
+  .tmp/eval/lm-eval/benchmarks/gsm8k/errors.jsonl | less
+```
+
+已有 `results.json` 可单独补生成分析，无需重跑模型：
+
+```bash
+.venv-lm-eval/bin/python -m helicopter_lm_eval.analysis \
+  --results .tmp/eval/lm-eval-capabilities/results.json \
+  --examples-per-task 5
+```
+
+后处理会另写 `analysis_artifacts.json` 并记录源 `results.json` 的 SHA-256，不修改历史
+`artifacts.json`，避免破坏已经发布的产物摘要；同样会补齐每个 task 的
+`benchmarks/<task>/` 日志目录。
 
 ## 生产 campaign
 
@@ -278,6 +441,8 @@ lm-eval 0.4.12 的上游 WMT YAML 未声明 TER 的方向，因此运行时会�
 运行协议、stderr、样本数及产物 SHA-256 见
 [`lm_eval_capability_results.md`](lm_eval_capability_results.md)；对应机器可读清单为
 [`lm_eval_capability_results.json`](lm_eval_capability_results.json)。
+RWKV 错题、跨任务错误模式、LongBench 协议风险与复测门槛见
+[`lm_eval_bad_case_analysis.md`](lm_eval_bad_case_analysis.md)。
 
 用户清单过滤后的原生 lm-eval 增量执行状态与 CMMLU 完整对标结果见
 [`lm_eval_catalog_delta_results.md`](lm_eval_catalog_delta_results.md)；对应机器可读合同为

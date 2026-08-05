@@ -26,3 +26,7 @@ batch_size = 64
 eot_token_id = 0
 max_gen_toks = 2048
 log_samples = true
+
+# Preserve the native lm-eval protocol for the published comparison baseline.
+[prompt]
+profile = "none"

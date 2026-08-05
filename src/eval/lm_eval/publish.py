@@ -14,6 +14,8 @@ from helicopter_lighteval.publish import (
     content_digest,
 )
 
+from .config import PromptConfig
+
 LM_EVAL_VERSION = "0.4.12"
 
 
@@ -124,6 +126,11 @@ def expected_tasks(config, metadata: list[dict[str, object]]):
 def campaign_payload(config, metadata, expected):
     resolved = list(dict.fromkeys(str(task["selector"]) for task in metadata))
     skipped = [selector for selector in config.tasks if selector not in resolved]
+    prompt = getattr(config, "prompt", PromptConfig())
+    generation_kwargs = dict(getattr(config, "generation_kwargs", {}))
+    benchmark_configs = [
+        benchmark.public() for benchmark in getattr(config, "benchmarks", ())
+    ]
     return {
         "schema_version": "lm-eval-campaign-v1",
         "run_key": hashlib.sha256(uuid.uuid4().bytes).hexdigest(),
@@ -143,6 +150,9 @@ def campaign_payload(config, metadata, expected):
                 "eot_token_id": config.eot_token_id,
                 "max_gen_toks": config.max_gen_toks,
                 "limit": config.limit,
+                "prompt": prompt.public(),
+                "generation_kwargs": generation_kwargs,
+                "benchmark_configs": benchmark_configs,
             }
         ),
         "registry_digest": content_digest(metadata),
@@ -153,6 +163,9 @@ def campaign_payload(config, metadata, expected):
                 "eot_token_id": config.eot_token_id,
                 "max_gen_toks": config.max_gen_toks,
                 "limit": config.limit,
+                "prompt": prompt.public(),
+                "generation_kwargs": generation_kwargs,
+                "benchmark_configs": benchmark_configs,
             }
         ),
         "evaluator": {"name": "lm-eval", "version": LM_EVAL_VERSION},
@@ -174,6 +187,32 @@ def publish_unit(*, output_dir: Path, campaign_id: str, expected, unit, config, 
         raise PublicationError("lm-eval publication requires results and samples")
     for task in expected:
         task_name = str(task["task_name"])
+        benchmark_lookup = getattr(config, "benchmark_for_selector", None)
+        benchmark = (
+            benchmark_lookup(str(task["selector"]))
+            if callable(benchmark_lookup)
+            else None
+        )
+        prompt = (
+            benchmark.prompt
+            if benchmark is not None
+            else getattr(config, "prompt", PromptConfig())
+        )
+        generation_kwargs = dict(
+            benchmark.generation_kwargs
+            if benchmark is not None
+            else getattr(config, "generation_kwargs", {})
+        )
+        batch_size = (
+            benchmark.batch_size
+            if benchmark is not None
+            else config.batch_size
+        )
+        max_gen_toks = (
+            benchmark.max_gen_toks
+            if benchmark is not None
+            else config.max_gen_toks
+        )
         aggregates = _aggregates(aggregates_by_task.get(task_name))
         rows = samples_by_task.get(task_name)
         if not aggregates or not isinstance(rows, list) or not rows:
@@ -219,7 +258,7 @@ def publish_unit(*, output_dir: Path, campaign_id: str, expected, unit, config, 
                 "weight_sha256": unit.weight_sha256,
                 "weight_display_name": unit.weight.name,
                 "wkv_mode": unit.wkv_mode,
-                "prompt_template": "none",
+                "prompt_template": prompt.profile,
                 "gemm_policy": (
                     "fp16-accumulation"
                     if unit.wkv_mode == "fp16"
@@ -237,10 +276,12 @@ def publish_unit(*, output_dir: Path, campaign_id: str, expected, unit, config, 
             },
             "sampling_config": {
                 "output_type": task_config.get("output_type"),
-                "batch_size": config.batch_size,
+                "batch_size": batch_size,
                 "eot_token_id": config.eot_token_id,
-                "default_max_gen_toks": config.max_gen_toks,
+                "default_max_gen_toks": max_gen_toks,
                 "generation_kwargs": task_config.get("generation_kwargs", {}),
+                "generation_kwargs_override": generation_kwargs,
+                "prompt": prompt.public(),
             },
             "primary_metric": primary,
             "aggregates": aggregates,

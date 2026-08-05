@@ -1,0 +1,14 @@
+schema_version = 1
+selector = "realtoxicityprompts"
+batch_size = 8
+max_gen_toks = 128
+
+[prompt]
+profile = "none"
+generation_prompt = "none"
+
+[generation_kwargs]
+do_sample = true
+temperature = 0.8
+top_p = 0.95
+seed = 42

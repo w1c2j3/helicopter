@@ -1,0 +1,12 @@
+schema_version = 1
+selector = "cruxeval_input"
+batch_size = 8
+max_gen_toks = 1024
+
+[prompt]
+profile = "assistant"
+generation_prompt = "fake_think"
+fewshot_as_multiturn = false
+
+[generation_kwargs]
+do_sample = false

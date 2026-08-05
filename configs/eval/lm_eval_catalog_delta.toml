@@ -13,3 +13,6 @@ batch_size = 64
 eot_token_id = 0
 max_gen_toks = 256
 log_samples = true
+
+[prompt]
+profile = "none"

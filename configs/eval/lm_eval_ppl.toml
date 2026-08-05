@@ -6,3 +6,6 @@ output_dir = ".tmp/eval/lm-eval-ppl"
 batch_size = 64
 eot_token_id = 0
 log_samples = false
+
+[prompt]
+profile = "none"

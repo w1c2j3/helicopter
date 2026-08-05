@@ -8,6 +8,8 @@ from lm_eval.api.model import TemplateLM
 
 from helicopter_lighteval.http_pool import PoolError, PromptLogprobs, VLLMHttpPool
 
+from .prompts import get_prompt_profile, render_prompt
+
 
 class RWKVVLLMHttpLM(TemplateLM):
     def __init__(
@@ -17,6 +19,8 @@ class RWKVVLLMHttpLM(TemplateLM):
         eot_token_id: int,
         batch_size: int,
         max_gen_toks: int = 256,
+        prompt_profile: str = "none",
+        generation_prompt: str = "none",
     ) -> None:
         super().__init__()
         self.pool = pool
@@ -24,6 +28,8 @@ class RWKVVLLMHttpLM(TemplateLM):
         self._batch_size = batch_size
         self._max_length = pool.manifest.max_model_len - 2
         self._max_gen_toks = max_gen_toks
+        self._prompt_profile = get_prompt_profile(prompt_profile)
+        self._generation_prompt = generation_prompt
 
     @property
     def eot_token_id(self) -> int:
@@ -43,7 +49,27 @@ class RWKVVLLMHttpLM(TemplateLM):
 
     @property
     def tokenizer_name(self) -> str:
-        return f"{self.pool.model_id}:remote-rwkv-tokenizer"
+        return (
+            f"{self.pool.model_id}:remote-rwkv-tokenizer:"
+            f"{self._prompt_profile.name}:{self._generation_prompt}"
+        )
+
+    def chat_template(self, chat_template: bool | str = False) -> str | None:
+        if not chat_template:
+            return None
+        return f"rwkv:{self._prompt_profile.name}:{self._generation_prompt}"
+
+    def apply_chat_template(
+        self,
+        chat_history: list[dict[str, str]],
+        add_generation_prompt: bool = True,
+    ) -> str:
+        return render_prompt(
+            self._prompt_profile,
+            chat_history,
+            add_generation_prompt=add_generation_prompt,
+            generation_prompt=self._generation_prompt,
+        )
 
     def tok_encode(
         self,
@@ -113,6 +139,11 @@ class RWKVVLLMHttpLM(TemplateLM):
             "top_k",
             "top_p",
             "until",
+            "presence_penalty",
+            "frequency_penalty",
+            "repetition_penalty",
+            "penalty_decay",
+            "ignore_eos",
         }
         unknown = sorted(set(raw_kwargs) - supported)
         if unknown:
@@ -159,19 +190,32 @@ class RWKVVLLMHttpLM(TemplateLM):
         if not isinstance(temperature, (int, float)) or isinstance(temperature, bool):
             raise ValueError("temperature must be numeric")
 
+        stops = list(until)
+        if self._prompt_profile.stop is not None:
+            stops = list(dict.fromkeys([self._prompt_profile.stop, *stops]))
         parameters: dict[str, object] = {
             "max_tokens": max_tokens,
-            "stop": list(until),
+            "stop": stops,
             "temperature": float(temperature),
         }
-        for name in ("top_p", "top_k", "min_p", "seed"):
+        for name in (
+            "top_p",
+            "top_k",
+            "min_p",
+            "seed",
+            "presence_penalty",
+            "frequency_penalty",
+            "repetition_penalty",
+            "penalty_decay",
+            "ignore_eos",
+        ):
             if name in raw_kwargs:
                 parameters[name] = raw_kwargs[name]
         if not do_sample:
             # RWKV's rapid sampler rejects temperature=0. Top-k 1 is the same
             # argmax decode while remaining valid for both rapid and native paths.
             parameters.update(temperature=1.0, top_k=1)
-        return parameters, until, max_tokens
+        return parameters, tuple(stops), max_tokens
 
     @staticmethod
     def _truncate_at_stop(text: str, until: Sequence[str]) -> str:

@@ -300,8 +300,8 @@ class TaskPublication(Contract):
         is_lm_eval = self.schema_version == "lm-eval-task-v1"
         if is_lm_eval != (self.model.evaluator == "lm-eval"):
             raise ValueError("task schema and model evaluator differ")
-        if is_lm_eval != (self.model.prompt_template == "none"):
-            raise ValueError("task schema and prompt template differ")
+        if not is_lm_eval and self.model.prompt_template == "none":
+            raise ValueError("LightEval task publication requires a prompt template")
         if self.artifact.evaluator_name != self.model.evaluator:
             raise ValueError("artifact and model evaluators differ")
         if not self.aggregates or any(

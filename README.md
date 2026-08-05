@@ -136,15 +136,13 @@ The lm-eval-harness backend uses the already running RWKV-vLLM HTTP pool and
 supports rolling perplexity, choice scoring, and text generation:
 
 ```bash
-helicopter eval \
-  --evaluator lm-eval \
-  --config configs/eval/lm_eval.toml \
-  --dry-run
-
-helicopter eval \
-  --evaluator lm-eval \
-  --config configs/eval/lm_eval.toml
+./scripts/run_lm_eval.sh
 ```
+
+Pass another TOML path as the first argument, or add `--dry-run` for a
+configuration and service preflight. The wrapper reuses a healthy local server,
+or starts, waits for, and cleans up RWKV-vLLM automatically. Explicit manifests
+remain available for remote and production pools.
 
 This path runs in `.venv-lm-eval`; task names, groups, tags, and glob selectors
 are resolved by lm-eval itself. The smaller `configs/eval/lm_eval_ppl.toml`

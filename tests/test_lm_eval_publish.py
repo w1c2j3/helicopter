@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from helicopter_lm_eval.config import PromptConfig
 from helicopter_lm_eval.publish import publish_unit, task_metadata
 
 
@@ -105,7 +106,30 @@ def test_publish_unit_preserves_native_metrics_and_samples(tmp_path, monkeypatch
         lambda name: "2.11.0" if name == "torch" else "fixture",
     )
     client = RecordingClient()
-    config = SimpleNamespace(batch_size=4, eot_token_id=0, max_gen_toks=256)
+    benchmark = SimpleNamespace(
+        batch_size=2,
+        max_gen_toks=512,
+        prompt=PromptConfig(
+            profile="assistant",
+            generation_prompt="open_think",
+            system_instruction="Show concise reasoning.",
+        ),
+        generation_kwargs={"do_sample": True, "temperature": 0.2},
+    )
+    config = SimpleNamespace(
+        batch_size=4,
+        eot_token_id=0,
+        max_gen_toks=256,
+        prompt=PromptConfig(
+            profile="bot",
+            generation_prompt="fake_think",
+            system_instruction="Answer directly.",
+        ),
+        generation_kwargs={"do_sample": False},
+        benchmark_for_selector=lambda selector: (
+            benchmark if selector == "gsm8k" else None
+        ),
+    )
 
     assert publish_unit(
         output_dir=tmp_path,
@@ -123,8 +147,16 @@ def test_publish_unit_preserves_native_metrics_and_samples(tmp_path, monkeypatch
         "name": "lm-eval",
         "version": "0.4.12",
     }
-    assert payload["model"]["prompt_template"] == "none"
-    assert payload["sampling_config"]["batch_size"] == 4
+    assert payload["model"]["prompt_template"] == "assistant"
+    assert payload["sampling_config"]["batch_size"] == 2
+    assert payload["sampling_config"]["default_max_gen_toks"] == 512
+    assert payload["sampling_config"]["prompt"]["generation_prompt"] == (
+        "open_think"
+    )
+    assert payload["sampling_config"]["generation_kwargs_override"] == {
+        "do_sample": True,
+        "temperature": 0.2,
+    }
     assert payload["details"][0]["document_index"] == 0
     assert payload["details"][0]["model_response"]["filtered_resps"] == ["2"]
 

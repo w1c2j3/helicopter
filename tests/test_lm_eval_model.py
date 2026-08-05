@@ -171,3 +171,115 @@ def test_generate_until_supports_sampling_and_rejects_unknown_kwargs() -> None:
     assert model.generate_until([sampled]) == ["answer-120 STOP ignored"]
     with pytest.raises(ValueError, match="unsupported lm-eval generation kwargs"):
         model.generate_until([SimpleNamespace(args=("x", {"typical_p": 0.9}))])
+
+
+def test_rwkv_prompt_profile_renders_multiturn_and_adds_required_stop() -> None:
+    class GenerationPool(Pool):
+        manifest = SimpleNamespace(max_model_len=128)
+
+        def __init__(self) -> None:
+            self.parameters: dict[str, object] | None = None
+
+        def generate_text(self, prompt_token_ids, parameters):
+            self.parameters = dict(parameters)
+            return super().generate_text(prompt_token_ids, parameters)
+
+    pool = GenerationPool()
+    model = RWKVVLLMHttpLM(
+        pool=pool,
+        eot_token_id=0,
+        batch_size=1,
+        max_gen_toks=8,
+        prompt_profile="bot",
+        generation_prompt="fake_think",
+    )
+
+    prompt = model.apply_chat_template(
+        [
+            {"role": "system", "content": "Be precise."},
+            {"role": "user", "content": "1+1?"},
+            {"role": "assistant", "content": "2"},
+            {"role": "user", "content": "2+2?"},
+        ]
+    )
+
+    assert prompt == (
+        "System✿Be precise.✿\n"
+        "User✿1+1?✿\n"
+        "Bot✿2✿\n"
+        "User✿2+2?✿\n"
+        "Bot✿<think></think"
+    )
+    model.generate_until(
+        [SimpleNamespace(args=(prompt, {"until": ["STOP"], "do_sample": True}))]
+    )
+    assert pool.parameters is not None
+    assert pool.parameters["stop"] == ["✿", "STOP"]
+    assert "bot:fake_think" in model.tokenizer_name
+
+
+@pytest.mark.parametrize(
+    ("profile", "expected"),
+    [
+        (
+            "assistant",
+            "System: concise\n\nUser: 1+1?\n\nAssistant: <think",
+        ),
+        (
+            "function_calling",
+            "### System\nconcise\n### User\n1+1?\n### Assistant\n<think",
+        ),
+    ],
+)
+def test_rwkv_prompt_profiles_match_native_renderer(
+    profile: str,
+    expected: str,
+) -> None:
+    model = RWKVVLLMHttpLM(
+        pool=Pool(),
+        eot_token_id=0,
+        batch_size=1,
+        prompt_profile=profile,
+        generation_prompt="open_think",
+    )
+
+    assert model.apply_chat_template(
+        [
+            {"role": "system", "content": "concise"},
+            {"role": "user", "content": "1+1?"},
+        ]
+    ) == expected
+
+
+def test_rwkv_profile_stop_is_applied_to_local_postprocessing() -> None:
+    class GenerationPool(Pool):
+        manifest = SimpleNamespace(max_model_len=128)
+
+        def __init__(self) -> None:
+            self.parameters: dict[str, object] | None = None
+
+        def generate_text(self, prompt_token_ids, parameters):
+            self.parameters = dict(parameters)
+            return TextCompletion(
+                text="answer✿next turn",
+                prompt_token_ids=tuple(prompt_token_ids),
+                output_token_ids=(20, 21),
+                finish_reason="stop",
+                stop_reason="✿",
+            )
+
+    pool = GenerationPool()
+    model = RWKVVLLMHttpLM(
+        pool=pool,
+        eot_token_id=0,
+        batch_size=1,
+        max_gen_toks=8,
+        prompt_profile="bot",
+        generation_prompt="open_think",
+    )
+
+    response = model.generate_until([SimpleNamespace(args=("question", {}))])
+
+    assert response == ["answer"]
+    assert pool.parameters is not None
+    assert pool.parameters["stop"] == ["✿"]

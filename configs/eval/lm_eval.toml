@@ -2,16 +2,74 @@ schema_version = 1
 backend = "vllm_http"
 
 tasks = [
-  "arc_easy",
-  "hellaswag",
-  "mmlu",
-  "truthfulqa_mc2",
-  "gsm8k",
-  "ifeval",
   "wikitext",
+  "pile_10k",
+  "paloma",
+  "lambada_openai",
+  "blimp",
+  "race",
+  "wmt14-en-fr",
+  "cmmlu",
+  "drop",
+  "leaderboard_musr",
+  "logiqa2",
+  "gsm_plus",
+  "cruxeval_input",
+  "cruxeval_output",
+  "ruler",
+  "babilong",
+  "longbench2",
+  "infinitebench",
+  "flores",
+  "belebele",
+  "mgsm_cot_native",
+  "xquad",
+  "xnli",
+  "xcopa",
+  "wmdp",
+  "bbq",
+  "toxigen",
+  "realtoxicityprompts",
 ]
-output_dir = ".tmp/eval/lm-eval"
-batch_size = 64
+benchmark_configs = [
+  "lm_eval_benchmarks/wikitext.toml",
+  "lm_eval_benchmarks/pile_10k.toml",
+  "lm_eval_benchmarks/paloma.toml",
+  "lm_eval_benchmarks/lambada_openai.toml",
+  "lm_eval_benchmarks/blimp.toml",
+  "lm_eval_benchmarks/race.toml",
+  "lm_eval_benchmarks/wmt14_en_fr.toml",
+  "lm_eval_benchmarks/cmmlu.toml",
+  "lm_eval_benchmarks/drop.toml",
+  "lm_eval_benchmarks/leaderboard_musr.toml",
+  "lm_eval_benchmarks/logiqa2.toml",
+  "lm_eval_benchmarks/gsm_plus.toml",
+  "lm_eval_benchmarks/cruxeval_input.toml",
+  "lm_eval_benchmarks/cruxeval_output.toml",
+  "lm_eval_benchmarks/ruler.toml",
+  "lm_eval_benchmarks/babilong.toml",
+  "lm_eval_benchmarks/longbench2.toml",
+  "lm_eval_benchmarks/infinitebench.toml",
+  "lm_eval_benchmarks/flores.toml",
+  "lm_eval_benchmarks/belebele.toml",
+  "lm_eval_benchmarks/mgsm_cot_native.toml",
+  "lm_eval_benchmarks/xquad.toml",
+  "lm_eval_benchmarks/xnli.toml",
+  "lm_eval_benchmarks/xcopa.toml",
+  "lm_eval_benchmarks/wmdp.toml",
+  "lm_eval_benchmarks/bbq.toml",
+  "lm_eval_benchmarks/toxigen.toml",
+  "lm_eval_benchmarks/realtoxicityprompts.toml",
+]
+output_dir = ".tmp/eval/lm-eval-community"
+batch_size = 16
 eot_token_id = 0
-max_gen_toks = 2048
-log_samples = false
+max_gen_toks = 512
+log_samples = true
+
+[prompt]
+profile = "none"
+generation_prompt = "none"
+
+[generation_kwargs]
+do_sample = false

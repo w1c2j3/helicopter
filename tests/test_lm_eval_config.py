@@ -72,7 +72,185 @@ def test_config_loads_ppl_settings_and_manifest(tmp_path: Path) -> None:
     assert config.eot_token_id == 0
     assert config.max_gen_toks == 8
     assert config.limit is None
+    assert config.log_samples is False
     assert config.manifest.global_step == 9
+
+
+def test_config_logs_samples_by_default(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    config_path = _config(tmp_path)
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace("log_samples = false\n", ""),
+        encoding="utf-8",
+    )
+
+    config = LMEvalConfig.read(
+        config_path,
+        {"HELICOPTER_VLLM_POOL_MANIFEST": str(manifest)},
+    )
+
+    assert config.log_samples is True
+
+
+def test_config_loads_rwkv_prompt_generation_and_custom_tasks(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path, max_model_len=64)
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    config_path = _config(
+        tmp_path,
+        extra="""
+task_include_paths = ["tasks"]
+
+[prompt]
+profile = "bot"
+generation_prompt = "fake_think"
+system_instruction = "Follow the requested answer format."
+num_fewshot = 2
+fewshot_as_multiturn = false
+
+[generation_kwargs]
+do_sample = true
+temperature = 0.8
+top_p = 0.9
+presence_penalty = 1.0
+penalty_decay = 0.988
+""".strip(),
+    )
+
+    config = LMEvalConfig.read(
+        config_path,
+        {"HELICOPTER_VLLM_POOL_MANIFEST": str(manifest)},
+    )
+
+    assert config.prompt.profile == "bot"
+    assert config.prompt.generation_prompt == "fake_think"
+    assert config.prompt.system_instruction == "Follow the requested answer format."
+    assert config.prompt.num_fewshot == 2
+    assert config.prompt.fewshot_as_multiturn is False
+    assert config.prompt.stop == "✿"
+    assert config.generation_kwargs == {
+        "do_sample": True,
+        "temperature": 0.8,
+        "top_p": 0.9,
+        "presence_penalty": 1.0,
+        "penalty_decay": 0.988,
+    }
+    assert config.task_include_paths == (tasks.resolve(),)
+
+
+def test_config_loads_per_benchmark_prompt_and_generation_overrides(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path, max_model_len=256)
+    benchmark_dir = tmp_path / "benchmarks"
+    benchmark_dir.mkdir()
+    wikitext = benchmark_dir / "wikitext.toml"
+    wikitext.write_text(
+        """
+schema_version = 1
+selector = "wikitext"
+batch_size = 8
+max_gen_toks = 32
+limit = 3
+
+[prompt]
+generation_prompt = "fake_think"
+system_instruction = "Return only the requested answer."
+num_fewshot = 1
+
+[generation_kwargs]
+temperature = 0.2
+top_p = 0.8
+""".strip(),
+        encoding="utf-8",
+    )
+    config_path = _config(
+        tmp_path,
+        max_gen_toks=64,
+        extra="""
+benchmark_configs = ["benchmarks/wikitext.toml"]
+
+[prompt]
+profile = "bot"
+generation_prompt = "open_think"
+fewshot_as_multiturn = false
+
+[generation_kwargs]
+do_sample = false
+temperature = 0.0
+""".strip(),
+    )
+
+    config = LMEvalConfig.read(
+        config_path,
+        {"HELICOPTER_VLLM_POOL_MANIFEST": str(manifest)},
+    )
+
+    assert len(config.benchmarks) == 1
+    benchmark = config.benchmarks[0]
+    assert benchmark.selector == "wikitext"
+    assert benchmark.path == wikitext.resolve()
+    assert benchmark.batch_size == 8
+    assert benchmark.max_gen_toks == 32
+    assert benchmark.limit == 3
+    assert benchmark.prompt.profile == "bot"
+    assert benchmark.prompt.generation_prompt == "fake_think"
+    assert benchmark.prompt.system_instruction == "Return only the requested answer."
+    assert benchmark.prompt.num_fewshot == 1
+    assert benchmark.prompt.fewshot_as_multiturn is False
+    assert benchmark.generation_kwargs == {
+        "do_sample": False,
+        "temperature": 0.2,
+        "top_p": 0.8,
+    }
+    assert config.benchmark_for_selector("wikitext") == benchmark
+
+
+def test_config_requires_benchmark_files_to_match_tasks_exactly(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path, max_model_len=64)
+    benchmark = tmp_path / "race.toml"
+    benchmark.write_text(
+        'schema_version = 1\nselector = "race"\n', encoding="utf-8"
+    )
+
+    with pytest.raises(
+        ConfigError,
+        match="benchmark configs must match tasks exactly: missing wikitext; unexpected race",
+    ):
+        LMEvalConfig.read(
+            _config(tmp_path, extra='benchmark_configs = ["race.toml"]'),
+            {"HELICOPTER_VLLM_POOL_MANIFEST": str(manifest)},
+        )
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ('[prompt]\nprofile = "unknown"', "prompt.profile must be one of"),
+        (
+            '[prompt]\nprofile = "none"\ngeneration_prompt = "open_think"',
+            "generation_prompt requires an enabled",
+        ),
+        (
+            '[generation_kwargs]\nnum_beams = 2',
+            "generation_kwargs.num_beams must be 1",
+        ),
+        (
+            '[generation_kwargs]\ntypical_p = 0.9',
+            "unknown generation_kwargs fields",
+        ),
+    ],
+)
+def test_config_rejects_invalid_prompt_and_generation_settings(
+    tmp_path: Path, extra: str, message: str
+) -> None:
+    manifest = _manifest(tmp_path, max_model_len=64)
+
+    with pytest.raises(ConfigError, match=message):
+        LMEvalConfig.read(
+            _config(tmp_path, extra=extra),
+            {"HELICOPTER_VLLM_POOL_MANIFEST": str(manifest)},
+        )
 
 
 @pytest.mark.parametrize(

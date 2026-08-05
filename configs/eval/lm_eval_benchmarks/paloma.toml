@@ -1,0 +1,11 @@
+schema_version = 1
+selector = "paloma"
+batch_size = 8
+max_gen_toks = 64
+
+[prompt]
+profile = "none"
+generation_prompt = "none"
+
+[generation_kwargs]
+do_sample = false
