@@ -1,0 +1,18 @@
+schema_version = 1
+backend = "vllm_http"
+
+tasks = ["paloma"]
+benchmark_configs = ["lm_eval_benchmarks/paloma.toml"]
+output_dir = ".tmp/eval/lm-eval-paloma-2"
+batch_size = 8
+eot_token_id = 0
+max_gen_toks = 64
+limit = 2
+log_samples = true
+
+[prompt]
+profile = "none"
+generation_prompt = "none"
+
+[generation_kwargs]
+do_sample = false

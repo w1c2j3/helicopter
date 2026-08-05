@@ -178,6 +178,30 @@ Qwen3.5-0.8B/2B 的官方模型卡没有公开同名、同 lm-eval 协议的 DRO
 上游 reliability guard 明确不是安全沙箱，所以未把它混入本轮普通评测，后续需要在独立
 OS/container 沙箱中运行。
 
+## 语言建模与语法 smoke
+
+`configs/eval/lm_eval_language_modeling_smoke.toml` 固定 `limit = 10` 运行 WikiText、
+Pile-10k、LAMBADA OpenAI 和 BLiMP。困惑度与 likelihood 任务必须保留原生 causal
+prompt；套 chat template 会改变语料条件概率，不属于可比较的 prompt 调优。
+
+| Benchmark | 样本 | 结果 |
+| --- | ---: | ---: |
+| WikiText | 10 文档 | word PPL 11.756，byte PPL 1.599，BPB 0.678 |
+| Pile-10k | 10 文档 | word PPL 26.785，byte PPL 1.666，BPB 0.737 |
+| LAMBADA OpenAI | 10 题 | acc 50.0%，PPL 5.356 |
+| BLiMP | 67 leaf 各 10 题，共 670 题 | acc 82.09% |
+
+这些都是前缀抽样，尤其 10 文档 PPL 会强烈受文档长度和领域影响，不能替代完整 split。
+BLiMP 最低的 leaf 包括 matrix-question NPI licensor 20%、existential-there
+quantifiers-2 30%、wh-vs-that-with-gap 30% 和 principle-A reconstruction 40%；相对地，
+多个名词一致性、被动语态和照应一致性 leaf 在该十题切片为 100%。这里保留 leaf 级
+样本和错例，不把 82.09% 单一聚合值解释为所有语法现象都稳定。
+
+Paloma 的 16 个语料 leaf 另用 `configs/eval/lm_eval_paloma_smoke.toml` 尝试加载，但
+官方 `allenai/paloma` 当前为 gated dataset，环境没有授权，因而明确标记为 blocked；
+没有绕过门禁或用其他困惑度语料替代。Qwen3.5-0.8B/2B 官方模型卡也没有这些同名、
+同 lm-eval 协议结果，本轮不构造伪基线。
+
 ## 最终配置选择
 
 - GSM Plus：保留 `assistant` + `fake_think`，greedy，将上限从 2048 降为 512。
@@ -186,5 +210,6 @@ OS/container 沙箱中运行。
 - Belebele、XNLI、XCOPA：保留原生 base prompt；XNLI/XCOPA 仅修复到官方 namespace，
   不改变上游任务协议。
 - DROP、XQuAD、MGSM：三者均切回原生 base prompt；XQuAD 仅修复到官方 namespace。
+- WikiText、Pile-10k、LAMBADA、BLiMP：固定原生 base prompt；Paloma 保持 gated blocked。
 - 所有运行继续开启 `log_samples`；完整发布必须移除 smoke `limit` 并在同一 task
   version、split、上下文和 prompt 协议下比较。

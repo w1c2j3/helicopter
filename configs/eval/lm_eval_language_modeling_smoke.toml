@@ -1,0 +1,23 @@
+schema_version = 1
+backend = "vllm_http"
+
+tasks = ["wikitext", "pile_10k", "lambada_openai", "blimp"]
+benchmark_configs = [
+  "lm_eval_benchmarks/wikitext.toml",
+  "lm_eval_benchmarks/pile_10k.toml",
+  "lm_eval_benchmarks/lambada_openai.toml",
+  "lm_eval_benchmarks/blimp.toml",
+]
+output_dir = ".tmp/eval/lm-eval-language-modeling-10"
+batch_size = 16
+eot_token_id = 0
+max_gen_toks = 64
+limit = 10
+log_samples = true
+
+[prompt]
+profile = "none"
+generation_prompt = "none"
+
+[generation_kwargs]
+do_sample = false
