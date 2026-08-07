@@ -5,8 +5,6 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import {
   BENCHMARK_CATALOG,
-  BENCHMARK_DOMAIN_LABELS,
-  BENCHMARK_DOMAIN_ORDER,
   benchmarkMatches,
 } from "../lib/benchmarkCatalog";
 import type { BenchmarkCatalogItem } from "../lib/benchmarkCatalog";
@@ -20,13 +18,16 @@ import type {
   MatrixRow,
 } from "../lib/dtos/api/leaderboard";
 
-type Generation = "previous" | "current";
+type Architecture = `g1${string}`;
+type EvalMode = "CoT" | "NoCoT";
 type AnswerCategory = "correct" | "incorrect" | "unanswered";
 
 type ParameterGroup = {
   param: string;
-  current: MatrixRow;
-  previous: MatrixRow | null;
+  models: Array<{
+    architecture: Architecture;
+    row: MatrixRow;
+  }>;
 };
 
 type DisplayBenchmark = {
@@ -35,19 +36,22 @@ type DisplayBenchmark = {
   column: MatrixColumn;
   source: MatrixDomain | null;
   cellIndex: number;
+  evalMode: EvalMode;
   deferred?: string;
 };
 
 type ScoreSelection = {
   benchmark: DisplayBenchmark;
   group: ParameterGroup;
-  generation: Generation;
+  architecture: Architecture;
   model: string;
   cell: MatrixCell;
 };
 
 type AnswerRecord = {
+  key: string;
   id: string;
+  sampleIndex: number;
   repeatId: number;
   passIndex: number;
   groundTruth: string;
@@ -55,10 +59,8 @@ type AnswerRecord = {
   category: AnswerCategory;
   prompt: string;
   completion: string;
-  generatedTokens: number;
-  latencyMs: number;
   failReason: string;
-  source: EvalRecord | null;
+  source: EvalRecord;
 };
 
 const EXPERIMENT_TABS = [
@@ -70,12 +72,12 @@ const EXPERIMENT_TABS = [
 ] as const;
 
 const DOMAIN_TABS = [
-  { key: "overview", label: "常规评估" },
+  { key: "all", label: "常规评估" },
   { key: "math", label: "数学" },
   { key: "knowledge", label: "知识" },
   { key: "instruction_following", label: "指令遵循" },
   { key: "coding", label: "编程" },
-  { key: "agent", label: "Agent" },
+  { key: "function_call", label: "FC" },
 ] as const;
 
 const OVERVIEW_BENCHMARKS = [
@@ -102,9 +104,15 @@ function parameterValue(param: string): number {
   return Number.parseFloat(param.replace(/[^\d.]/g, "")) || 0;
 }
 
+function modelArchitecture(model: string): Architecture | null {
+  const match = model.match(/-(g1[a-z])(?:-|_)/i);
+  const architecture = match?.[1]?.toLowerCase();
+  return architecture ? architecture as Architecture : null;
+}
+
 function modelGeneration(model: string): string {
-  const match = model.match(/-(g\d+[a-z]?)-/i);
-  return match?.[1]?.toUpperCase() ?? "RWKV";
+  const architecture = modelArchitecture(model);
+  return architecture ? architectureLabel(architecture) : "RWKV";
 }
 
 function groupsFromMatrix(matrix: LeaderboardMatrix): ParameterGroup[] {
@@ -121,7 +129,18 @@ function groupsFromMatrix(matrix: LeaderboardMatrix): ParameterGroup[] {
       const ordered = rows
         .slice()
         .sort((left, right) => generationTimestamp(right.model) - generationTimestamp(left.model));
-      return { param, current: ordered[0], previous: ordered[1] ?? null };
+      const architectures = new Map<Architecture, MatrixRow>();
+      ordered.forEach((row) => {
+        const architecture = modelArchitecture(row.model);
+        if (architecture && !architectures.has(architecture)) {
+          architectures.set(architecture, row);
+        }
+      });
+      const models = [...architectures.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([architecture, row]) => ({ architecture, row }))
+        .slice(-2);
+      return { param, models };
     })
     .sort((left, right) => parameterValue(left.param) - parameterValue(right.param));
 }
@@ -138,6 +157,7 @@ function displayBenchmarks(matrix: LeaderboardMatrix, domainKey: string): Displa
         column: source.columns[cellIndex],
         source,
         cellIndex,
+        evalMode: normalizedEvalMode(source.columns[cellIndex].eval_method) === "cot" ? "CoT" : "NoCoT",
       }];
     });
   }
@@ -149,6 +169,7 @@ function displayBenchmarks(matrix: LeaderboardMatrix, domainKey: string): Displa
     column,
     source,
     cellIndex,
+    evalMode: normalizedEvalMode(column.eval_method) === "cot" ? "CoT" : "NoCoT",
   }));
 }
 
@@ -156,41 +177,64 @@ function catalogBenchmarks(matrix: LeaderboardMatrix, domainKey: string): Displa
   const requested = domainKey === "all"
     ? BENCHMARK_CATALOG
     : BENCHMARK_CATALOG.filter((item) => item.domain === domainKey);
-  return requested.map((spec) => displayCatalogBenchmark(matrix, spec));
+  return requested.map((spec) => displayCatalogBenchmark(
+    matrix,
+    spec,
+    spec.domain === "math" || spec.key === "livecodebench" ? "CoT" : "NoCoT",
+  ));
 }
 
-function displayCatalogBenchmark(matrix: LeaderboardMatrix, spec: BenchmarkCatalogItem): DisplayBenchmark {
+function benchmarksForDomain(matrix: LeaderboardMatrix, domainKey: string): DisplayBenchmark[] {
+  return domainKey === "function_call"
+    ? displayBenchmarks(matrix, domainKey)
+    : catalogBenchmarks(matrix, domainKey);
+}
+
+function normalizedEvalMode(value: string): string {
+  return value.toLowerCase().replace(/[^a-z]/g, "");
+}
+
+function displayCatalogBenchmark(
+  matrix: LeaderboardMatrix,
+  spec: BenchmarkCatalogItem,
+  evalMode: EvalMode,
+): DisplayBenchmark {
   const preferred = matrix.domains.find((item) => item.key === spec.domain) ?? null;
   const sources = preferred
     ? [preferred, ...matrix.domains.filter((item) => item !== preferred)]
     : matrix.domains;
   for (const source of sources) {
     const cellIndex = source.columns.findIndex(
-      (column) => benchmarkMatches(spec, column.key) || benchmarkMatches(spec, column.label),
+      (column) => (
+        (benchmarkMatches(spec, column.key.split(":")[0]) || benchmarkMatches(spec, column.label))
+        && normalizedEvalMode(column.eval_method) === normalizedEvalMode(evalMode)
+      ),
     );
     if (cellIndex >= 0) {
       return {
-        key: spec.key,
+        key: `${spec.key}:${evalMode.toLowerCase()}`,
         label: spec.label,
         column: source.columns[cellIndex],
         source,
         cellIndex,
+        evalMode,
         deferred: spec.deferred,
       };
     }
   }
   return {
-    key: spec.key,
+    key: `${spec.key}:${evalMode.toLowerCase()}`,
     label: spec.label,
     column: {
-      key: spec.key,
+      key: `${spec.key}:${evalMode.toLowerCase()}`,
       label: spec.label,
       metric: null,
-      eval_method: "NoCoT",
+      eval_method: evalMode,
       num_samples: spec.samples,
     },
     source: null,
     cellIndex: -1,
+    evalMode,
     deferred: spec.deferred,
   };
 }
@@ -200,62 +244,13 @@ function cellForModel(benchmark: DisplayBenchmark, model: string): MatrixCell | 
   return benchmark.source.rows.find((row) => row.model === model)?.cells[benchmark.cellIndex] ?? null;
 }
 
-function deltaValue(current: MatrixCell | null, previous: MatrixCell | null): number | null {
-  if (current?.percent == null || previous?.percent == null) return null;
-  return current.percent - previous.percent;
-}
-
 function scoreText(value: number | null | undefined): string {
   return value == null ? "—" : `${value.toFixed(1)}%`;
 }
 
-function hashString(input: string): number {
-  let value = 2166136261;
-  for (let index = 0; index < input.length; index += 1) {
-    value ^= input.charCodeAt(index);
-    value = Math.imul(value, 16777619);
-  }
-  return Math.abs(value);
-}
-
-function makeMockAnswers(selection: ScoreSelection): AnswerRecord[] {
-  const seed = hashString(`${selection.model}:${selection.benchmark.key}`);
-  const isMath = /aime|math|gsm|minerva|olympiad/i.test(selection.benchmark.label);
-  const rows: AnswerRecord[] = [];
-  (["correct", "incorrect", "unanswered"] as AnswerCategory[]).forEach((category, categoryIndex) => {
-    for (let index = 0; index < 10; index += 1) {
-      const ordinal = categoryIndex * 10 + index + 1;
-      const truth = isMath
-        ? String(20 + ((seed + ordinal * 17) % 181))
-        : ["A", "B", "C", "D"][(seed + ordinal) % 4];
-      const answer = category === "correct"
-        ? truth
-        : category === "incorrect"
-          ? isMath
-            ? String(Number(truth) + 1 + (ordinal % 4))
-            : ["A", "B", "C", "D"][(seed + ordinal + 1) % 4]
-          : "—";
-      rows.push({
-        id: `${selection.benchmark.label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${String(ordinal).padStart(4, "0")}`,
-        repeatId: index % 4,
-        passIndex: 0,
-        groundTruth: truth,
-        modelAnswer: answer,
-        category,
-        prompt: isMath
-          ? `请完成 ${selection.benchmark.label} 题目 ${ordinal}，给出最终数值答案。`
-          : `请完成 ${selection.benchmark.label} 样本 ${ordinal}，只输出最终选项。`,
-        completion: category === "unanswered"
-          ? "<think>推理未能在最大生成长度内完成。</think>"
-          : `<think>已完成逐步推理并核验结果。</think>\n${answer}`,
-        generatedTokens: 168 + ((seed + ordinal * 23) % 240),
-        latencyMs: 1800 + ((seed + ordinal * 97) % 2400),
-        failReason: category === "correct" ? "" : category === "unanswered" ? "empty completion" : "answer mismatch",
-        source: null,
-      });
-    }
-  });
-  return rows;
+function deltaValue(current: MatrixCell | null, previous: MatrixCell | null): number | null {
+  if (current?.percent == null || previous?.percent == null) return null;
+  return current.percent - previous.percent;
 }
 
 function categoryForRecord(record: EvalRecord): AnswerCategory {
@@ -268,7 +263,9 @@ function categoryForRecord(record: EvalRecord): AnswerCategory {
 
 function answerFromRecord(record: EvalRecord, benchmark: DisplayBenchmark): AnswerRecord {
   return {
+    key: `${benchmark.key}:${record.sample_index}:${record.repeat_index}:${record.pass_index}`,
     id: `${benchmark.label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${String(record.sample_index).padStart(4, "0")}`,
+    sampleIndex: record.sample_index,
     repeatId: record.repeat_index,
     passIndex: record.pass_index,
     groundTruth: record.ref_answer || "—",
@@ -276,58 +273,40 @@ function answerFromRecord(record: EvalRecord, benchmark: DisplayBenchmark): Answ
     category: categoryForRecord(record),
     prompt: record.context_preview || "完整提示词请打开 detail 查看。",
     completion: record.answer || "—",
-    generatedTokens: 0,
-    latencyMs: 0,
     failReason: record.fail_reason || "",
     source: record,
   };
 }
 
-function truncationRate(selection: ScoreSelection): number {
-  return ((hashString(selection.model + selection.benchmark.key) % 12) + 2) / 10;
+function architectureLabel(architecture: Architecture): string {
+  return `G1${architecture.at(-1)}`;
 }
 
-function generationLabel(generation: Generation): string {
-  return generation === "current" ? "当代" : "前代";
-}
-
-export function ReferenceEvaluationBoard({ matrix }: { matrix: LeaderboardMatrix }) {
+export function ReferenceEvaluationBoard({
+  matrix,
+  initialDomain = "all",
+}: {
+  matrix: LeaderboardMatrix;
+  initialDomain?: string;
+}) {
   const groups = useMemo(() => groupsFromMatrix(matrix), [matrix]);
   const [experiment, setExperiment] = useState<(typeof EXPERIMENT_TABS)[number]>("前代 vs 当代");
-  const [domainKey, setDomainKey] = useState("all");
-  const benchmarks = useMemo(() => catalogBenchmarks(matrix, domainKey), [domainKey, matrix]);
+  const [domainKey, setDomainKey] = useState(
+    DOMAIN_TABS.some((item) => item.key === initialDomain) ? initialDomain : "all",
+  );
+  const benchmarks = useMemo(() => benchmarksForDomain(matrix, domainKey), [domainKey, matrix]);
   const domainTabs = useMemo(
-    () => [
-      { key: "all", label: "全部", count: BENCHMARK_CATALOG.length },
-      ...BENCHMARK_DOMAIN_ORDER.map((key) => ({
-        key,
-        label: BENCHMARK_DOMAIN_LABELS[key],
-        count: BENCHMARK_CATALOG.filter((item) => item.domain === key).length,
-      })),
-    ],
-    [],
+    () => DOMAIN_TABS.map((item) => ({
+      ...item,
+      count: item.key === "all"
+        ? BENCHMARK_CATALOG.length
+        : item.key === "function_call"
+          ? displayBenchmarks(matrix, item.key).length
+          : BENCHMARK_CATALOG.filter((benchmark) => benchmark.domain === item.key).length,
+    })),
+    [matrix],
   );
   const [selection, setSelection] = useState<ScoreSelection | null>(null);
-
-  useEffect(() => {
-    if (selection || !benchmarks.length || !groups.length) return;
-    const preferredGroup = groups.find((group) => group.param.toLowerCase() === "2.9b") ?? groups[0];
-    const model = preferredGroup.previous?.model ?? preferredGroup.current.model;
-    const orderedBenchmarks = benchmarks.slice().sort((left, right) => (
-      /aime25/i.test(left.label) ? -1 : /aime25/i.test(right.label) ? 1 : 0
-    ));
-    const preferredBenchmark = orderedBenchmarks.find((item) => cellForModel(item, model));
-    const cell = preferredBenchmark ? cellForModel(preferredBenchmark, model) : null;
-    if (preferredBenchmark && cell) {
-      setSelection({
-        benchmark: preferredBenchmark,
-        group: preferredGroup,
-        generation: preferredGroup.previous ? "previous" : "current",
-        model,
-        cell,
-      });
-    }
-  }, [benchmarks, groups, selection]);
 
   const changeDomain = (key: string) => {
     setDomainKey(key);
@@ -358,20 +337,10 @@ export function ReferenceEvaluationBoard({ matrix }: { matrix: LeaderboardMatrix
               key={item.key}
               onClick={() => changeDomain(item.key)}
             >
-              {item.label}（{item.count}）
+              {item.label}
             </button>
           ))}
         </nav>
-
-        <div className="comparison-heading">
-          <div>
-            <strong className="catalog-heading">
-              {domainTabs.find((item) => item.key === domainKey)?.label}（{benchmarks.length}） · {experiment}
-            </strong>
-            <strong>{domainKey === "overview" ? "常规评估" : DOMAIN_TABS.find((item) => item.key === domainKey)?.label} · {experiment}</strong>
-            <span><b>前代 → 当代</b> · 仅改变模型代际；prompt、precision、sampling 与输出边界保持一致。</span>
-          </div>
-        </div>
 
         <div className="reference-table-scroll">
           <table className="reference-score-table">
@@ -380,12 +349,13 @@ export function ReferenceEvaluationBoard({ matrix }: { matrix: LeaderboardMatrix
                 <th className="ref-benchmark" rowSpan={2}>benchmark</th>
                 <th className="ref-samples" rowSpan={2}>n_<br />samples</th>
                 <th className="ref-metric" rowSpan={2}>k_<br />metric</th>
-                {groups.map((group) => <th colSpan={3} key={group.param}>{group.param.toUpperCase()}</th>)}
+                {groups.map((group) => <th colSpan={group.models.length + 1} key={group.param}>{group.param.toUpperCase()}</th>)}
               </tr>
               <tr>
                 {groups.flatMap((group) => [
-                  <th key={`${group.param}:previous`}>前代</th>,
-                  <th key={`${group.param}:current`}>当代</th>,
+                  ...group.models.map(({ architecture }) => (
+                    <th key={`${group.param}:${architecture}`}>{architectureLabel(architecture)}</th>
+                  )),
                   <th className="ref-delta-head" key={`${group.param}:delta`}>delta</th>,
                 ])}
               </tr>
@@ -395,46 +365,39 @@ export function ReferenceEvaluationBoard({ matrix }: { matrix: LeaderboardMatrix
                 <tr className={`reference-row-tone tone-${benchmarkIndex % 4}`} key={benchmark.key}>
                   <td className="ref-benchmark">
                     {benchmark.label}
+                    <small className={`benchmark-mode ${benchmark.evalMode.toLowerCase()}`}>{benchmark.evalMode}</small>
                     {benchmark.deferred ? <small className="benchmark-deferred">（{benchmark.deferred}）</small> : null}
                   </td>
                   <td className="ref-samples">{benchmark.column.num_samples?.toLocaleString() ?? "—"}</td>
                   <td className="ref-metric">{benchmark.column.metric ?? "score"}</td>
                   {groups.flatMap((group) => {
-                    const previous = group.previous ? cellForModel(benchmark, group.previous.model) : null;
-                    const current = cellForModel(benchmark, group.current.model);
-                    const delta = deltaValue(current, previous);
+                    const scoreCells = group.models.map(({ row }) => cellForModel(benchmark, row.model));
+                    const delta = deltaValue(scoreCells.at(-1) ?? null, scoreCells.at(-2) ?? null);
                     return [
-                      <td key={`${benchmark.key}:${group.param}:previous`}>
-                        <CompactScore
-                          cell={previous}
-                          selected={selection?.benchmark.key === benchmark.key
-                            && selection.group.param === group.param
-                            && selection.generation === "previous"}
-                          onClick={previous && group.previous ? () => setSelection({
-                            benchmark,
-                            group,
-                            generation: "previous",
-                            model: group.previous!.model,
-                            cell: previous,
-                          }) : undefined}
-                        />
-                      </td>,
-                      <td key={`${benchmark.key}:${group.param}:current`}>
-                        <CompactScore
-                          cell={current}
-                          selected={selection?.benchmark.key === benchmark.key
-                            && selection.group.param === group.param
-                            && selection.generation === "current"}
-                          onClick={current ? () => setSelection({
-                            benchmark,
-                            group,
-                            generation: "current",
-                            model: group.current.model,
-                            cell: current,
-                          }) : undefined}
-                        />
-                      </td>,
-                      <td className={`ref-delta ${delta != null && delta > 0.05 ? "positive" : delta != null && delta < -0.05 ? "negative" : ""}`} key={`${benchmark.key}:${group.param}:delta`}>
+                      ...group.models.map(({ architecture, row }, modelIndex) => {
+                        const cell = scoreCells[modelIndex];
+                        return (
+                          <td key={`${benchmark.key}:${group.param}:${architecture}`}>
+                            <CompactScore
+                              cell={cell}
+                              selected={selection?.benchmark.key === benchmark.key
+                                && selection.group.param === group.param
+                                && selection.architecture === architecture}
+                              onClick={cell?.meta?.task_id != null ? () => setSelection({
+                                benchmark,
+                                group,
+                                architecture,
+                                model: row.model,
+                                cell,
+                              }) : undefined}
+                            />
+                          </td>
+                        );
+                      }),
+                      <td
+                        className={`ref-delta ${delta != null && delta > 0.05 ? "positive" : delta != null && delta < -0.05 ? "negative" : ""}`}
+                        key={`${benchmark.key}:${group.param}:delta`}
+                      >
                         {delta == null ? "—" : `${delta > 0 ? "+" : ""}${delta.toFixed(1)}%`}
                       </td>,
                     ];
@@ -450,7 +413,7 @@ export function ReferenceEvaluationBoard({ matrix }: { matrix: LeaderboardMatrix
         <AnswerDetails selection={selection} onClear={() => setSelection(null)} />
       ) : (
         <section className="reference-card selection-empty">
-          点击表格中的前代或当代分数，查看该模型的逐题作答详情。
+          点击表格中的实测分数，查看该架构模型的逐题作答详情。
         </section>
       )}
     </div>
@@ -474,12 +437,14 @@ function CompactScore({
   return (
     <button
       type="button"
-      className={`compact-score${selected ? " selected" : ""}${potential == null ? "" : " has-potential"}`}
+      className={`compact-score${selected ? " selected" : ""}${potential == null ? "" : " has-potential"}${onClick ? "" : " no-detail"}`}
       disabled={!onClick}
       onClick={onClick}
-      title={potential == null
-        ? `标准分 ${scoreText(standard)}`
-        : `标准分 ${scoreText(standard)}；潜力分 ${scoreText(potential)}`}
+      title={!onClick
+        ? `标准分 ${scoreText(standard)}；暂无逐题明细`
+        : potential == null
+          ? `标准分 ${scoreText(standard)}；点击查看逐题明细`
+          : `标准分 ${scoreText(standard)}；潜力分 ${scoreText(potential)}；点击查看逐题明细`}
     >
       <span>{standard.toFixed(1)}{potential == null ? "" : <small> ({potential.toFixed(1)})</small>}%</span>
     </button>
@@ -487,42 +452,32 @@ function CompactScore({
 }
 
 function AnswerDetails({ selection, onClear }: { selection: ScoreSelection; onClear: () => void }) {
-  const [category, setCategory] = useState<AnswerCategory>("correct");
+  const [category, setCategory] = useState<AnswerCategory>("incorrect");
   const [contextAnswer, setContextAnswer] = useState<AnswerRecord | null>(null);
   const [databaseRecords, setDatabaseRecords] = useState<EvalRecord[] | null>(null);
+  const [recordsHasMore, setRecordsHasMore] = useState(false);
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [recordsError, setRecordsError] = useState<string | null>(null);
   const taskId = selection.cell.meta?.task_id ?? null;
   const answers = useMemo(
-    () => databaseRecords === null
-      ? makeMockAnswers(selection)
-      : databaseRecords.map((record) => answerFromRecord(record, selection.benchmark)),
+    () => (databaseRecords ?? []).map((record) => answerFromRecord(record, selection.benchmark)),
     [databaseRecords, selection],
   );
   const visibleAnswers = answers.filter((answer) => answer.category === category);
-  const estimatedTotal = Math.max(
-    10,
-    Math.round((selection.cell.num_samples ?? selection.benchmark.column.num_samples ?? 100)
-      * (category === "correct"
-        ? (selection.cell.percent ?? 0) / 100
-        : category === "incorrect"
-          ? Math.max(0, 1 - (selection.cell.percent ?? 0) / 100) * 0.82
-          : 0.04)),
-  );
   const accuracy = selection.cell.percent ?? 0;
-  const truncation = truncationRate(selection);
   const metric = selection.cell.metric ?? selection.benchmark.column.metric ?? "score";
   const sampleCount = selection.cell.num_samples ?? selection.benchmark.column.num_samples ?? 0;
 
   useEffect(() => {
-    setCategory("correct");
+    setCategory("incorrect");
     setContextAnswer(null);
   }, [selection]);
 
   useEffect(() => {
     if (taskId === null) {
-      setDatabaseRecords(null);
-      setRecordsError(null);
+      setDatabaseRecords([]);
+      setRecordsHasMore(false);
+      setRecordsError("该分数没有关联数据库 task_id，无法读取逐题明细。");
       setRecordsLoading(false);
       return;
     }
@@ -532,7 +487,10 @@ function AnswerDetails({ selection, onClear }: { selection: ScoreSelection; onCl
     setRecordsError(null);
     api.evalRecords(taskId, false, 200, 0)
       .then((payload) => {
-        if (!cancelled) setDatabaseRecords(payload.records);
+        if (!cancelled) {
+          setDatabaseRecords(payload.records);
+          setRecordsHasMore(payload.has_more);
+        }
       })
       .catch((error: unknown) => {
         if (!cancelled) {
@@ -547,6 +505,22 @@ function AnswerDetails({ selection, onClear }: { selection: ScoreSelection; onCl
       cancelled = true;
     };
   }, [taskId]);
+
+  const loadMoreRecords = () => {
+    if (taskId === null || recordsLoading || !recordsHasMore) return;
+    const offset = databaseRecords?.length ?? 0;
+    setRecordsLoading(true);
+    setRecordsError(null);
+    api.evalRecords(taskId, false, 200, offset)
+      .then((payload) => {
+        setDatabaseRecords((current) => [...(current ?? []), ...payload.records]);
+        setRecordsHasMore(payload.has_more);
+      })
+      .catch((error: unknown) => {
+        setRecordsError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => setRecordsLoading(false));
+  };
 
   return (
     <>
@@ -563,31 +537,11 @@ function AnswerDetails({ selection, onClear }: { selection: ScoreSelection; onCl
           <span>{selection.benchmark.label}</span>
           <span>n={sampleCount}</span>
           <span>{metric}</span>
-          <span className="warning">截断率：{truncation.toFixed(1)}%</span>
           <span className="success">准确率：{accuracy.toFixed(1)}%</span>
           {selection.cell.potential_percent == null ? null : (
             <span className="potential-chip">潜力：{selection.cell.potential_percent.toFixed(1)}%</span>
           )}
-          <span className={taskId === null ? "warning" : "success"}>
-            {taskId === null ? "模拟明细" : `数据库 task_id=${taskId}`}
-          </span>
-        </div>
-
-        <div className="configuration-row">
-          <div className="configuration-card prompt-card">
-            <small>prompt_template</small>
-            <pre>User❉&#123;task.problem&#125;❉{"\n"}Bot❉&lt;think</pre>
-          </div>
-          <div className="configuration-card sampling-card">
-            <small>sampling_config</small>
-            <div>
-              <ConfigValue label="temperature" value="0.6" />
-              <ConfigValue label="top_p" value="0.95" />
-              <ConfigValue label="top_k" value="40" />
-              <ConfigValue label="max_tokens" value="32768" />
-              <ConfigValue label="seed" value="42" />
-            </div>
-          </div>
+          <span className="success">task_id={taskId}</span>
         </div>
 
         <nav className="answer-category-tabs" aria-label="作答结果分类">
@@ -603,14 +557,13 @@ function AnswerDetails({ selection, onClear }: { selection: ScoreSelection; onCl
           ))}
         </nav>
 
-        {recordsLoading ? <div className="spinner">正在读取数据库作答明细…</div> : null}
-        {recordsError ? <div className="error-bar">数据库明细加载失败：{recordsError}</div> : null}
+        {recordsLoading ? <div className="spinner">正在读取作答明细…</div> : null}
+        {recordsError ? <div className="error-bar">作答明细加载失败：{recordsError}</div> : null}
 
-        {taskId === null ? <p className="answer-sampling-note">
-          从该结果类别的 {estimatedTotal} 条记录中随机抽取 <strong>{visibleAnswers.length}</strong> 条
-        </p> : <p className="answer-sampling-note">
-          当前已读取 <strong>{answers.length}</strong> 条数据库记录，本类显示 <strong>{visibleAnswers.length}</strong> 条
-        </p>}
+        <p className="answer-sampling-note">
+          当前已读取 <strong>{answers.length}</strong> 条记录，本类显示 <strong>{visibleAnswers.length}</strong> 条
+          {recordsHasMore ? "；可继续加载后续记录" : "；已加载全部"}
+        </p>
 
         <div className="answer-table-wrap">
           <table className="answer-table">
@@ -618,6 +571,7 @@ function AnswerDetails({ selection, onClear }: { selection: ScoreSelection; onCl
               <tr>
                 <th>题目 ID</th>
                 <th>repeat_id</th>
+                <th>pass_index</th>
                 <th>ground_truth</th>
                 <th>模型作答（判分器提取）</th>
                 <th>is_passed</th>
@@ -626,9 +580,10 @@ function AnswerDetails({ selection, onClear }: { selection: ScoreSelection; onCl
             </thead>
             <tbody>
               {visibleAnswers.map((answer, index) => (
-                <tr className={`answer-tone-${index % 4}`} key={answer.id}>
+                <tr className={`answer-tone-${index % 4}`} key={answer.key}>
                   <td>{answer.id}</td>
                   <td>{answer.repeatId}</td>
+                  <td>{answer.passIndex}</td>
                   <td>{answer.groundTruth}</td>
                   <td>{answer.modelAnswer}</td>
                   <td>
@@ -640,19 +595,28 @@ function AnswerDetails({ selection, onClear }: { selection: ScoreSelection; onCl
                 </tr>
               ))}
               {!recordsLoading && visibleAnswers.length === 0 ? (
-                <tr><td colSpan={6} className="muted">该分类暂无记录。</td></tr>
+                <tr><td colSpan={7} className="muted">该分类暂无记录。</td></tr>
               ) : null}
             </tbody>
           </table>
         </div>
+        {taskId !== null && recordsHasMore ? (
+          <button
+            className="answer-load-more"
+            type="button"
+            disabled={recordsLoading}
+            onClick={loadMoreRecords}
+          >
+            {recordsLoading ? "加载中…" : "继续加载 200 条"}
+          </button>
+        ) : null}
       </section>
 
-      {contextAnswer ? (
+      {contextAnswer && taskId !== null ? (
         <FullContextModal
           answer={contextAnswer}
           selection={selection}
           accuracy={accuracy}
-          truncation={truncation}
           taskId={taskId}
           onClose={() => setContextAnswer(null)}
         />
@@ -661,46 +625,80 @@ function AnswerDetails({ selection, onClear }: { selection: ScoreSelection; onCl
   );
 }
 
-function ConfigValue({ label, value }: { label: string; value: string }) {
-  return (
-    <span>
-      <small>{label}</small>
-      <strong>{value}</strong>
-    </span>
-  );
+type ContextStage = {
+  prompt: string;
+  completion: string;
+  stopReason: string;
+};
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function readableValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return "";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function stagesFromContext(payload: EvalContextResponse | null): ContextStage[] {
+  const stages = payload?.context?.stages;
+  if (!Array.isArray(stages)) return [];
+  return stages.flatMap((value) => {
+    const stage = objectValue(value);
+    if (!stage) return [];
+    return [{
+      prompt: readableValue(stage.prompt),
+      completion: readableValue(stage.completion),
+      stopReason: readableValue(stage.stop_reason),
+    }];
+  });
+}
+
+function remainingStructuredContext(payload: EvalContextResponse | null): Record<string, unknown> | null {
+  if (!payload?.context) return null;
+  const entries = Object.entries(payload.context)
+    .filter(([key]) => key !== "stages" && key !== "sampling_config");
+  return entries.length ? Object.fromEntries(entries) : null;
 }
 
 function FullContextModal({
   answer,
   selection,
   accuracy,
-  truncation,
   taskId,
   onClose,
 }: {
   answer: AnswerRecord;
   selection: ScoreSelection;
   accuracy: number;
-  truncation: number;
-  taskId: number | null;
+  taskId: number;
   onClose: () => void;
 }) {
   const [databaseContext, setDatabaseContext] = useState<EvalContextResponse | null>(null);
+  const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (taskId === null || answer.source === null) {
-      setDatabaseContext(null);
-      setContextError(null);
-      return;
-    }
+    setDatabaseContext(null);
+    setContextError(null);
     let cancelled = false;
+    setContextLoading(true);
     api.evalContext(taskId, answer.source.sample_index, answer.source.repeat_index, answer.source.pass_index)
       .then((payload) => {
         if (!cancelled) setDatabaseContext(payload);
       })
       .catch((error: unknown) => {
         if (!cancelled) setContextError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (!cancelled) setContextLoading(false);
       });
     return () => {
       cancelled = true;
@@ -721,11 +719,10 @@ function FullContextModal({
   }, [onClose]);
 
   const passed = answer.category === "correct";
-  const contextText = databaseContext?.view === "text"
-    ? databaseContext.raw_text
-    : databaseContext?.context
-      ? JSON.stringify(databaseContext.context, null, 2)
-      : null;
+  const stages = stagesFromContext(databaseContext);
+  const samplingConfig = databaseContext?.context?.sampling_config;
+  const extraContext = remainingStructuredContext(databaseContext);
+  const stopReasons = stages.map((stage) => stage.stopReason).filter(Boolean);
   return (
     <div className="reference-modal-backdrop" onClick={onClose}>
       <div className="reference-modal" onClick={(event) => event.stopPropagation()}>
@@ -735,13 +732,35 @@ function FullContextModal({
         </header>
         <div className="reference-modal-grid">
           <div className="context-main">
-            {contextError ? <div className="error-bar">数据库 context 加载失败：{contextError}</div> : null}
-            {taskId !== null && answer.source !== null && !databaseContext && !contextError
+            {contextError ? <div className="error-bar">context 加载失败：{contextError}</div> : null}
+            {contextLoading
               ? <div className="spinner">正在读取完整模型上下文…</div>
               : null}
-            {contextText ? <ContextBlock label="database context" value={contextText} /> : null}
-            <ContextBlock label="assembled prompt" value={`User❉${answer.prompt}❉\nBot❉<think`} />
-            <ContextBlock label="raw completion" value={answer.completion} />
+            {databaseContext?.errors.map((error, index) => (
+              <div className="error-bar" key={`${index}:${error}`}>context 解析提示：{error}</div>
+            ))}
+            {stages.map((stage, index) => (
+              <div className="context-stage" key={index}>
+                <ContextBlock label={`stage ${index + 1} · assembled prompt`} value={stage.prompt || "—"} />
+                <ContextBlock
+                  label={`stage ${index + 1} · raw completion${stage.stopReason ? ` · stop=${stage.stopReason}` : ""}`}
+                  value={stage.completion || "—"}
+                />
+              </div>
+            ))}
+            {databaseContext?.view === "text" && databaseContext.raw_text ? (
+              <ContextBlock label="raw context" value={databaseContext.raw_text} />
+            ) : null}
+            {databaseContext?.view === "structured" && stages.length === 0 && databaseContext.context ? (
+              <ContextBlock label="structured context" value={readableValue(databaseContext.context)} />
+            ) : null}
+            {extraContext ? <ContextBlock label="additional context" value={readableValue(extraContext)} /> : null}
+            {contextError ? (
+              <>
+                <ContextBlock label="context preview · fallback" value={answer.prompt} />
+                <ContextBlock label="extracted answer · fallback" value={answer.completion} />
+              </>
+            ) : null}
           </div>
           <aside className="context-sidebar">
             <h3>基础信息</h3>
@@ -752,39 +771,31 @@ function FullContextModal({
               <span>{selection.benchmark.label}</span>
               <span>n={selection.cell.num_samples ?? selection.benchmark.column.num_samples ?? 0}</span>
               <span>{selection.cell.metric ?? "score"}</span>
-              <span className="warning">截断率：{truncation.toFixed(1)}%</span>
               <span className="success">准确率：{accuracy.toFixed(1)}%</span>
             </div>
             <dl className="context-key-values">
               <dt>problem_id</dt><dd>{answer.id}</dd>
               <dt>repeat_id</dt><dd>{answer.repeatId}</dd>
               <dt>pass_index</dt><dd>{answer.passIndex}</dd>
-              <dt>task_id</dt><dd>{taskId ?? "mock"}</dd>
-              <dt>generation</dt><dd>{generationLabel(selection.generation)}</dd>
+              <dt>task_id</dt><dd>{taskId}</dd>
+              <dt>architecture</dt><dd>{architectureLabel(selection.architecture)}</dd>
               <dt>is_passed</dt><dd><span className={`answer-outcome ${passed ? "pass" : "fail"}`}>{passed ? "true" : "false"}</span></dd>
             </dl>
-            <ContextBlock label="prompt_template" value={"User❉{task.problem}❉\nBot❉<think"} />
-            <div className="modal-sampling">
-              <small>sampling_config</small>
-              <div>
-                <ConfigValue label="temperature" value="0.6" />
-                <ConfigValue label="top_p" value="0.95" />
-                <ConfigValue label="top_k" value="40" />
-                <ConfigValue label="max_tokens" value="32768" />
-                <ConfigValue label="seed" value="42" />
-              </div>
-            </div>
+            {samplingConfig !== undefined ? (
+              <ContextBlock label="sampling_config" value={readableValue(samplingConfig) || "{}"} />
+            ) : null}
             <h3>SCORING RESULT</h3>
             <dl className="context-key-values">
               <dt>ground_truth</dt><dd>{answer.groundTruth}</dd>
               <dt>extracted_answer</dt><dd>{answer.modelAnswer}</dd>
-              <dt>fail_reason</dt><dd>{passed ? "—" : answer.category === "unanswered" ? "empty completion" : "answer mismatch"}</dd>
+              <dt>fail_reason</dt><dd>{answer.failReason || "—"}</dd>
             </dl>
-            <h3>GENERATION METADATA</h3>
+            <h3>CONTEXT METADATA</h3>
             <dl className="context-key-values">
-              <dt>run_id</dt><dd>mock-generation-{selection.group.param}-{answer.repeatId}</dd>
-              <dt>generated_tokens</dt><dd>{answer.generatedTokens}</dd>
-              <dt>latency_ms</dt><dd>{answer.latencyMs}</dd>
+              <dt>context_view</dt><dd>{databaseContext?.view ?? (contextLoading ? "loading" : "unavailable")}</dd>
+              <dt>stage_count</dt><dd>{stages.length}</dd>
+              <dt>stop_reason</dt><dd>{stopReasons.join(", ") || "—"}</dd>
+              <dt>context_errors</dt><dd>{databaseContext?.errors.length ?? 0}</dd>
             </dl>
           </aside>
         </div>

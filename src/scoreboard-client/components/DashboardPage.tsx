@@ -13,12 +13,12 @@ interface Props {
   isMockData: boolean;
 }
 
-export function DashboardPage({ meta, leaderboard }: Props) {
+export function DashboardPage({ meta, leaderboard, tab }: Props) {
   return (
     <>
       {meta.errors.length ? <div className="error-bar">{meta.errors.join("; ")}</div> : null}
       {leaderboard.errors.length ? <div className="error-bar">{leaderboard.errors.join("; ")}</div> : null}
-      <ReferenceEvaluationBoard matrix={leaderboard.matrix} />
+      <ReferenceEvaluationBoard matrix={leaderboard.matrix} initialDomain={tab} />
     </>
   );
 }
