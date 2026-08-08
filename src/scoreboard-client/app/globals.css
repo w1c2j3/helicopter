@@ -2535,7 +2535,16 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 
 .reference-score-table {
   min-width: 1080px;
-  --reference-value-size: 14px;
+  --reference-value-size: 19px;
+}
+
+/* Keep the matrix geometry fixed while making every body cell easier to read. */
+.reference-score-table tbody td {
+  padding: 0;
+}
+
+.reference-score-table tbody td.ref-delta {
+  font-size: var(--reference-value-size);
 }
 
 .reference-score-table th,
@@ -2643,7 +2652,8 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   border-radius: 3px;
   background: transparent;
   color: #f6f8fc;
-  font: 500 var(--reference-value-size) var(--mono);
+  font: 400 var(--reference-value-size) var(--mono);
+  line-height: 1;
 }
 
 .compact-score:disabled {
@@ -2678,7 +2688,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   background: #1b211e !important;
   color: #9ba7b7;
   font-size: var(--reference-value-size);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .ref-delta.positive {
