@@ -1,6 +1,38 @@
 /* RWKV Skills dashboard — fresh visual design system (v2).
    Refined dark theme, clean typography, card-based layout. */
 
+@font-face {
+  font-family: "Source Code Pro";
+  src: url("/fonts/source-code-pro-latin-400-normal.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Source Code Pro";
+  src: url("/fonts/source-code-pro-latin-500-normal.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Source Code Pro";
+  src: url("/fonts/source-code-pro-latin-600-normal.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Source Code Pro";
+  src: url("/fonts/source-code-pro-latin-700-normal.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
 :root {
   --bg: #0a0b0f;
   --bg-elevated: #12141a;
@@ -19,8 +51,8 @@
   --radius: 12px;
   --radius-sm: 8px;
   --shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
-  --mono: "JetBrains Mono", "SF Mono", "Cascadia Code", ui-monospace, monospace;
-  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --mono: "Source Code Pro", "JetBrains Mono", "SF Mono", "Cascadia Code", ui-monospace, monospace;
+  --sans: "Source Code Pro", "JetBrains Mono", "SF Mono", "Cascadia Code", ui-monospace, monospace;
 }
 
 * {
@@ -38,7 +70,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--sans);
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
@@ -2346,13 +2378,13 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 
 .experiment-tabs button {
   min-width: 0;
-  padding: 0 20px;
+  padding: 0 16px;
   border: 0;
   border-radius: 8px;
   background: transparent;
   color: #f0f4fb;
   white-space: nowrap;
-  font: 700 12px var(--mono);
+  font: 600 13px var(--mono);
 }
 
 .experiment-tabs button.active {
@@ -2381,11 +2413,11 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 
 .reference-domain-tabs button {
   position: relative;
-  padding: 0 17px 12px;
+  padding: 0 14px 12px;
   border: 0;
   background: transparent;
   color: #d5deeb;
-  font: 700 12px var(--mono);
+  font: 600 13px var(--mono);
 }
 
 .reference-domain-tabs button::after {
@@ -2424,7 +2456,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   margin-top: 2px;
   color: #d6a958;
   font-size: 7px;
-  font-weight: 600;
+  font-weight: 500;
   white-space: nowrap;
 }
 
@@ -2436,7 +2468,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   border-radius: 3px;
   color: #a9bad3;
   font-size: 7px;
-  font-weight: 700;
+  font-weight: 500;
   line-height: 1.2;
   vertical-align: 1px;
   white-space: nowrap;
@@ -2487,7 +2519,9 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 }
 
 .reference-table-scroll {
+  width: min(1098px, 100%);
   max-height: 460px;
+  margin: 18px auto 0;
 }
 
 .reference-score-table,
@@ -2496,11 +2530,12 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   border-collapse: separate;
   border-spacing: 0;
   table-layout: fixed;
-  font: 700 11px var(--mono);
+  font: 400 12px var(--mono);
 }
 
 .reference-score-table {
-  min-width: 1060px;
+  min-width: 1080px;
+  --reference-value-size: 14px;
 }
 
 .reference-score-table th,
@@ -2508,7 +2543,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 .answer-table th,
 .answer-table td {
   height: 38px;
-  padding: 0 7px;
+  padding: 0 2px;
   border-right: 1px solid #3d4a5e;
   border-bottom: 1px solid #3d4a5e;
   text-align: center;
@@ -2533,6 +2568,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   height: 36px;
   background: #182338;
   color: #e4ebf6;
+  font-weight: 600;
 }
 
 .reference-score-table thead tr:nth-child(2) th {
@@ -2546,8 +2582,9 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 }
 
 .reference-score-table .ref-benchmark {
-  width: 145px;
-  text-align: left;
+  width: 124px;
+  min-width: 124px;
+  text-align: center;
 }
 
 .reference-score-table thead .ref-benchmark {
@@ -2555,11 +2592,25 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 }
 
 .reference-score-table .ref-samples {
-  width: 66px;
+  width: 54px;
+  min-width: 54px;
 }
 
 .reference-score-table .ref-metric {
-  width: 72px;
+  width: 58px;
+  min-width: 58px;
+}
+
+.reference-score-table thead tr:nth-child(2) th:not(.ref-delta-head),
+.reference-score-table tbody td:not(.ref-benchmark):not(.ref-samples):not(.ref-metric):not(.ref-delta) {
+  width: 66px;
+  min-width: 66px;
+}
+
+.reference-score-table .ref-delta,
+.reference-score-table .ref-delta-head {
+  width: 54px;
+  min-width: 54px;
 }
 
 .reference-row-tone.tone-0 td {
@@ -2585,14 +2636,14 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 .compact-score {
   display: grid;
   width: 100%;
-  height: 34px;
-  padding: 0 2px;
+  height: 36px;
+  padding: 0;
   place-items: center;
   border: 1px solid transparent;
   border-radius: 3px;
   background: transparent;
   color: #f6f8fc;
-  font: 750 10px var(--mono);
+  font: 500 var(--reference-value-size) var(--mono);
 }
 
 .compact-score:disabled {
@@ -2610,7 +2661,8 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 
 .compact-score small {
   color: #4f82c7;
-  font-size: 7px;
+  font-size: 10px;
+  font-weight: 400;
 }
 
 .compact-score.selected {
@@ -2625,6 +2677,8 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 .ref-delta {
   background: #1b211e !important;
   color: #9ba7b7;
+  font-size: var(--reference-value-size);
+  font-weight: 500;
 }
 
 .ref-delta.positive {
@@ -3632,7 +3686,7 @@ body {
 }
 
 .reference-score-table {
-  min-width: max(1060px, 100%);
+  min-width: 980px;
 }
 
 .answer-table {
@@ -3656,10 +3710,6 @@ body {
   .reference-score-table th,
   .reference-score-table td {
     height: 42px;
-  }
-
-  .compact-score {
-    font-size: 11px;
   }
 
   .task-admin-layout {
@@ -4005,4 +4055,28 @@ body {
   .admin-log {
     max-height: clamp(200px, 40dvh, 420px);
   }
+}
+
+/* Keep the dashboard in the compact workbench layout rather than stretching it
+   to the viewport.  The domain switcher remains a distinct control row above
+   the centred data table. */
+.reference-shell.dashboard-shell {
+  width: min(1360px, calc(100% - 32px));
+  max-width: 1360px;
+  margin: 0 auto;
+  padding: 26px 14px 64px;
+}
+
+.reference-table-scroll {
+  width: min(1098px, 100%);
+  height: auto;
+  max-height: none;
+  margin: 18px auto 0;
+  overflow: visible;
+}
+
+.reference-score-table {
+  width: 1080px;
+  min-width: 1080px;
+  margin: 0 auto;
 }

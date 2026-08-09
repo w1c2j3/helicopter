@@ -221,14 +221,12 @@ class NativeLightEvalTaskCompatibilityTests(unittest.TestCase):
             task_name="math_500",
         )
 
-        self.assertIn("Solve the following problem.", doc.query)
-        self.assertIn("Solve $x+1=2$.", doc.query)
-        self.assertIn("Think step by step before answering.", doc.query)
-        self.assertEqual(doc.choices, ["ANSWER: A worked solution ending in a distractor 2."])
+        self.assertEqual(doc.query, "Solve $x+1=2$.")
+        self.assertEqual(doc.choices, [r"$\boxed{1}$"])
         self.assertEqual(doc.gold_index, 0)
-        self.assertEqual(math_500_task.version, 2)
+        self.assertEqual(math_500_task.version, 3)
 
-    def test_mmlu_pro_restores_official_prompt_and_instruction(self) -> None:
+    def test_mmlu_pro_native_task_keeps_only_raw_question_and_choices(self) -> None:
         doc = mmlu_pro_prompt_function(
             {
                 "question": "Which option is correct?",
@@ -240,17 +238,16 @@ class NativeLightEvalTaskCompatibilityTests(unittest.TestCase):
 
         self.assertIsNotNone(doc)
         assert doc is not None
-        self.assertIn("Answer the following multiple choice question.", doc.query)
-        self.assertIn("Which option is correct?", doc.query)
-        self.assertIn("A: First", doc.query)
-        self.assertIn("B: Second", doc.query)
-        self.assertIn("C: Third", doc.query)
-        self.assertEqual(doc.choices[:3], "ABC")
+        self.assertEqual(
+            doc.query,
+            "Which option is correct?\nA. First\nB. Second\nC. Third",
+        )
+        self.assertEqual(doc.choices, ["A", "B", "C"])
         self.assertEqual(doc.gold_index, 1)
-        self.assertEqual(doc.instruction, doc.query)
-        self.assertIn("Think step by step", doc.query)
-        self.assertIn("Answer:", doc.query)
-        self.assertEqual(mmlu_pro_task.version, 0)
+        self.assertIsNone(doc.instruction)
+        self.assertNotIn("Think step by step", doc.query)
+        self.assertNotIn("Answer:", doc.query)
+        self.assertEqual(mmlu_pro_task.version, 1)
 
     def test_truthfulqa_generation_prompt_does_not_require_mc_fields(self) -> None:
         doc = truthful_qa_generative_prompt(
@@ -784,7 +781,7 @@ def build_takeoff_plan(
 
 class RawCompletionTests(unittest.TestCase):
 
-    def test_official_doc_instruction_is_preserved_once(self) -> None:
+    def test_lighteval_instruction_is_not_injected_into_raw_query(self) -> None:
         instruction = "You are answering a multiple choice question.\n"
         with_instruction = Doc(
             query="Question: Raw question\nAnswer:",
@@ -793,8 +790,8 @@ class RawCompletionTests(unittest.TestCase):
             instruction=instruction,
         )
         self.assertEqual(
-            lighteval_raw_completion._official_query(with_instruction),
-            instruction + "Question: Raw question\nAnswer:",
+            lighteval_raw_completion._benchmark_query(with_instruction),
+            "Question: Raw question\nAnswer:",
         )
 
         duplicated = Doc(
@@ -804,9 +801,37 @@ class RawCompletionTests(unittest.TestCase):
             instruction=instruction,
         )
         self.assertEqual(
-            lighteval_raw_completion._official_query(duplicated),
+            lighteval_raw_completion._benchmark_query(duplicated),
             instruction + "Question: Raw question\nAnswer:",
         )
+
+    def test_raw_question_guard_rejects_added_task_cues(self) -> None:
+        policy = {
+            "tasks": {
+                "mmlu_pro": {
+                    "benchmark_config_path": "configs/benchmarks/famous120/knowledge/01_mmlu_pro.toml"
+                }
+            }
+        }
+        with mock.patch.dict(
+            os.environ,
+            {"HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY": json.dumps(policy)},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "added cue"):
+                lighteval_raw_completion._validate_raw_question_contract(
+                    "g1h__mmlu_pro|0",
+                    "User: Answer the following multiple choice question.\nAssistant: <think",
+                )
+            with self.assertRaisesRegex(RuntimeError, "trailing Answer"):
+                lighteval_raw_completion._validate_raw_question_contract(
+                    "g1h__mmlu_pro|0",
+                    "User: Raw question\nA. one\nB. two\nAnswer:\n\nAssistant: <think",
+                )
+            lighteval_raw_completion._validate_raw_question_contract(
+                "g1h__mmlu_pro|0",
+                "User: Raw question\nA. one\nB. two\nAssistant: <think",
+            )
 
     def test_structured_code_prefill_is_restored_for_official_extractors(self) -> None:
         self.assertEqual(

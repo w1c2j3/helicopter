@@ -31,7 +31,7 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
   const page = value(params, "page", "dashboard");
   const view = value(params, "view", "benchmark_detail_latest");
   const model = value(params, "model", "");
-  const tab = value(params, "tab", "knowledge");
+  const tab = value(params, "tab", "all");
   const isHistory = page === "history";
   const isTuning = page === "normal" || page === "tuning";
   const isDashboard = !isHistory && !isTuning && page !== "admin";

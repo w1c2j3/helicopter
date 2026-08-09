@@ -1,6 +1,7 @@
 import os from "node:os";
 
 const apiBase = process.env.SCOREBOARD_API_BASE_URL || "http://127.0.0.1:7860";
+const enforceHttps = process.env.SCOREBOARD_ENFORCE_HTTPS !== "false";
 const configuredDevOrigins = (process.env.SCOREBOARD_ALLOWED_DEV_ORIGINS || "")
   .split(",")
   .map((value) => value.trim())
@@ -23,8 +24,8 @@ const nextConfig = {
     return [
       {
         source: "/api/:path*",
-        destination: `${apiBase}/api/:path*`
-      }
+        destination: `${apiBase}/api/:path*`,
+      },
     ];
   },
   async headers() {
@@ -34,27 +35,25 @@ const nextConfig = {
       "form-action 'self'",
       "frame-ancestors 'none'",
       "object-src 'none'",
-      "script-src 'self' 'unsafe-inline'",
+      `script-src 'self' 'unsafe-inline'${process.env.NODE_ENV === "development" ? " 'unsafe-eval'" : ""}`,
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob:",
       "font-src 'self' data:",
       "connect-src 'self'",
-      "upgrade-insecure-requests",
+      ...(enforceHttps ? ["upgrade-insecure-requests"] : []),
     ].join("; ");
-    return [
-      {
-        source: "/:path*",
-        headers: [
-          { key: "Content-Security-Policy", value: contentSecurityPolicy },
-          { key: "Referrer-Policy", value: "same-origin" },
-          { key: "X-Content-Type-Options", value: "nosniff" },
-          { key: "X-Frame-Options", value: "DENY" },
-          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
-          { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" },
-        ],
-      },
+    const securityHeaders = [
+      { key: "Content-Security-Policy", value: contentSecurityPolicy },
+      { key: "Referrer-Policy", value: "same-origin" },
+      { key: "X-Content-Type-Options", value: "nosniff" },
+      { key: "X-Frame-Options", value: "DENY" },
+      { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+      ...(enforceHttps
+        ? [{ key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" }]
+        : []),
     ];
-  }
+    return [{ source: "/:path*", headers: securityHeaders }];
+  },
 };
 
 export default nextConfig;

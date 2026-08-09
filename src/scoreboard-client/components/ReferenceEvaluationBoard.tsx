@@ -72,11 +72,11 @@ const EXPERIMENT_TABS = [
 ] as const;
 
 const DOMAIN_TABS = [
-  { key: "all", label: "Overview" },
-  { key: "math", label: "Math" },
-  { key: "knowledge", label: "Knowledge" },
-  { key: "instruction_following", label: "Instruction Following" },
-  { key: "coding", label: "Coding" },
+  { key: "all", label: "常规评估" },
+  { key: "math", label: "数学" },
+  { key: "knowledge", label: "知识" },
+  { key: "instruction_following", label: "指令遵循" },
+  { key: "coding", label: "编程" },
   { key: "function_call", label: "FC" },
 ] as const;
 
@@ -282,10 +282,18 @@ function architectureLabel(architecture: Architecture): string {
   return `G1${architecture.at(-1)}`;
 }
 
-export function ReferenceEvaluationBoard({ matrix }: { matrix: LeaderboardMatrix }) {
+export function ReferenceEvaluationBoard({
+  matrix,
+  initialDomain = "all",
+}: {
+  matrix: LeaderboardMatrix;
+  initialDomain?: string;
+}) {
   const groups = useMemo(() => groupsFromMatrix(matrix), [matrix]);
   const [experiment, setExperiment] = useState<(typeof EXPERIMENT_TABS)[number]>("前代 vs 当代");
-  const [domainKey, setDomainKey] = useState("all");
+  const [domainKey, setDomainKey] = useState(
+    DOMAIN_TABS.some((item) => item.key === initialDomain) ? initialDomain : "all",
+  );
   const benchmarks = useMemo(() => benchmarksForDomain(matrix, domainKey), [domainKey, matrix]);
   const domainTabs = useMemo(
     () => DOMAIN_TABS.map((item) => ({
@@ -333,16 +341,6 @@ export function ReferenceEvaluationBoard({ matrix }: { matrix: LeaderboardMatrix
             </button>
           ))}
         </nav>
-
-        <div className="comparison-heading">
-          <div>
-            <strong className="catalog-heading">
-              {domainTabs.find((item) => item.key === domainKey)?.label}（{benchmarks.length}） · {experiment}
-            </strong>
-            <strong>{DOMAIN_TABS.find((item) => item.key === domainKey)?.label} · {experiment}</strong>
-            <span><b>上一代 → 当前代</b> · 表头显示实际架构；delta = 当前代 − 上一代。</span>
-          </div>
-        </div>
 
         <div className="reference-table-scroll">
           <table className="reference-score-table">
