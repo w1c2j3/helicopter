@@ -77,11 +77,6 @@ def merge_model_catalog(config: dict[str, Any], *, root: Path, catalog_path: str
     config["_model_runtime"] = catalog.get("runtime", {})
 
 
-def table(config: dict[str, Any], name: str) -> dict[str, Any]:
-    value = config.get(name, {})
-    return value if isinstance(value, dict) else {}
-
-
 def resolve_model_entry(config: dict[str, Any], model_name: str) -> dict[str, Any]:
     models = table(config, "models")
     seen: list[str] = []
@@ -134,3 +129,25 @@ def resolve_model_path(
     base = resolve_path(str(base_value), root=root, env=env)
     base_dir = base.parent if base.suffix == ".pth" else base
     return base_dir / str(filename), entry
+
+
+def dataset_root(
+    config: dict[str, Any],
+    dataset_name: str,
+    *,
+    root: Path,
+    env: dict[str, str],
+) -> Path:
+    datasets = table(config, "datasets")
+    entry = datasets.get(dataset_name)
+    paths = table(config, "paths")
+
+    if isinstance(entry, dict) and entry.get("root"):
+        return resolve_path(str(entry["root"]), root=root, env=env)
+
+    base_value = pick(
+        paths.get("datasets_path"),
+        env_value(env, "DATASETS_PATH", "HELICOPTER_DATASETS_PATH"),
+        "/workspace/Datasets",
+    )
+    return resolve_path(str(base_value), root=root, env=env) / dataset_name

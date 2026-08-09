@@ -32,6 +32,15 @@ from .performance import (
 from .runner import run_command
 
 
+def add_runtime_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--env-file", default=DEFAULT_ENV_FILE, help="dotenv file to load first"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="print the command without executing it"
+    )
+
+
 def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", help="TOML config path; defaults to the newest configs/local/*.toml")
     parser.add_argument(
@@ -519,6 +528,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     root = find_root()
     env, _ = load_env(root, args.env_file)
+    if args.command == "takeoff":
+        prepend_venv_path(env, root)
+        plan = args.plan_builder(args, root=root, env=env)
+        return run_command(
+            plan.command,
+            cwd=plan.cwd,
+            env=plan.env,
+            shown_env=plan.shown_env,
+            dry_run=False,
+        )
+
     config, _ = load_config(root, args.config)
     if getattr(args, "model_catalog", None):
         merge_model_catalog(config, root=root, catalog_path=str(args.model_catalog))

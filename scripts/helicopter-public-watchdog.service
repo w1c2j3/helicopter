@@ -1,0 +1,15 @@
+[Unit]
+Description=Helicopter public stack health watchdog
+Wants=network-online.target helicopter-public-api.service helicopter-public-frontend.service cloudflared-shp6000-a.service cloudflared-shp6000-b.service
+After=network-online.target helicopter-public-api.service helicopter-public-frontend.service cloudflared-shp6000-a.service cloudflared-shp6000-b.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+UnsetEnvironment=HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy NO_PROXY no_proxy
+ExecStart=/bin/bash /home/rwkv/chase/helicopter/scripts/helicopter-public-watchdog.sh
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

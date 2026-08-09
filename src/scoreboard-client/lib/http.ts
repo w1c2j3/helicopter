@@ -1,5 +1,6 @@
 const SERVER_API_BASE = process.env.SCOREBOARD_API_BASE_URL || "http://127.0.0.1:7860";
 const BROWSER_API_BASE = process.env.NEXT_PUBLIC_SCOREBOARD_API_BASE_URL || "";
+const GET_TIMEOUT_MS = 20_000;
 
 function apiUrl(path: string): string {
   if (/^https?:\/\//.test(path)) return path;
@@ -9,7 +10,11 @@ function apiUrl(path: string): string {
 }
 
 export async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(apiUrl(path), { headers: { Accept: "application/json" }, cache: "no-store" });
+  const res = await fetch(apiUrl(path), {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+    signal: AbortSignal.timeout(GET_TIMEOUT_MS),
+  });
   if (!res.ok) {
     throw new Error(`${res.status}: ${await res.text()}`);
   }

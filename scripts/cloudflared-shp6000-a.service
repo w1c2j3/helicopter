@@ -1,0 +1,16 @@
+[Unit]
+Description=Cloudflare Tunnel shp6000 connector A
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+UnsetEnvironment=HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy NO_PROXY no_proxy
+ExecStart=/home/rwkv/bin/cloudflared --no-autoupdate --protocol http2 --edge-ip-version 4 --metrics 127.0.0.1:20241 --loglevel info tunnel run --dns-resolver-addrs 1.1.1.1:53 --dns-resolver-addrs 8.8.8.8:53 --token-file /home/rwkv/.cloudflared/shp6000.token
+Restart=always
+RestartSec=5s
+TimeoutStopSec=20s
+
+[Install]
+WantedBy=default.target

@@ -1062,6 +1062,58 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   }
 }
 
+/* Answer evidence is paged at 20 rows, so it can use the document flow
+   without a nested horizontal or vertical scrolling surface. */
+.answer-details .answer-table-wrap {
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  max-height: none;
+  overflow: hidden;
+  overflow: clip;
+}
+
+.answer-details .answer-table {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  table-layout: fixed;
+}
+
+.answer-details .answer-table th,
+.answer-details .answer-table td {
+  height: auto;
+  min-height: 38px;
+  padding: 6px 4px;
+  overflow-wrap: anywhere;
+  vertical-align: middle;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.answer-details .answer-table col.answer-col-id { width: 11%; }
+.answer-details .answer-table col.answer-col-repeat { width: 7%; }
+.answer-details .answer-table col.answer-col-pass { width: 7%; }
+.answer-details .answer-table col.answer-col-ground-truth { width: 18%; }
+.answer-details .answer-table col.answer-col-model-answer { width: 30%; }
+.answer-details .answer-table col.answer-col-outcome { width: 8%; }
+.answer-details .answer-table col.answer-col-stop { width: 11%; }
+.answer-details .answer-table col.answer-col-detail { width: 8%; }
+
+@media (max-width: 760px) {
+  .answer-final-diagnostics {
+    grid-template-columns: 1fr;
+  }
+
+  .answer-pagination {
+    gap: 6px;
+  }
+
+  .answer-pagination span {
+    text-align: center;
+  }
+}
+
 /* Four parameter sizes share one dense table; each group is current / previous / delta. */
 .generation-toolbar-meta,
 .generation-legend {
@@ -2302,8 +2354,8 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 
 /* Reference evaluation workbench: comparison -> answers -> complete context. */
 .reference-shell.dashboard-shell {
-  width: min(1360px, calc(100% - 32px));
-  max-width: 1360px;
+  width: min(1760px, calc(100% - 32px));
+  max-width: 1760px;
   margin: 0 auto;
   padding: 26px 14px 64px;
 }
@@ -2319,7 +2371,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 .reference-shell.dashboard-shell .app-header h1 {
   margin: 0;
   color: #f4f7fb;
-  font: 750 21px/1.2 var(--sans);
+  font: 750 25.2px/1.2 var(--sans);
   letter-spacing: -.02em;
 }
 
@@ -2331,7 +2383,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   display: block;
   margin-top: 5px;
   color: #dce5f4;
-  font: 700 11px/1.2 var(--mono);
+  font: 700 13.2px/1.2 var(--mono);
 }
 
 .reference-shell.dashboard-shell .page-nav {
@@ -2349,7 +2401,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   border-radius: 8px;
   background: #101722;
   color: #dce6f4;
-  font: 700 12px var(--mono);
+  font: 700 14.4px var(--mono);
 }
 
 .reference-shell.dashboard-shell .page-nav a.active {
@@ -2363,6 +2415,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   gap: 14px;
   color: #e9eef7;
   font-family: var(--mono);
+  font-size: 18px;
 }
 
 .experiment-tabs {
@@ -2384,7 +2437,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   background: transparent;
   color: #f0f4fb;
   white-space: nowrap;
-  font: 600 13px var(--mono);
+  font: 600 15.6px var(--mono);
 }
 
 .experiment-tabs button.active {
@@ -2417,7 +2470,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   border: 0;
   background: transparent;
   color: #d5deeb;
-  font: 600 13px var(--mono);
+  font: 600 15.6px var(--mono);
 }
 
 .reference-domain-tabs button::after {
@@ -2455,8 +2508,9 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   display: block;
   margin-top: 2px;
   color: #d6a958;
-  font-size: 7px;
+  font-size: 8.4px;
   font-weight: 500;
+  line-height: 10px;
   white-space: nowrap;
 }
 
@@ -2467,9 +2521,9 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   border: 1px solid #40516b;
   border-radius: 3px;
   color: #a9bad3;
-  font-size: 7px;
+  font-size: 8.4px;
   font-weight: 500;
-  line-height: 1.2;
+  line-height: 8.4px;
   vertical-align: 1px;
   white-space: nowrap;
 }
@@ -2486,12 +2540,12 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 
 .comparison-heading strong {
   color: #f4f7fb;
-  font-size: 12px;
+  font-size: 14.4px;
 }
 
 .comparison-heading span {
   color: #b3bdcc;
-  font-size: 11px;
+  font-size: 13.2px;
 }
 
 .comparison-heading span b {
@@ -2505,7 +2559,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   border-radius: 15px;
   background: #2b2416;
   color: #f2bd4f !important;
-  font: 700 10px var(--mono) !important;
+  font: 700 12px var(--mono) !important;
 }
 
 .reference-table-scroll,
@@ -2519,7 +2573,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 }
 
 .reference-table-scroll {
-  width: min(1098px, 100%);
+  width: min(1598px, 100%);
   max-height: 460px;
   margin: 18px auto 0;
 }
@@ -2530,12 +2584,12 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   border-collapse: separate;
   border-spacing: 0;
   table-layout: fixed;
-  font: 400 12px var(--mono);
+  font: 400 14.4px/14.4px var(--mono);
 }
 
 .reference-score-table {
   min-width: 1080px;
-  --reference-value-size: 14px;
+  --reference-value-size: 16.8px;
 }
 
 .reference-score-table th,
@@ -2661,7 +2715,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 
 .compact-score small {
   color: #4f82c7;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 400;
 }
 
@@ -2696,7 +2750,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   min-height: 120px;
   place-items: center;
   color: #7f8c9f;
-  font-size: 12px;
+  font-size: 14.4px;
 }
 
 .answer-details {
@@ -2713,7 +2767,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 
 .answer-details-head strong {
   color: #78aaf2;
-  font-size: 12px;
+  font-size: 14.4px;
 }
 
 .answer-details-head button,
@@ -2724,7 +2778,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   border-radius: 7px;
   background: #111a27;
   color: #e4ebf5;
-  font: 700 11px var(--mono);
+  font: 700 13.2px var(--mono);
 }
 
 .selection-chips {
@@ -2743,7 +2797,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   border-radius: 5px;
   background: #141e2c;
   color: #f1f5fb;
-  font: 700 10px var(--mono);
+  font: 700 12px var(--mono);
 }
 
 .selection-chips > span.warning {
@@ -2762,6 +2816,51 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   border-color: #315b91;
   background: #14233a;
   color: #6899dc;
+}
+
+.answer-final-diagnostics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 7px;
+  margin: 9px 0 4px;
+}
+
+.answer-final-diagnostic {
+  display: grid;
+  min-height: 72px;
+  padding: 9px 11px;
+  border: 1px solid #3d4b60;
+  border-radius: 6px;
+  background: #111a27;
+}
+
+.answer-final-diagnostic.primary {
+  border-color: #466e9f;
+  background: #132238;
+}
+
+.answer-final-diagnostic small {
+  color: #8ba8cd;
+  font: 700 10.8px var(--mono);
+}
+
+.answer-final-diagnostic strong {
+  align-self: end;
+  color: #f1f5fb;
+  font: 700 19px/1 var(--mono);
+}
+
+.answer-final-diagnostic span {
+  margin-top: 5px;
+  color: #8191a8;
+  font: 600 10.8px var(--mono);
+}
+
+.answer-final-diagnostic-scope {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #7f9ac0;
+  font: 11px/1.55 var(--mono);
 }
 
 .configuration-row {
@@ -2790,14 +2889,14 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   display: block;
   margin-bottom: 7px;
   color: #80a7d9;
-  font: 700 9px var(--mono);
+  font: 700 10.8px var(--mono);
 }
 
 .configuration-card pre {
   margin: 0;
   color: #f1f4f9;
   white-space: pre-wrap;
-  font: 700 10px/1.65 var(--mono);
+  font: 700 12px/1.65 var(--mono);
 }
 
 .sampling-card > div,
@@ -2817,18 +2916,18 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 .sampling-card span small,
 .modal-sampling span small {
   color: #8292a7;
-  font-size: 8px;
+  font-size: 9.6px;
 }
 
 .sampling-card span strong,
 .modal-sampling span strong {
   color: #f2f5fa;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .answer-category-tabs {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   margin-top: 10px;
   background: #111925;
 }
@@ -2840,7 +2939,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   border-bottom: 1px solid #46536a;
   background: transparent;
   color: #b7c3d5;
-  font: 700 11px var(--mono);
+  font: 700 13.2px var(--mono);
 }
 
 .answer-category-tabs button::after {
@@ -2870,13 +2969,13 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   border-radius: 8px;
   background: #263246;
   color: #e4ebf5;
-  font-size: 8px;
+  font-size: 9.6px;
 }
 
 .answer-sampling-note {
   margin: 9px 0;
   color: #7f9ac0;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .answer-sampling-note strong {
@@ -2885,17 +2984,6 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 
 .answer-table {
   min-width: 910px;
-}
-
-.answer-table th {
-  height: 38px;
-  background: #172236;
-  color: #e9eef7;
-}
-
-.answer-table td {
-  height: 38px;
-  color: #e6ebf3;
 }
 
 .answer-table th:nth-child(1) {
@@ -2911,8 +2999,20 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 }
 
 .answer-table th:nth-child(6),
-.answer-table th:nth-child(7) {
+.answer-table th:nth-child(7),
+.answer-table th:nth-child(8) {
   width: 105px;
+}
+
+.answer-table th {
+  height: 38px;
+  background: #172236;
+  color: #e9eef7;
+}
+
+.answer-table td {
+  height: 38px;
+  color: #e6ebf3;
 }
 
 .answer-tone-0 td {
@@ -2938,7 +3038,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   padding: 0 7px;
   place-items: center;
   border-radius: 10px;
-  font: 700 9px var(--mono);
+  font: 700 10.8px var(--mono);
 }
 
 .answer-outcome.pass {
@@ -2956,6 +3056,15 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   color: #a8b2bf;
 }
 
+.answer-final-stop {
+  color: #9caabd;
+  font: 600 10.8px var(--mono);
+}
+
+.answer-final-stop.truncated {
+  color: #f2c259;
+}
+
 .answer-detail-button {
   height: 24px;
   padding: 0 10px;
@@ -2963,7 +3072,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   border-radius: 7px;
   background: #111b2b;
   color: #d9e8fb;
-  font: 700 9px var(--mono);
+  font: 700 10.8px var(--mono);
 }
 
 .answer-load-more {
@@ -2975,12 +3084,41 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   border-radius: 6px;
   background: #111b2b;
   color: #d9e8fb;
-  font: 700 10px var(--mono);
+  font: 700 12px var(--mono);
 }
 
 .answer-load-more:disabled {
   cursor: wait;
   opacity: .6;
+}
+
+.answer-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.answer-pagination button {
+  min-width: 92px;
+  height: 34px;
+  padding: 0 13px;
+  border: 1px solid #526a8e;
+  border-radius: 6px;
+  background: #111b2b;
+  color: #d9e8fb;
+  font: 700 12px var(--mono);
+}
+
+.answer-pagination button:disabled {
+  cursor: default;
+  opacity: .4;
+}
+
+.answer-pagination span {
+  color: #91a4bf;
+  font: 600 11px var(--mono);
 }
 
 .reference-modal-backdrop {
@@ -3015,7 +3153,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 
 .reference-modal > header strong {
   color: #e8edf5;
-  font: 700 12px var(--mono);
+  font: 700 14.4px var(--mono);
 }
 
 .reference-modal-grid {
@@ -3041,7 +3179,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 .context-sidebar h3 {
   margin: 3px 0 0;
   color: #cad4e2;
-  font: 750 10px var(--mono);
+  font: 750 12px var(--mono);
 }
 
 .selection-chips.compact {
@@ -3051,7 +3189,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
 .selection-chips.compact > span {
   min-height: 24px;
   padding: 0 7px;
-  font-size: 9px;
+  font-size: 10.8px;
 }
 
 .context-block {
@@ -3073,7 +3211,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   color: #f1f4f8;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font: 600 10px/1.6 var(--mono);
+  font: 600 12px/1.6 var(--mono);
 }
 
 .context-sidebar .context-block pre {
@@ -3086,7 +3224,7 @@ table.pivot.bench-table tbody tr:hover .axis-kmetric {
   gap: 8px 10px;
   margin: 0;
   padding: 10px;
-  font: 600 9px var(--mono);
+  font: 600 10.8px var(--mono);
 }
 
 .context-key-values dt {
@@ -3704,7 +3842,7 @@ body {
 
 @media (min-width: 1680px) {
   .reference-score-table {
-    font-size: 12px;
+    font-size: 14.4px;
   }
 
   .reference-score-table th,
@@ -4057,26 +4195,132 @@ body {
   }
 }
 
-/* Keep the dashboard in the compact workbench layout rather than stretching it
-   to the viewport.  The domain switcher remains a distinct control row above
-   the centred data table. */
+/* Core-20 research matrix.  Keep the matrix fluid and preserve the original
+   column proportions.  Numeric type occupies 65% of a row and the three axis
+   fields occupy 50%, instead of forcing one 19px size onto every descendant. */
 .reference-shell.dashboard-shell {
-  width: min(1360px, calc(100% - 32px));
-  max-width: 1360px;
+  width: min(1760px, calc(100% - clamp(12px, 2vw, 32px)));
+  max-width: 1760px;
   margin: 0 auto;
-  padding: 26px 14px 64px;
+  padding: clamp(14px, 1.5vw, 26px) clamp(6px, .8vw, 14px) 64px;
 }
 
 .reference-table-scroll {
-  width: min(1098px, 100%);
+  width: 100%;
   height: auto;
   max-height: none;
   margin: 18px auto 0;
-  overflow: visible;
+  overflow: hidden;
+  overflow: clip;
+  container-type: inline-size;
 }
 
 .reference-score-table {
-  width: 1080px;
-  min-width: 1080px;
+  width: 100%;
+  min-width: 0;
   margin: 0 auto;
+  --reference-row-height: clamp(18px, 2.41cqi, 38px);
+  --reference-value-size: clamp(11.7px, 1.5665cqi, 24.7px);
+  --reference-axis-size: clamp(9px, 1.205cqi, 19px);
+  table-layout: fixed;
+  font-size: var(--reference-axis-size);
+  line-height: 1;
+}
+
+.reference-score-table thead th:not(.ref-benchmark):not(.ref-samples):not(.ref-metric),
+.reference-score-table .compact-score,
+.reference-score-table .compact-score > span,
+.reference-score-table .compact-score-missing,
+.reference-score-table .ref-delta {
+  font-size: var(--reference-value-size) !important;
+  line-height: 1;
+}
+
+.reference-score-table :is(.ref-benchmark, .ref-samples, .ref-metric) {
+  width: auto;
+  min-width: 0;
+  font-size: var(--reference-axis-size) !important;
+  line-height: 1.05;
+}
+
+.reference-score-table th,
+.reference-score-table td {
+  height: var(--reference-row-height);
+  padding-right: clamp(1px, .18vw, 3px);
+  padding-left: clamp(1px, .18vw, 3px);
+  overflow: hidden;
+}
+
+.reference-score-table thead th,
+.reference-score-table thead tr:nth-child(2) th {
+  height: var(--reference-row-height);
+}
+
+.reference-score-table thead tr:nth-child(2) th {
+  top: var(--reference-row-height);
+}
+
+.reference-score-table .compact-score {
+  height: calc(var(--reference-row-height) - 2px);
+  min-height: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.reference-score-table .compact-score small {
+  font-size: clamp(6px, .75cqi, 12px) !important;
+}
+
+.reference-score-table .ref-benchmark {
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reference-score-table .ref-samples,
+.reference-score-table .ref-metric,
+.reference-score-table .ref-delta {
+  white-space: nowrap;
+}
+
+.reference-score-table thead tr:nth-child(2) th:not(.ref-delta-head),
+.reference-score-table tbody td:not(.ref-benchmark):not(.ref-samples):not(.ref-metric):not(.ref-delta),
+.reference-score-table .ref-delta,
+.reference-score-table .ref-delta-head {
+  width: auto;
+  min-width: 0;
+}
+
+.reference-score-table col.ref-col-benchmark {
+  width: 7.85%;
+}
+
+.reference-score-table col.ref-col-samples {
+  width: 3.42%;
+}
+
+.reference-score-table col.ref-col-metric {
+  width: 3.67%;
+}
+
+.reference-score-table .ref-benchmark .benchmark-mode {
+  font-size: clamp(6px, .5vw, 8.4px) !important;
+  line-height: 1;
+}
+
+.reference-score-table .ref-benchmark .benchmark-deferred {
+  font-size: clamp(6px, .5vw, 8.4px) !important;
+  line-height: 1.1;
+}
+
+@media (max-width: 900px) {
+  .reference-shell.dashboard-shell {
+    width: 100%;
+    padding-right: 4px;
+    padding-left: 4px;
+  }
+
+  .comparison-card {
+    padding-right: 6px;
+    padding-left: 6px;
+  }
 }

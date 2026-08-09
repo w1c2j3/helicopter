@@ -5,6 +5,7 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from scoreboard_server.db.connection import close_db, init_db
 from scoreboard_server.db.repository import ScoreboardStore
@@ -51,6 +52,18 @@ def create_app(
             allow_methods=["GET", "POST"],
             allow_headers=["Accept", "Content-Type", "X-RWKV-Admin-Request"],
         )
+    else:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+    # Leaderboard payloads contain the complete research matrix and can be
+    # several hundred kilobytes. Compress them at the API boundary so remote
+    # previews do not block while a large uncompressed JSON response crosses
+    # an SSH/Cloudflare tunnel.
+    app.add_middleware(GZipMiddleware, minimum_size=1_024, compresslevel=5)
     store = ScoreboardStore(settings=resolved)
     register_api_routes(app, store)
     return app

@@ -100,42 +100,54 @@ def prompt_template_for_mode(prompt: dict[str, Any], mode: str | None = None) ->
     return rwkv_prompt_template(selected)
 
 
-def prepend_venv_path(env: dict[str, str], root: Path, config: dict[str, Any]) -> None:
-    paths = table(config, "paths")
+def prepend_venv_path(
+    env: dict[str, str],
+    root: Path,
+    config: dict[str, Any] | None = None,
+) -> None:
+    paths = table(config or {}, "paths")
     venv_value = pick(
         paths.get("venv"),
         env_value(env, "HELICOPTER_VENV", "VENV", "REMOTE_VENV"),
+        ".venv",
     )
+    venv = resolve_path(str(venv_value), root=root, env=env)
     bin_dir = venv / "bin"
     if bin_dir.exists():
         env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
 
 
 def python_executable(
+    config: dict[str, Any] | None = None,
     *,
     root: Path,
     env: dict[str, str],
     require_configured: bool = False,
 ) -> str:
-    python_value = env_value(env, "HELICOPTER_PYTHON", "PYTHON")
+    paths = table(config or {}, "paths")
+    python_value = pick(
+        paths.get("python"),
+        env_value(env, "HELICOPTER_PYTHON", "PYTHON"),
+    )
     if python_value:
         python = resolve_path(str(python_value), root=root, env=env)
         if require_configured and not os.access(python, os.X_OK):
             raise SystemExit(f"Python executable not found: {python}")
         return str(python)
 
-    venv = resolve_path(
-        str(env_value(env, "HELICOPTER_VENV", "VENV", "REMOTE_VENV") or ".venv"),
-        root=root,
-        env=env,
+    venv_value = pick(
+        paths.get("venv"),
+        env_value(env, "HELICOPTER_VENV", "VENV", "REMOTE_VENV"),
+        ".venv",
     )
+    venv = resolve_path(str(venv_value), root=root, env=env)
     python = venv / "bin/python"
     if python.exists():
         return str(python)
     if require_configured:
         raise SystemExit(
             f"Python executable not found: {python}; run scripts/install_local.sh "
-            "or set HELICOPTER_PYTHON"
+            "or set HELICOPTER_PYTHON / paths.python"
         )
     return str(Path(sys.executable))
 
@@ -962,7 +974,7 @@ def build_lighteval_plan(
         command.append(str(extra))
 
     shown_env = {"PYTHON": python}
-    plan_env = strip_vllm_env(env)
+    plan_env = _strip_vllm_env(env)
     # The repository carries the LightEval source that this command is meant
     # to exercise.  Put it on the child interpreter's PYTHONPATH explicitly
     # instead of relying only on an editable-install record in the venv.
@@ -1149,7 +1161,7 @@ def build_lighteval_tasks_plan(
             append_cli_option(command, "--limit", getattr(args, "limit", None))
         if args.task_action == "export":
             append_cli_flag(command, "--include-supersets", getattr(args, "include_supersets", None))
-        return CommandPlan(command=command, cwd=root, shown_env={"PYTHON": python}, env=strip_vllm_env(env))
+        return CommandPlan(command=command, cwd=root, shown_env={"PYTHON": python}, env=_strip_vllm_env(env))
 
     if args.task_action == "inspect":
         if not args.tasks:
@@ -1160,7 +1172,7 @@ def build_lighteval_tasks_plan(
             append_cli_option(command, "--num-samples", getattr(args, "num_samples", None))
             append_cli_option(command, "--custom-tasks", custom_tasks)
             append_cli_flag(command, "--show-config", getattr(args, "show_config", None))
-            return CommandPlan(command=command, cwd=root, shown_env={"PYTHON": python}, env=strip_vllm_env(env))
+            return CommandPlan(command=command, cwd=root, shown_env={"PYTHON": python}, env=_strip_vllm_env(env))
 
         command = [python, "-m", "lighteval", "tasks", args.task_action]
         command.append(args.tasks)
@@ -1172,7 +1184,7 @@ def build_lighteval_tasks_plan(
         append_cli_flag(command, "--load-tasks-multilingual", load_tasks_multilingual)
 
     append_cli_option(command, "--custom-tasks", custom_tasks)
-    return CommandPlan(command=command, cwd=root, shown_env={"PYTHON": python}, env=strip_vllm_env(env))
+    return CommandPlan(command=command, cwd=root, shown_env={"PYTHON": python}, env=_strip_vllm_env(env))
 
 
 def build_lighteval_export_plan(
@@ -1188,7 +1200,7 @@ def build_lighteval_export_plan(
         command.append(str(resolve_path(str(detail), root=root, env=env)))
     append_cli_option(command, "--output", getattr(args, "output", None))
     append_cli_option(command, "--format", getattr(args, "format", None))
-    return CommandPlan(command=command, cwd=root, shown_env={"PYTHON": python}, env=strip_vllm_env(env))
+    return CommandPlan(command=command, cwd=root, shown_env={"PYTHON": python}, env=_strip_vllm_env(env))
 
 
 def build_grpo_hydra_overrides(
@@ -1451,20 +1463,20 @@ def build_infer_plan(
     gpu = table(config, "gpu")
 
     wkv_mode_value = pick(
-        args.wkv_mode,
+        getattr(args, "wkv_mode", None),
         env_value(env, "HELICOPTER_INFER_WKV_MODE", "VLLM_RWKV7_WKV_MODE"),
         infer.get("wkv_mode"),
     )
     wkv_mode = str(wkv_mode_value) if wkv_mode_value is not None else None
     emb_device_value = pick(
-        args.emb_device,
+        getattr(args, "emb_device", None),
         env_value(env, "HELICOPTER_INFER_EMB_DEVICE", "VLLM_RWKV7_EMB_DEVICE"),
         infer.get("emb_device"),
     )
     emb_device = str(emb_device_value) if emb_device_value is not None else None
     allow_fp16_accumulation = _resolve_fp16_accumulation(
         pick(
-            args.allow_fp16_accumulation,
+            getattr(args, "allow_fp16_accumulation", None),
             env_value(
                 env,
                 "HELICOPTER_INFER_ALLOW_FP16_ACCUMULATION",
@@ -1475,11 +1487,11 @@ def build_infer_plan(
         wkv_mode=wkv_mode,
         name="HELICOPTER_INFER_ALLOW_FP16_ACCUMULATION",
     )
-    host = str(pick(args.host, runtime.get("host"), default="0.0.0.0"))
-    port = str(pick(args.port, runtime.get("port"), default="8000"))
+    host = str(pick(getattr(args, "host", None), runtime.get("host"), default="0.0.0.0"))
+    port = str(pick(getattr(args, "port", None), runtime.get("port"), default="8000"))
     served_model_name = str(
         pick(
-            args.served_model_name,
+            getattr(args, "served_model_name", None),
             model.get("served_model_name"),
             model.get("requested_name"),
             args.model,
@@ -1509,27 +1521,27 @@ def build_infer_plan(
     ]
     option_values = {
         "--tensor-parallel-size": pick(
-            args.tensor_parallel_size,
+            getattr(args, "tensor_parallel_size", None),
             env_value(env, "HELICOPTER_TENSOR_PARALLEL_SIZE"),
             infer.get("tensor_parallel_size"),
             gpu.get("tensor_parallel_size"),
         ),
         "--gpu-memory-utilization": pick(
-            args.gpu_memory_utilization,
+            getattr(args, "gpu_memory_utilization", None),
             infer.get("gpu_memory_utilization"),
         ),
         "--max-model-len": pick(
-            args.max_model_len,
+            getattr(args, "max_model_len", None),
             model.get("max_model_len"),
             infer.get("max_model_len"),
         ),
         "--max-num-seqs": pick(
-            args.max_num_seqs,
+            getattr(args, "max_num_seqs", None),
             model.get("max_num_seqs"),
             infer.get("max_num_seqs"),
         ),
         "--max-num-batched-tokens": pick(
-            args.max_num_batched_tokens,
+            getattr(args, "max_num_batched_tokens", None),
             model.get("max_num_batched_tokens"),
             infer.get("max_num_batched_tokens"),
         ),
@@ -1539,7 +1551,7 @@ def build_infer_plan(
             command.extend([option, str(value)])
 
     auto_tool_choice = pick(
-        args.enable_auto_tool_choice,
+        getattr(args, "enable_auto_tool_choice", None),
         env_value(env, "VLLM_ENABLE_AUTO_TOOL_CHOICE"),
         infer.get("enable_auto_tool_choice"),
         default=False,
@@ -1561,10 +1573,15 @@ def build_infer_plan(
 
     shown_env = {
         **config_vllm_env(infer),
-        **parse_vllm_env_overrides(args.vllm_env),
+        **parse_vllm_env_overrides(getattr(args, "vllm_env", None)),
     }
-    apply_rwkv_env(shown_env, wkv_mode=wkv_mode, emb_device=emb_device)
-    plan_env = strip_vllm_env(env)
+    _apply_rwkv_env(
+        shown_env,
+        wkv_mode=wkv_mode,
+        emb_device=emb_device,
+        allow_fp16_accumulation=allow_fp16_accumulation,
+    )
+    plan_env = _strip_vllm_env(env)
     plan_env.update(shown_env)
     return CommandPlan(command=command, cwd=root, shown_env=shown_env, env=plan_env)
 
@@ -1593,79 +1610,23 @@ def build_takeoff_plan(
         root=root,
         env=env,
     )
-    vllm_rwkv_value = pick(
-        paths.get("vllm_rwkv_path"),
-        env_value(env, "HELICOPTER_VLLM_RWKV_PATH", "VLLM_RWKV_PATH"),
-    )
-    if not vllm_rwkv_value:
-        raise SystemExit(
-            "takeoff requires an external vllm-rwkv checkout via "
-            "[paths].vllm_rwkv_path or HELICOPTER_VLLM_RWKV_PATH"
-        )
     vllm_rwkv_path = resolve_path(
-        str(vllm_rwkv_value),
+        str(
+            env_value(env, "HELICOPTER_VLLM_RWKV_PATH", "VLLM_RWKV_PATH")
+            or "src/infer/vllm-rwkv"
+        ),
         root=root,
         env=env,
-    ).resolve()
-
-    has_train_files = "train_files" in dataset or env_value(env, "TRAIN_FILES") is not None
-    has_val_files = "val_files" in dataset or env_value(env, "VAL_FILES") is not None
-    dataset_uses_explicit_files = has_train_files and has_val_files
-    if not args.dry_run:
-        for path, message in (
-            (model_path, "RWKV checkpoint not found"),
-            (rwkv_lm_path, "rwkv-lm repository not found"),
-            (vllm_rwkv_path, "vllm-rwkv repository not found"),
-        ):
-            exists = path.is_dir() if "repository" in message or "root" in message else path.is_file()
-            if not exists:
-                raise SystemExit(f"{message}: {path}")
-        if not dataset_uses_explicit_files and not data_root.is_dir():
-            raise SystemExit(f"dataset root not found: {data_root}")
-
-    wkv_mode = str(
-        pick(
-            args.wkv_mode,
-            env_value(env, "HELICOPTER_TAKEOFF_WKV_MODE", "VLLM_RWKV7_WKV_MODE"),
-            takeoff.get("wkv_mode"),
-            default="fp32io16",
-        )
     )
-    emb_device_value = pick(
-        args.emb_device,
-        env_value(env, "HELICOPTER_TAKEOFF_EMB_DEVICE"),
-        takeoff.get("emb_device"),
-        default="gpu",
-    )
-    emb_device = str(emb_device_value) if emb_device_value is not None else None
-    num_nodes = pick(
-        args.num_nodes,
-        env_value(env, "HELICOPTER_NUM_NODES", "NNODES"),
-        gpu.get("num_nodes"),
-        takeoff.get("num_nodes"),
-        default=1,
-    )
-    num_devices = pick(
-        args.num_devices,
-        env_value(env, "HELICOPTER_NUM_DEVICES", "NGPUS_PER_NODE"),
-        gpu.get("num_devices"),
-        takeoff.get("num_devices"),
-        default=8,
-    )
-
-    python = python_executable(config, root=root, env=env, require_configured=True)
-    shown_env: dict[str, str] = {}
-    apply_rwkv_env(shown_env, wkv_mode=wkv_mode, emb_device=emb_device)
-    shown_env["PYTHON"] = python
-    shown_env["RWKV_MODEL_PATH"] = str(model_path)
-    shown_env["RWKV_LM_PATH"] = str(rwkv_lm_path)
-    plan_env = strip_vllm_env(env)
-    plan_env.update(shown_env)
-    current_pythonpath = plan_env.get("PYTHONPATH")
-    plan_env["PYTHONPATH"] = (
-        f"{vllm_rwkv_path}{os.pathsep}{current_pythonpath}" if current_pythonpath else str(vllm_rwkv_path)
-    )
-    shown_env["PYTHONPATH"] = plan_env["PYTHONPATH"]
+    python = python_executable(root=root, env=env, require_configured=True)
+    for path, label in (
+        (config_path, "MaxRL config"),
+        (verl_path, "verl-rwkv checkout"),
+        (rwkv_lm_path, "rwkv-lm checkout"),
+        (vllm_rwkv_path, "vllm-rwkv checkout"),
+    ):
+        if not path.exists():
+            raise SystemExit(f"{label} not found: {path}")
 
     command = [
         python,

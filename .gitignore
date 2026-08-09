@@ -28,6 +28,7 @@ dist/
 
 node_modules/
 .next/
+.next-*/
 playwright-report/
 test-results/
 tsconfig.tsbuildinfo
@@ -64,6 +65,8 @@ configs/local/
 *.log
 *.tmp
 *.swp
+.codex-run-*.sh
+ops/.tmp_*.sh
 .DS_Store
 .idea/
 .vscode/

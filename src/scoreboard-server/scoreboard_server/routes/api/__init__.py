@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from scoreboard_server.db.repository import ScoreboardStore
+
 from . import (
     admin,
     capture_page,
@@ -17,7 +18,7 @@ from . import (
 
 
 def register_api_routes(app: FastAPI, store: ScoreboardStore) -> None:
-    health.register(app)
+    health.register(app, store)
     meta.register(app, store)
     refresh.register(app, store)
     capture_page.register(app)

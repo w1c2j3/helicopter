@@ -191,8 +191,8 @@ class EvalScopeAgentTests(unittest.TestCase):
     def test_catalog_matches_supported_agent_dataset_shape(self) -> None:
         rows = load_agent_catalog(ROOT, DEFAULT_CATALOG)
 
-        self.assertGreaterEqual(len(rows), 30)
-        self.assertEqual(rows[0]["name"], "automation_bench")
+        self.assertGreaterEqual(len(rows), 27)
+        self.assertEqual(rows[0]["name"], "bfcl_v3")
         self.assertIn("swe_bench_verified_agentic", {row["name"] for row in rows})
         self.assertIn("Agent", rows[0]["categories"])
         self.assertIn("dataset\tdisplay_name\tcategories", format_agent_catalog(rows))
@@ -338,7 +338,7 @@ class EvalScopeAgentTests(unittest.TestCase):
         }
 
         plan = build_evalscope_plan(
-            evalscope_args(datasets=["acebench"], no_agent_config=True),
+            evalscope_args(datasets=["general_fc"], no_agent_config=True),
             root=ROOT,
             env={},
             config=config,

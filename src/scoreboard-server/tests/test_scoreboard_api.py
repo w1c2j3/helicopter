@@ -188,6 +188,23 @@ async def test_scoreboard_api_serves_leaderboard_records_context_and_history(
         task_id=tuning_task_id,
         payload={"cot_mode": "CoT", "metrics": {"accuracy": 0.6}, "created_at": "2026-07-01T13:00:00"},
     )
+    # A persisted completion without an eval row must remain inspectable.  Its
+    # first stage is deliberately truncated; strict math diagnostics must only
+    # count the second/final answer stage.
+    await service.insert_completion_payload(
+        task_id=str(task_id),
+        payload={
+            "sample_index": 2,
+            "repeat_index": 0,
+            "pass_index": 0,
+            "prompt1": "Reason about 2+2",
+            "completion1": "long reasoning",
+            "stop_reason1": "length",
+            "prompt2": "Return the final answer",
+            "completion2": "4",
+            "stop_reason2": "max_tokens",
+        },
+    )
     app = create_app(settings=database_settings)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
@@ -216,13 +233,60 @@ async def test_scoreboard_api_serves_leaderboard_records_context_and_history(
         assert tuning["rows"][0]["cells"][0]["meta"]["task_id"] == int(tuning_task_id)
 
         records = (await client.get("/api/eval-records", params={"task_id": task_id, "limit": 10})).json()
-        assert len(records["records"]) == 2
+        assert len(records["records"]) == 3
         assert records["records"][1]["fail_reason"] == "wrong arithmetic"
+        assert records["records"][2]["has_eval_record"] is False
+        assert records["records"][2]["final_stop_reason"] == "max_tokens"
+        assert records["records"][2]["is_truncated"] is True
+        assert records["total"] == 3
+        assert records["eval_total"] == 2
+        assert records["missing_eval_count"] == 1
+        assert records["outcome"] == "all"
+        assert records["outcome_counts"] == {
+            "all": 3,
+            "correct": 1,
+            "incorrect": 1,
+            "unanswered": 1,
+        }
+        assert records["diagnostics"]["truncated_count"] == 1
+        assert records["diagnostics"]["truncation_rate"] == pytest.approx(1 / 3)
+
+        complete_records = (
+            await client.get("/api/eval-records", params={"task_id": task_id})
+        ).json()
+        assert complete_records["limit"] is None
+        assert complete_records["has_more"] is False
+        assert len(complete_records["records"]) == 3
+        assert all(row["context_preview"] == "" for row in complete_records["records"])
+
+        first_page = (
+            await client.get("/api/eval-records", params={"task_id": task_id, "limit": 1})
+        ).json()
+        assert len(first_page["records"]) == 1
+        assert first_page["has_more"] is True
+        assert first_page["next_offset"] == 1
 
         wrong = (
             await client.get("/api/eval-records", params={"task_id": task_id, "only_wrong": "true", "limit": 10})
         ).json()
         assert [row["sample_index"] for row in wrong["records"]] == [1]
+
+        unanswered = (
+            await client.get(
+                "/api/eval-records",
+                params={"task_id": task_id, "outcome": "unanswered", "limit": 10},
+            )
+        ).json()
+        assert [row["sample_index"] for row in unanswered["records"]] == [2]
+
+        missing_eval_context = (
+            await client.get(
+                "/api/eval-context",
+                params={"task_id": task_id, "sample_index": 2, "repeat_index": 0, "pass_index": 0},
+            )
+        ).json()
+        assert missing_eval_context["view"] == "structured"
+        assert missing_eval_context["context"]["stages"][1]["prompt"] == "Return the final answer"
 
         context = (
             await client.get(

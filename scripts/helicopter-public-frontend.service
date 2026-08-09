@@ -1,0 +1,16 @@
+[Unit]
+Description=Helicopter strict46 public frontend
+Wants=network-online.target helicopter-public-api.service
+After=network-online.target helicopter-public-api.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+UnsetEnvironment=HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy NO_PROXY no_proxy
+ExecStart=/bin/bash /home/rwkv/chase/helicopter/.codex-run-helicopter-frontend46-public-157.sh
+Restart=always
+RestartSec=3s
+TimeoutStopSec=20s
+
+[Install]
+WantedBy=default.target

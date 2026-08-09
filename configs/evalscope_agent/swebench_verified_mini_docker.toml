@@ -4,6 +4,9 @@
 # Verified/Multilingual/Pro suites build or pull substantially more images and
 # must not be started until the Docker filesystem budget has been checked.
 
+[model_catalog]
+path = "configs/models/g1h-dual-replica.toml"
+
 [evalscope]
 binary = "evalscope"
 eval_type = "openai_api"

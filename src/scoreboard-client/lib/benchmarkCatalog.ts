@@ -105,6 +105,46 @@ export const BENCHMARK_CATALOG: BenchmarkCatalogItem[] = [
   { key: "ifbench", label: "IFBench", domain: "instruction_following", aliases: ["ifbench", "ifbench_test"], samples: 300 },
 ];
 
+/**
+ * Compact, externally comparable dashboard scope.
+ *
+ * Keep BENCHMARK_CATALOG as the complete registry used by admin and mock-data
+ * tooling.  The public research matrix deliberately uses this smaller list so
+ * reducing the visible dashboard never deletes benchmark support or results.
+ */
+export const CORE_BENCHMARK_KEYS = [
+  "mmlu",
+  "mmlu_pro",
+  "gpqa_diamond",
+  "arc_challenge",
+  "hellaswag",
+  "bbh",
+  "truthfulqa_mc1",
+  "ceval",
+  "gsm8k",
+  "math_500",
+  "aime24",
+  "aime25",
+  "amc23",
+  "olympiadbench",
+  "human_eval",
+  "human_eval_plus",
+  "mbpp_plus",
+  "livecodebench",
+  "ifeval",
+  "ifbench",
+] as const;
+
+const benchmarkCatalogByKey = new Map(
+  BENCHMARK_CATALOG.map((benchmark) => [benchmark.key, benchmark]),
+);
+
+export const CORE_BENCHMARK_CATALOG: BenchmarkCatalogItem[] = CORE_BENCHMARK_KEYS.map((key) => {
+  const benchmark = benchmarkCatalogByKey.get(key);
+  if (!benchmark) throw new Error(`Core benchmark is not registered: ${key}`);
+  return benchmark;
+});
+
 export const BENCHMARK_DOMAIN_ORDER: BenchmarkDomainKey[] = [
   "knowledge",
   "math",

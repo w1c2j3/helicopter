@@ -2,7 +2,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "playwright";
 
-const [, , targetUrl, outputPath, rawWidth, rawHeight] = process.argv;
+const [, , targetUrl, outputPath, rawWidth, rawHeight, captureMode] = process.argv;
 
 if (!targetUrl || !outputPath) {
   console.error("Usage: node capture-page.mjs <url> <output-path> [width] [height]");
@@ -44,8 +44,18 @@ try {
   await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
   await page.waitForLoadState("networkidle", { timeout: 60_000 }).catch(() => {});
   await page
-    .waitForSelector(".bench-table tbody tr, .empty, .error-bar, .admin-grid", { timeout: 60_000 })
+    .waitForSelector(
+      ".reference-score-table tbody tr, .research-score-table tbody tr, .bench-table tbody tr, .empty, .error-bar, .admin-grid",
+      { timeout: 60_000 },
+    )
     .catch(() => {});
+  if (captureMode === "evidence") {
+    await page.locator(".research-score:not(:disabled)").first().click();
+    await page.waitForSelector(".research-evidence-panel", { timeout: 60_000 });
+    await page.locator(".evidence-table button").first().click();
+    await page.waitForSelector(".evidence-modal", { timeout: 60_000 });
+    await page.locator(".evidence-modal .spinner").waitFor({ state: "hidden", timeout: 60_000 });
+  }
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: outputPath, fullPage: true });
 

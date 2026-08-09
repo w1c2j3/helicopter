@@ -10,10 +10,12 @@ from tortoise import Tortoise
 from tortoise.transactions import in_transaction
 from tortoise.exceptions import OperationalError
 
+from scoreboard_server.cores.eval_diagnostics import final_generation_diagnostics
 from scoreboard_server.cores.normalize import (
     canonical_completion_status,
     canonical_cot_mode,
     canonical_task_status,
+    domain_for,
     git_hash,
     iter_stage_indices,
     join_dataset,
@@ -898,37 +900,89 @@ class ScoreboardStore:
         include_context: bool = True,
         include_preview: bool = False,
     ) -> list[dict[str, Any]]:
-        query = EvalRecord.filter(completion__task_id=int(task_id)).select_related("completion")
-        if only_wrong:
-            query = query.filter(is_passed=False)
-        query = query.order_by("completion__sample_index", "completion__avg_repeat_index", "completion__pass_index", "eval_id")
-        if offset > 0:
-            query = query.offset(offset)
-        if limit is not None and limit > 0:
-            query = query.limit(limit)
-        rows = await query
+        task = await Task.filter(task_id=int(task_id)).select_related("benchmark").first()
+        if task is None:
+            return []
+
+        benchmark = task.benchmark
+        dataset = join_dataset(benchmark.benchmark_name, benchmark.benchmark_split)
+        try:
+            catalog = await BenchmarkCatalog.filter(
+                benchmark_name=benchmark.benchmark_name,
+                benchmark_split=benchmark.benchmark_split,
+            ).first()
+        except Exception:  # noqa: BLE001 - legacy databases may lack the catalog table.
+            catalog = None
+        domain = str(catalog.field or "").strip() if catalog is not None else ""
+        if not domain:
+            evaluator = str(task.evaluator or "").strip().lower()
+            # The evaluator family is stronger evidence than a benchmark name
+            # for generic/free-response datasets such as SimpleQA.
+            if evaluator.startswith("free_response"):
+                domain = "math"
+            elif evaluator.startswith("multi_choice"):
+                domain = "knowledge"
+            else:
+                domain = domain_for(dataset, task.evaluator)
+        normalized_domain = (
+            domain.lower().replace("-", "_").replace("/", "_").replace(" ", "_")
+        )
+        if normalized_domain.startswith("math"):
+            domain = "math"
+        elif normalized_domain.startswith("knowledge"):
+            domain = "knowledge"
+        elif normalized_domain.startswith("coding"):
+            domain = "coding"
+        elif normalized_domain.startswith("instruction"):
+            domain = "instruction_following"
+
+        completions = await Completion.filter(task_id=int(task_id)).order_by(
+            "sample_index",
+            "avg_repeat_index",
+            "pass_index",
+            "completions_id",
+        )
+        eval_rows = await EvalRecord.filter(completion__task_id=int(task_id))
+        eval_by_completion_id: dict[int, EvalRecord] = {}
+        for row in eval_rows:
+            completion_id = getattr(row, "completion_id", None)
+            if completion_id is not None:
+                eval_by_completion_id[int(completion_id)] = row
+
         payloads: list[dict[str, Any]] = []
-        for row in rows:
-            context = row.completion.context if isinstance(row.completion.context, dict) else {}
+        for completion in completions:
+            row = eval_by_completion_id.get(int(completion.completions_id))
+            if only_wrong and (row is None or bool(row.is_passed)):
+                continue
+
+            context = completion.context if isinstance(completion.context, dict) else {}
             preview = ""
-            stages = context.get("stages")
-            if isinstance(stages, list) and stages and isinstance(stages[0], Mapping):
-                preview = str(stages[0].get("prompt") or "")[:240]
-            elif include_preview:
-                preview = str(context)[:240]
+            if include_preview:
+                stages = context.get("stages")
+                if isinstance(stages, list) and stages and isinstance(stages[0], Mapping):
+                    preview = str(stages[0].get("prompt") or "")[:240]
+                else:
+                    preview = str(context)[:240]
             item = {
-                "sample_index": row.completion.sample_index,
-                "repeat_index": row.completion.avg_repeat_index,
-                "pass_index": row.completion.pass_index,
-                "is_passed": row.is_passed,
-                "answer": row.answer,
-                "ref_answer": row.ref_answer,
-                "fail_reason": row.fail_reason,
+                "sample_index": completion.sample_index,
+                "repeat_index": completion.avg_repeat_index,
+                "pass_index": completion.pass_index,
+                "has_eval_record": row is not None,
+                "is_passed": row.is_passed if row is not None else None,
+                "answer": row.answer if row is not None else None,
+                "ref_answer": row.ref_answer if row is not None else None,
+                "fail_reason": row.fail_reason if row is not None else None,
                 "context_preview": preview,
+                **final_generation_diagnostics(context, domain=domain),
             }
             if include_context:
                 item["context"] = context
             payloads.append(item)
+
+        if offset > 0:
+            payloads = payloads[offset:]
+        if limit is not None and limit > 0:
+            payloads = payloads[:limit]
         return payloads
 
     async def get_eval_context_for_space(
@@ -939,13 +993,13 @@ class ScoreboardStore:
         repeat_index: int,
         pass_index: int = 0,
     ) -> Any | None:
-        row = await EvalRecord.filter(
-            completion__task_id=int(task_id),
-            completion__sample_index=int(sample_index),
-            completion__avg_repeat_index=int(repeat_index),
-            completion__pass_index=int(pass_index),
-        ).select_related("completion").order_by("-eval_id").first()
-        return row.completion.context if row else None
+        completion = await Completion.filter(
+            task_id=int(task_id),
+            sample_index=int(sample_index),
+            avg_repeat_index=int(repeat_index),
+            pass_index=int(pass_index),
+        ).first()
+        return completion.context if completion else None
 
     async def get_task_bundle(self, *, task_id: str) -> dict[str, Any] | None:
         task = await Task.filter(task_id=int(task_id)).select_related("model", "benchmark").first()

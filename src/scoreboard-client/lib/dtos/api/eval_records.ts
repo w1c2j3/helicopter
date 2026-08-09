@@ -25,6 +25,15 @@ export interface EvalRecordDiagnostics {
   missing_eval_count: number;
 }
 
+export type EvalRecordOutcome = "all" | "correct" | "incorrect" | "unanswered";
+
+export interface EvalRecordOutcomeCounts {
+  all: number;
+  correct: number;
+  incorrect: number;
+  unanswered: number;
+}
+
 export interface EvalRecordsResponse {
   task_id: number;
   records: EvalRecord[];
@@ -37,5 +46,7 @@ export interface EvalRecordsResponse {
   filtered_total: number;
   completion_total: number;
   missing_eval_count: number;
+  outcome: EvalRecordOutcome;
+  outcome_counts: EvalRecordOutcomeCounts;
   diagnostics: EvalRecordDiagnostics;
 }

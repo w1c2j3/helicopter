@@ -2,6 +2,8 @@ import { expect, test } from "@playwright/test";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 
+import { CORE_BENCHMARK_CATALOG } from "../lib/benchmarkCatalog";
+
 const CLIENT_ROOT = process.cwd();
 const REPO_SRC = path.resolve(CLIENT_ROOT, "..");
 const BACKEND_API_ROUTES = path.join(REPO_SRC, "scoreboard-server", "scoreboard_server", "routes", "api");
@@ -39,4 +41,21 @@ test("client API and DTO trees mirror backend API routes", () => {
   expect(existsSync(path.join(CLIENT_ROOT, "lib", "types.ts"))).toBe(false);
   expect(apiLeaves).toEqual(backendLeaves);
   expect(dtoLeaves).toEqual(backendLeaves);
+});
+
+test("core research matrix keeps the balanced 20-benchmark scope", () => {
+  const domainCounts = CORE_BENCHMARK_CATALOG.reduce<Record<string, number>>(
+    (counts, benchmark) => ({
+      ...counts,
+      [benchmark.domain]: (counts[benchmark.domain] ?? 0) + 1,
+    }),
+    {},
+  );
+
+  expect(CORE_BENCHMARK_CATALOG).toHaveLength(20);
+  expect(domainCounts.knowledge).toBe(8);
+  expect(domainCounts.math).toBe(6);
+  expect(domainCounts.coding).toBe(4);
+  expect(domainCounts.instruction_following).toBe(2);
+  expect(new Set(CORE_BENCHMARK_CATALOG.map((benchmark) => benchmark.key)).size).toBe(20);
 });
