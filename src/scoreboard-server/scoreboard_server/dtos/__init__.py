@@ -1,1 +1,1 @@
-"""Transport contracts."""
+"""Shared input and output contracts."""

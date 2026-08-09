@@ -1,30 +1,100 @@
 from __future__ import annotations
 
 import argparse
-import os
-import stat
+from datetime import UTC, datetime
 from pathlib import Path
 
+from .agent_harness import DEFAULT_AGENT_BENCHMARK_SOURCE, run_agent_harness
 from .commands import (
     EMB_DEVICES,
+    LIGHTEVAL_BACKENDS,
     WKV_MODES,
     build_infer_plan,
+    build_lighteval_export_plan,
+    build_lighteval_plan,
+    build_lighteval_tasks_plan,
     build_takeoff_plan,
     prepend_venv_path,
 )
-from .config import load_config
-from .env import DEFAULT_ENV_FILE, find_env_path, load_env
+from .config import load_config, merge_model_catalog
+from .env import DEFAULT_ENV_FILE, load_env
+from .eval_run import DEFAULT_SERVER_TIMEOUT_S, run_eval
+from .evalscope_agent import DEFAULT_CATALOG, run_evalscope
+from .fc_catalog import FC_TASKS
 from .paths import find_root
+from .performance import (
+    base_url_from_lighteval_command,
+    derive_metrics_url,
+    output_dir_from_command,
+    run_completions_performance,
+    run_lighteval_with_performance,
+)
 from .runner import run_command
 
 
-def add_runtime_options(parser: argparse.ArgumentParser) -> None:
+def add_common_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--config", help="TOML config path; defaults to the newest configs/local/*.toml")
     parser.add_argument(
-        "--env-file", default=DEFAULT_ENV_FILE, help="dotenv file to load first"
+        "--model-catalog",
+        help="optional model inventory TOML; kept separate from one-benchmark configs",
     )
-    parser.add_argument(
-        "--dry-run", action="store_true", help="print the command without executing it"
+    parser.add_argument("--env-file", default=DEFAULT_ENV_FILE, help="dotenv file to load first")
+    parser.add_argument("--dry-run", action="store_true", help="print the command without executing it")
+
+
+def add_lighteval_run_options(
+    parser: argparse.ArgumentParser, *, compact: bool = False
+) -> None:
+    """Add LightEval options, optionally hiding low-frequency help text."""
+
+    def add_option(*args: str, compact_help: bool = False, **kwargs: object) -> None:
+        if compact and not compact_help:
+            kwargs["help"] = argparse.SUPPRESS
+        parser.add_argument(*args, **kwargs)
+
+    add_option("--backend", choices=LIGHTEVAL_BACKENDS, default="endpoint-litellm")
+    add_option("--model-args", help="raw LightEval model args string or YAML config path")
+    add_option("--lighteval-model-name", help="model name passed to LightEval/LiteLLM", compact_help=True)
+    add_option("--base-url", help="OpenAI-compatible endpoint base URL", compact_help=True)
+    add_option("--provider", help="LiteLLM provider prefix; defaults to openai")
+    add_option("--api-key", help="API key passed through OPENAI_API_KEY", compact_help=True)
+    add_option(
+        "--prompt-mode",
+        choices=("naive_cot", "naive_nocot", "normal_cot", "normal_nocot"),
+        help="one isolated RWKV prompt profile for this evaluation process",
+        compact_help=True,
     )
+    add_option("--concurrent-requests", type=int, compact_help=True)
+    add_option(
+        "--request-timeout",
+        type=float,
+        help="per-request inference timeout in seconds",
+    )
+    add_option("--max-model-length", type=int)
+    add_option(
+        "--max-tokens",
+        "--max-new-tokens",
+        dest="max_tokens",
+        type=int,
+        help="vLLM max output tokens; --max-new-tokens is a legacy alias",
+        compact_help=True,
+    )
+    add_option("--max-samples", type=int, compact_help=True)
+    add_option("--output-dir", compact_help=True)
+    add_option("--dataset-loading-processes", type=int)
+    add_option("--num-fewshot-seeds", type=int)
+    add_option("--custom-tasks", help="custom LightEval task Python file")
+    add_option("--load-tasks-multilingual", action="store_true", default=None)
+    add_option("--save-details", dest="save_details", action="store_true", default=None)
+    add_option("--no-save-details", dest="save_details", action="store_false")
+    add_option("--push-to-hub", action="store_true", default=None)
+    add_option("--public-run", action="store_true", default=None)
+    add_option("--results-org")
+    add_option("--job-id", type=int)
+    add_option("--extra", action="append", help="extra argument passed to LightEval")
+    add_option("--performance-output", help="write run performance metrics JSON here")
+    add_option("--metrics-url", help="Prometheus metrics URL for token throughput; defaults to <base-url without /v1>/metrics")
+    add_option("--scoreboard-task-id", help="merge performance metrics into this scoreboard task score")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,6 +124,8 @@ def build_parser() -> argparse.ArgumentParser:
     infer.add_argument("--max-num-seqs", type=int)
     infer.add_argument("--max-num-batched-tokens", type=int)
     infer.add_argument("--enable-auto-tool-choice", action="store_true", default=None)
+    infer.add_argument("--tool-call-parser", help="vLLM tool-call parser; RWKV native tool calls use 'rwkv'")
+    infer.add_argument("--vllm-env", action="append", help="explicit VLLM_* environment override, e.g. VLLM_WSL2_ENABLE_PIN_MEMORY=1")
     infer.set_defaults(plan_builder=build_infer_plan)
 
     takeoff = subparsers.add_parser(
@@ -66,21 +138,378 @@ def build_parser() -> argparse.ArgumentParser:
     )
     takeoff.set_defaults(plan_builder=build_takeoff_plan)
 
-    evaluate = subparsers.add_parser(
-        "eval",
-        help="run configured LightEval benchmarks",
+    eval_parser = subparsers.add_parser("eval", help="run model evaluations")
+    eval_subparsers = eval_parser.add_subparsers(dest="eval_command", required=True)
+
+    eval_run = eval_subparsers.add_parser(
+        "run",
+        help="one-shot evaluation: start vLLM, run LightEval, stop vLLM",
     )
-    evaluate.add_argument("--config", required=True, help="LightEval TOML")
-    evaluate.add_argument(
-        "--env-file",
-        default=DEFAULT_ENV_FILE,
-        help="private dotenv file; defaults to .env.local",
+    add_common_options(eval_run)
+    eval_run.add_argument("model", help="model alias from configs")
+    eval_run.add_argument(
+        "tasks",
+        nargs="?",
+        help="LightEval task string; defaults to [lighteval].tasks from the config",
     )
-    evaluate.add_argument(
-        "--dry-run",
+    add_lighteval_run_options(eval_run)
+    eval_run.add_argument("--wkv-mode", choices=WKV_MODES)
+    eval_run.add_argument("--emb-device", choices=EMB_DEVICES)
+    eval_run.add_argument("--tensor-parallel-size", type=int)
+    eval_run.add_argument("--gpu-memory-utilization", type=float)
+    eval_run.add_argument("--max-num-seqs", type=int)
+    eval_run.add_argument("--max-num-batched-tokens", type=int)
+    eval_run.add_argument("--enable-auto-tool-choice", action="store_true", default=None)
+    eval_run.add_argument("--tool-call-parser", help="vLLM tool-call parser; RWKV native tool calls use 'rwkv'")
+    eval_run.add_argument(
+        "--vllm-env",
+        action="append",
+        help="explicit VLLM_* environment override for the managed server",
+    )
+    eval_run.add_argument(
+        "--no-server",
         action="store_true",
-        help="validate, resolve selectors, and print a redacted plan",
+        help="never start vLLM; assume the endpoint is already serving",
     )
+    eval_run.add_argument(
+        "--keep-server",
+        action="store_true",
+        help="leave the managed vLLM server running after the evaluation",
+    )
+    eval_run.add_argument(
+        "--server-timeout",
+        type=float,
+        default=DEFAULT_SERVER_TIMEOUT_S,
+        help="seconds to wait for the managed vLLM server to become healthy",
+    )
+    eval_run.add_argument(
+        "--scoreboard",
+        action="store_true",
+        help="record per-task scores into the scoreboard database after the run",
+    )
+    eval_run.set_defaults(plan_builder=None)
+
+    eval_perf = eval_subparsers.add_parser(
+        "perf",
+        help="raw OpenAI completions performance probe",
+    )
+    add_common_options(eval_perf)
+    eval_perf.add_argument("model", help="model alias from configs")
+    eval_perf.add_argument("--base-url", help="OpenAI-compatible endpoint base URL")
+    eval_perf.add_argument("--api-key", help="API key passed to the endpoint")
+    eval_perf.add_argument("--served-model-name", help="model name sent in the OpenAI request")
+    eval_perf.add_argument("--profile", choices=("prefill", "decode"), default="decode")
+    eval_perf.add_argument("--prompt-tokens", type=int, help="synthetic prompt token target")
+    eval_perf.add_argument("--output-tokens", type=int, help="max generated tokens per request")
+    eval_perf.add_argument("--requests", type=int, help="number of requests to issue")
+    eval_perf.add_argument("--concurrency", type=int, help="maximum in-flight requests")
+    eval_perf.add_argument("--request-rate", type=float, help="optional request launch rate in requests/second")
+    eval_perf.add_argument("--timeout", type=float, help="per-request timeout in seconds")
+    eval_perf.add_argument("--ignore-eos", action="store_true", default=None, help="ask vLLM to continue until max_tokens")
+    eval_perf.add_argument("--output", help="write performance report JSON here")
+    eval_perf.set_defaults(plan_builder=None)
+
+    eval_batch = eval_subparsers.add_parser(
+        "batch",
+        help="run explicitly selected model/benchmark jobs",
+    )
+    add_common_options(eval_batch)
+    add_lighteval_run_options(eval_batch, compact=True)
+    eval_batch.add_argument(
+        "--job",
+        "--run",
+        dest="jobs",
+        action="append",
+        metavar="MODEL=BENCHMARK[,BENCHMARK...]",
+        help="select a model and its benchmarks; repeat for different models (fc:TASK for function calling)",
+    )
+    eval_batch.add_argument("--models", action="append", help=argparse.SUPPRESS)
+    eval_batch.add_argument("--tasks", action="append", help=argparse.SUPPRESS)
+    eval_batch.add_argument("--tasks-from-db", action="store_true", help=argparse.SUPPRESS)
+    eval_batch.add_argument("--benchmark-scope", help=argparse.SUPPRESS)
+    eval_batch.add_argument("--benchmark-fields", action="append", help=argparse.SUPPRESS)
+    eval_batch.add_argument("--benchmark-limit", type=int, help=argparse.SUPPRESS)
+    eval_batch.add_argument("--fc-tasks", action="append", help=argparse.SUPPRESS)
+    eval_batch.add_argument("--gpus", help="comma-separated GPU indexes; defaults to idle-GPU auto-detection")
+    eval_batch.add_argument("--gpu-idle-max-mem", type=float, help="MiB of used memory below which a GPU counts as idle")
+    eval_batch.add_argument(
+        "--parallel",
+        type=int,
+        help="optional global cap for model-derived benchmark workers",
+    )
+    eval_batch.add_argument("--max-retries", type=int, default=0, help="retries per failed unit")
+    eval_batch.add_argument("--port-base", type=int, help="first port for managed vLLM servers; slot i uses port-base + i")
+    eval_batch.add_argument("--batch-output", help="optionally write a batch report JSON; disabled by default")
+    eval_batch.add_argument("--rerun", action="store_true", help="run benchmarks even when the scoreboard already has a score")
+    eval_batch.add_argument("--wkv-mode", choices=WKV_MODES)
+    eval_batch.add_argument("--emb-device", choices=EMB_DEVICES)
+    eval_batch.add_argument("--tensor-parallel-size", type=int)
+    eval_batch.add_argument("--gpu-memory-utilization", type=float)
+    eval_batch.add_argument("--max-num-seqs", type=int)
+    eval_batch.add_argument("--max-num-batched-tokens", type=int)
+    eval_batch.add_argument("--enable-auto-tool-choice", action="store_true", default=None)
+    eval_batch.add_argument("--vllm-env", action="append", help="explicit VLLM_* environment override for managed servers")
+    eval_batch.add_argument("--no-server", action="store_true", help="never start vLLM; assume the endpoint is already serving")
+    eval_batch.add_argument(
+        "--server-timeout",
+        type=float,
+        default=DEFAULT_SERVER_TIMEOUT_S,
+        help="seconds to wait for each managed vLLM server to become healthy",
+    )
+    eval_batch.add_argument(
+        "--scoreboard",
+        action="store_true",
+        help="record scores into the scoreboard database and skip already-scored benchmarks",
+    )
+    eval_batch.set_defaults(plan_builder=None)
+
+    fc = eval_subparsers.add_parser(
+        "function-calling",
+        aliases=("fc",),
+        help="run native OpenAI tool_calls function-calling benchmarks",
+    )
+    add_common_options(fc)
+    fc.add_argument("model", help="model alias from configs")
+    fc.add_argument(
+        "tasks",
+        nargs="?",
+        default="all",
+        help=f"comma-separated FC task ids or all; known: {', '.join(FC_TASKS)}",
+    )
+    fc.add_argument("--base-url", help="OpenAI-compatible endpoint base URL")
+    fc.add_argument("--max-samples", type=int)
+    fc.add_argument("--output-dir")
+    fc.add_argument(
+        "--no-server",
+        action="store_true",
+        help="never start vLLM; assume the endpoint is already serving",
+    )
+    fc.add_argument(
+        "--keep-server",
+        action="store_true",
+        help="leave the managed vLLM server running after the evaluation",
+    )
+    fc.add_argument(
+        "--scoreboard",
+        action="store_true",
+        help="record native tool_calls scores into the scoreboard database after the run",
+    )
+    fc.set_defaults(plan_builder=None)
+
+    lighteval = eval_subparsers.add_parser("lighteval", help="run Hugging Face LightEval")
+    add_common_options(lighteval)
+    lighteval.add_argument("model", help="model alias from configs")
+    lighteval.add_argument("tasks", help="LightEval task string, e.g. 'gsm8k' or 'gsm8k|0'")
+    add_lighteval_run_options(lighteval)
+    lighteval.set_defaults(plan_builder=build_lighteval_plan)
+
+    lighteval_tasks = eval_subparsers.add_parser("lighteval-tasks", help="list or inspect LightEval tasks")
+    add_common_options(lighteval_tasks)
+    lighteval_tasks.add_argument("task_action", choices=("list", "dump", "inspect", "export", "coverage", "judges"))
+    lighteval_tasks.add_argument("tasks", nargs="?", help="task id for inspect")
+    lighteval_tasks.add_argument("--custom-tasks", help="custom LightEval task Python file")
+    lighteval_tasks.add_argument("--load-tasks-multilingual", action="store_true", default=None)
+    lighteval_tasks.add_argument("--num-samples", type=int)
+    lighteval_tasks.add_argument("--show-config", action="store_true", default=None)
+    lighteval_tasks.add_argument("--output", help="output file for export; defaults to stdout")
+    lighteval_tasks.add_argument("--format", choices=("text", "jsonl", "summary", "tasks"), default="text")
+    lighteval_tasks.add_argument("--contains", action="append", help="case-insensitive task-name filter for export")
+    lighteval_tasks.add_argument("--limit", type=int, help="maximum number of exported tasks")
+    lighteval_tasks.add_argument("--include-supersets", action="store_true", default=None)
+    lighteval_tasks.add_argument("--source", help="benchmark list for coverage; supports text/json/jsonl or rwkv-skills registry Python")
+    lighteval_tasks.add_argument(
+        "--source-format",
+        choices=("auto", "text", "json", "jsonl", "rwkv-skills-registry"),
+        default="auto",
+    )
+    lighteval_tasks.add_argument("--candidate-limit", type=int, default=5)
+    lighteval_tasks.set_defaults(plan_builder=build_lighteval_tasks_plan)
+
+    lighteval_export = eval_subparsers.add_parser("lighteval-export", help="export LightEval details parquet to per-sample records")
+    add_common_options(lighteval_export)
+    lighteval_export.add_argument("details", nargs="+", help="LightEval details parquet file or directory")
+    lighteval_export.add_argument("--output", help="output file; defaults to stdout")
+    lighteval_export.add_argument("--format", choices=("jsonl", "csv"), default="jsonl")
+    lighteval_export.set_defaults(plan_builder=build_lighteval_export_plan)
+
+    agent_harness = eval_subparsers.add_parser(
+        "agent-harness",
+        aliases=("agent",),
+        help="inspect and prepare external agent benchmark harnesses",
+    )
+    add_common_options(agent_harness)
+    agent_harness.add_argument("agent_action", choices=("list", "preflight", "plan", "convert", "run"))
+    agent_harness.add_argument("benchmark", nargs="?", help="benchmark id for list/preflight filtering or plan")
+    agent_harness.add_argument("--source", default=DEFAULT_AGENT_BENCHMARK_SOURCE)
+    agent_harness.add_argument("--pipeline")
+    agent_harness.add_argument("--format", choices=("text", "jsonl", "summary"), default="text")
+    agent_harness.add_argument("--model", help="model alias used when generating a harness plan")
+    agent_harness.add_argument("--base-url", help="OpenAI-compatible endpoint base URL for adapter planning")
+    agent_harness.add_argument("--output-dir", help="output directory for generated prediction or trace artifacts")
+    agent_harness.add_argument("--n-concurrent", type=int, help="official harness worker count where supported")
+    agent_harness.add_argument("--max-samples", type=int, help="sample cap for implemented local proxy runs")
+    agent_harness.add_argument("--no-server", action="store_true", help="reuse an existing OpenAI-compatible endpoint")
+    agent_harness.add_argument("--keep-server", action="store_true", help="leave a managed local proxy server running")
+    agent_harness.add_argument(
+        "--server-timeout",
+        type=float,
+        default=DEFAULT_SERVER_TIMEOUT_S,
+        help="seconds to wait for a managed local proxy server to become healthy",
+    )
+    agent_harness.add_argument(
+        "--allow-proxy",
+        action="store_true",
+        help="allow non-official local proxy runs such as BrowseComp answer-only scoring",
+    )
+    agent_harness.add_argument("--run-id", help="official harness run id")
+    agent_harness.add_argument("--input", help="RWKV/Helicopter agent output JSON or JSONL for convert")
+    agent_harness.add_argument("--output", help="converted official sandbox artifact path")
+    agent_harness.add_argument(
+        "--target",
+        choices=("auto", "intermediate", "swebench-predictions"),
+        default="auto",
+        help="conversion target for agent-harness convert",
+    )
+    agent_harness.add_argument("--allow-empty-patch", action="store_true", help="write empty SWE-bench model_patch rows")
+    agent_harness.add_argument("--allow-invalid", action="store_true", help="write valid converted rows even if some rows fail")
+    agent_harness.add_argument("--strict", action="store_true", help="preflight exits nonzero if required tools are missing")
+    agent_harness.set_defaults(plan_builder=None)
+
+    evalscope = eval_subparsers.add_parser(
+        "evalscope",
+        help="run EvalScope Agent benchmarks against the OpenAI-compatible endpoint",
+    )
+    add_common_options(evalscope)
+    evalscope.add_argument("model", nargs="?", help="model alias from configs")
+    evalscope.add_argument("datasets", nargs="*", help="EvalScope dataset names; defaults to [evalscope].datasets")
+    evalscope.add_argument("--list-datasets", action="store_true", help="list the pinned EvalScope Agent dataset catalog")
+    evalscope.add_argument(
+        "--report-only",
+        action="store_true",
+        help="rebuild raw/acceptance_report.json from an existing EvalScope work directory",
+    )
+    evalscope.add_argument(
+        "--scoreboard",
+        action="store_true",
+        help="persist official EvalScope prediction/review/report results into the local scoreboard database",
+    )
+    evalscope.add_argument(
+        "--scoreboard-db-only",
+        action="store_true",
+        help="remove EvalScope JSON/JSONL artifacts after a successful --scoreboard import",
+    )
+    evalscope.add_argument("--dataset-catalog", default=DEFAULT_CATALOG, help="EvalScope Agent dataset catalog JSON")
+    evalscope.add_argument("--format", choices=("text", "json", "summary"), default="text")
+    evalscope.add_argument("--binary", help="EvalScope executable; defaults to [evalscope].binary")
+    evalscope.add_argument("--base-url", help="OpenAI-compatible endpoint base URL")
+    evalscope.add_argument("--api-key", help="API key passed to EvalScope")
+    evalscope.add_argument("--served-model-name", help="model name sent to EvalScope")
+    evalscope.add_argument("--eval-type", help="EvalScope evaluation type; defaults to openai_api")
+    evalscope.add_argument(
+        "--mode",
+        choices=("native", "external", "bridge"),
+        help="EvalScope native AgentLoop or external Agent Bridge (bridge is a legacy alias)",
+    )
+    evalscope.add_argument("--framework", help="External Agent Bridge framework, e.g. codex or claude-code")
+    evalscope.add_argument("--agent-config", help="Agent config JSON string or JSON file")
+    evalscope.add_argument(
+        "--no-agent-config",
+        dest="no_agent_config",
+        action="store_true",
+        help="do not inject the global AgentLoop config; use the benchmark adapter's native inference path",
+    )
+    evalscope.add_argument("--strategy", help="Native AgentLoop strategy")
+    evalscope.add_argument("--tools", action="append", help="Native AgentLoop tool list; repeat or use comma-separated names")
+    evalscope.add_argument("--agent-environment", help="Agent tool/CLI environment, local or docker")
+    evalscope.add_argument("--agent-timeout", type=float, help="External Agent Bridge per-sample timeout")
+    evalscope.add_argument(
+        "--request-timeout",
+        type=float,
+        help="per-request model inference timeout in seconds; forwarded as EvalScope generation_config.timeout",
+    )
+    evalscope.add_argument("--max-steps", type=int, help="Native AgentLoop step cap")
+    evalscope.add_argument("--limit", help="maximum samples per dataset; integer or fraction")
+    evalscope.add_argument("--eval-batch-size", type=int)
+    evalscope.add_argument("--generation-config", help="EvalScope generation config JSON string or JSON file")
+    evalscope.add_argument("--model-args", help="EvalScope model client args JSON string or JSON file")
+    evalscope.add_argument("--dataset-args", help="EvalScope dataset args JSON string or JSON file")
+    evalscope.add_argument("--judge-strategy", help="EvalScope judge strategy, e.g. auto or llm")
+    evalscope.add_argument("--judge-model-args", help="EvalScope judge model args JSON string or JSON file")
+    evalscope.add_argument("--judge-worker-num", type=int, help="EvalScope judge worker count")
+    evalscope.add_argument("--dataset-hub", choices=("modelscope", "huggingface"))
+    evalscope.add_argument("--work-dir", "--output-dir", dest="work_dir", help="EvalScope output directory")
+    evalscope.add_argument("--no-timestamp", action="store_true", default=None)
+    evalscope.add_argument("--use-cache")
+    evalscope.add_argument("--rerun-review", action="store_true", default=None)
+    evalscope.add_argument("--enable-progress-tracker", action="store_true", default=None)
+    evalscope.add_argument("--collect-perf", dest="collect_perf", action="store_true", default=None)
+    evalscope.add_argument("--no-collect-perf", dest="collect_perf", action="store_false")
+    evalscope.add_argument("--debug", action="store_true", default=None)
+    evalscope.add_argument("--ignore-errors", action="store_true", default=None)
+    evalscope.add_argument(
+        "--naive-chat-proxy",
+        dest="naive_chat_proxy",
+        action="store_true",
+        default=None,
+        help="serialize EvalScope OpenAI chat requests for the local RWKV naive Chat endpoint",
+    )
+    evalscope.add_argument(
+        "--no-naive-chat-proxy",
+        dest="naive_chat_proxy",
+        action="store_false",
+        help="send EvalScope requests directly without the local RWKV naive Chat adapter",
+    )
+    evalscope.add_argument(
+        "--parallel-candidate-router",
+        dest="parallel_candidate_router",
+        action="store_true",
+        default=None,
+        help="route native Agent tool decisions through a local parallel-candidate proxy",
+    )
+    evalscope.add_argument(
+        "--no-parallel-candidate-router",
+        dest="parallel_candidate_router",
+        action="store_false",
+        help="disable the local parallel-candidate Agent router",
+    )
+    evalscope.add_argument("--candidate-chunk-tools", type=int, help="tools per parallel candidate shard")
+    evalscope.add_argument("--candidate-batch-size", type=int, help="maximum parallel candidate requests")
+    evalscope.add_argument("--candidate-context-chars", type=int, help="maximum conversation characters per route prompt")
+    evalscope.add_argument("--candidate-prompt-max-chars", type=int, help="maximum candidate or aggregate prompt characters")
+    evalscope.add_argument("--candidate-max-tokens", type=int, help="candidate request output token cap")
+    evalscope.add_argument("--aggregate-max-tokens", type=int, help="aggregate request output token cap")
+    evalscope.add_argument("--candidate-max-candidates", type=int, help="maximum candidates shown to the aggregator")
+    evalscope.add_argument("--long-doc-min-chars", type=int, help="compact individual route messages at or above this size")
+    evalscope.add_argument("--long-doc-max-chars", type=int, help="maximum characters per long-document chunk")
+    evalscope.add_argument("--long-doc-overlap-lines", type=int, help="overlap lines between long-document chunks")
+    evalscope.add_argument("--long-doc-max-evidence-chunks", type=int, help="maximum selected long-document chunks")
+    evalscope.add_argument("--long-doc-max-evidence-chars", type=int, help="maximum selected evidence characters")
+    evalscope.add_argument(
+        "--parallel-candidate-fallback",
+        dest="parallel_candidate_fallback",
+        action="store_true",
+        default=None,
+        help="fallback to the highest-confidence validated shard candidate",
+    )
+    evalscope.add_argument(
+        "--no-parallel-candidate-fallback",
+        dest="parallel_candidate_fallback",
+        action="store_false",
+        help="return no tool call when aggregation fails",
+    )
+    evalscope.add_argument("--no-server", action="store_true", help="reuse an existing endpoint")
+    evalscope.add_argument("--keep-server", action="store_true", help="leave the managed vLLM server running")
+    evalscope.add_argument("--server-timeout", type=float, default=DEFAULT_SERVER_TIMEOUT_S)
+    evalscope.add_argument("--wkv-mode", choices=WKV_MODES)
+    evalscope.add_argument("--emb-device", choices=EMB_DEVICES)
+    evalscope.add_argument("--tensor-parallel-size", type=int)
+    evalscope.add_argument("--gpu-memory-utilization", type=float)
+    evalscope.add_argument("--max-num-seqs", type=int)
+    evalscope.add_argument("--max-num-batched-tokens", type=int)
+    evalscope.add_argument("--enable-auto-tool-choice", action="store_true", default=None)
+    evalscope.add_argument("--tool-call-parser", help="vLLM tool-call parser; RWKV native tool calls use 'rwkv'")
+    evalscope.add_argument("--vllm-env", action="append", help="explicit VLLM_* environment override for the managed server")
+    evalscope.set_defaults(plan_builder=None)
 
     return parser
 
@@ -89,73 +518,54 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     root = find_root()
-    if args.command == "eval":
-        env_path = find_env_path(root, args.env_file, use_fallbacks=False)
-        if env_path is not None:
-            try:
-                env_status = env_path.lstat()
-            except OSError as error:
-                parser.error(f"cannot inspect eval private environment file: {error}")
-            if (
-                not stat.S_ISREG(env_status.st_mode)
-                or stat.S_IMODE(env_status.st_mode) != 0o600
-                or env_status.st_uid != os.geteuid()
-            ):
-                parser.error(
-                    "eval private environment file must be owned by the current "
-                    "user, have mode 0600, and be a regular non-symlink file: "
-                    f"{env_path}"
-                )
-        try:
-            eval_env, _ = load_env(
-                root,
-                args.env_file,
-                use_fallbacks=False,
-                require_private=True,
-            )
-        except (OSError, UnicodeError) as error:
-            parser.error(f"cannot securely read eval private environment file: {error}")
-        config_path = Path(args.config).expanduser()
-        if not config_path.is_absolute():
-            config_path = Path.cwd() / config_path
-        configured_python = eval_env.get("HELICOPTER_EVAL_PYTHON")
-        eval_python = (
-            Path(configured_python).expanduser()
-            if configured_python
-            else root / ".venv-lighteval/bin/python"
-        )
-        if not eval_python.is_absolute():
-            eval_python = root / eval_python
-        if not os.access(eval_python, os.X_OK):
-            parser.error(
-                f"LightEval Python executable not found: {eval_python}; "
-                "prepare the lighteval component"
-            )
-        command = [
-            str(eval_python),
-            "-m",
-            "helicopter_lighteval",
-            "--config",
-            str(config_path),
-        ]
-        if args.dry_run:
-            command.append("--dry-run")
-        return run_command(
-            command,
-            cwd=root,
-            env=eval_env,
-            shown_env={},
-            dry_run=False,
-        )
-
     env, _ = load_env(root, args.env_file)
-    prepend_venv_path(env, root)
+    config, _ = load_config(root, args.config)
+    if getattr(args, "model_catalog", None):
+        merge_model_catalog(config, root=root, catalog_path=str(args.model_catalog))
+    prepend_venv_path(env, root, config)
 
-    if args.command == "takeoff":
-        plan = args.plan_builder(args, root=root, env=env)
-    else:
-        config, _ = load_config(root, args.config)
-        plan = args.plan_builder(args, root=root, env=env, config=config)
+    if getattr(args, "eval_command", None) == "run":
+        return run_eval(args, root=root, env=env, config=config)
+    if getattr(args, "eval_command", None) == "perf":
+        return run_completions_performance(args, root=root, env=env, config=config)
+    if getattr(args, "eval_command", None) == "batch":
+        from .eval_batch import run_batch
+
+        return run_batch(args, root=root, env=env, config=config)
+    if getattr(args, "eval_command", None) in {"function-calling", "fc"}:
+        from .function_calling import run_function_calling_eval
+
+        return run_function_calling_eval(args, root=root, env=env, config=config)
+    if getattr(args, "eval_command", None) in {"agent-harness", "agent"}:
+        return run_agent_harness(args, root=root, env=env, config=config)
+    if getattr(args, "eval_command", None) == "evalscope":
+        return run_evalscope(args, root=root, env=env, config=config)
+
+    plan = args.plan_builder(args, root=root, env=env, config=config)
+    if getattr(args, "eval_command", None) == "lighteval" and not args.dry_run:
+        output_dir = output_dir_from_command(plan.command) or (root / "results/lighteval")
+        if not output_dir.is_absolute():
+            output_dir = root / output_dir
+        performance_output = (
+            root / args.performance_output
+            if getattr(args, "performance_output", None) and not str(args.performance_output).startswith("/")
+            else args.performance_output
+        )
+        if performance_output is None:
+            stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+            performance_output = output_dir / "performance" / f"performance_{stamp}.json"
+        metrics_url = getattr(args, "metrics_url", None) or derive_metrics_url(
+            base_url_from_lighteval_command(plan.command)
+        )
+        return run_lighteval_with_performance(
+            plan.command,
+            cwd=plan.cwd,
+            env=plan.env,
+            root=root,
+            performance_output=Path(performance_output),
+            metrics_url=metrics_url,
+            scoreboard_task_id=getattr(args, "scoreboard_task_id", None),
+        )
     return run_command(
         plan.command,
         cwd=plan.cwd,

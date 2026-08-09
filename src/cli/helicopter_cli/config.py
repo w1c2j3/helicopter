@@ -29,8 +29,57 @@ def load_config(
         path = root / path
     if not path.is_file():
         raise SystemExit(f"config file not found: {path}")
-    with path.open("rb") as handle:
-        return tomllib.load(handle), path
+    with path.open("rb") as file:
+        config = tomllib.load(file)
+    model_catalog = config.get("model_catalog", {})
+    if isinstance(model_catalog, dict) and model_catalog.get("path"):
+        merge_model_catalog(config, root=root, catalog_path=str(model_catalog["path"]))
+    benchmark_config = config.get("benchmarks", {})
+    if isinstance(benchmark_config, dict) and benchmark_config.get("index"):
+        from .benchmark_specs import benchmark_specs_by_task, load_benchmark_index
+
+        index_path = Path(str(benchmark_config["index"]))
+        if not index_path.is_absolute():
+            index_path = root / index_path
+        specs = load_benchmark_index(index_path)
+        config["_benchmark_specs"] = benchmark_specs_by_task(specs)
+        config["_benchmark_index_path"] = str(index_path.resolve())
+    elif isinstance(config.get("benchmark"), dict):
+        from .benchmark_specs import benchmark_specs_by_task, load_benchmark_spec
+
+        try:
+            spec = load_benchmark_spec(path)
+        except ValueError as error:
+            raise SystemExit(str(error)) from error
+        config["_benchmark_specs"] = benchmark_specs_by_task([spec])
+        config["_benchmark_config_path"] = str(path.resolve())
+    return config, path
+
+
+def merge_model_catalog(config: dict[str, Any], *, root: Path, catalog_path: str) -> None:
+    """Merge a model inventory selected by the caller into a benchmark config."""
+
+    path = Path(catalog_path)
+    if not path.is_absolute():
+        path = root / path
+    if not path.is_file():
+        raise SystemExit(f"model catalog not found: {path}")
+    with path.open("rb") as file:
+        catalog = tomllib.load(file)
+    catalog_models = catalog.get("models", {})
+    if not isinstance(catalog_models, dict):
+        raise SystemExit(f"[models] must be a TOML table in {path}")
+    local_models = config.get("models", {})
+    if not isinstance(local_models, dict):
+        raise SystemExit("[models] must be a TOML table")
+    config["models"] = {**catalog_models, **local_models}
+    config["_model_catalog_path"] = str(path.resolve())
+    config["_model_runtime"] = catalog.get("runtime", {})
+
+
+def table(config: dict[str, Any], name: str) -> dict[str, Any]:
+    value = config.get(name, {})
+    return value if isinstance(value, dict) else {}
 
 
 def resolve_model_entry(config: dict[str, Any], model_name: str) -> dict[str, Any]:

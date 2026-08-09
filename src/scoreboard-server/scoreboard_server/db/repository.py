@@ -1,490 +1,1292 @@
 from __future__ import annotations
 
-from datetime import datetime
-import uuid
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import os
+from typing import Any
 
-from scoreboard_server.dtos.api.evaluation_results import (
-    AnswerOutcome,
-    CampaignCreate,
-    CampaignProvenance,
-    CampaignReceipt,
-    CampaignStatus,
-    EvaluationList,
-    EvaluationSummary,
-    FinalizeReceipt,
-    SampleDetail,
-    SamplePage,
-    TaskPublication,
-    TaskReceipt,
-    sample_outcome,
+from tortoise import Tortoise
+from tortoise.transactions import in_transaction
+from tortoise.exceptions import OperationalError
+
+from scoreboard_server.cores.normalize import (
+    canonical_completion_status,
+    canonical_cot_mode,
+    canonical_task_status,
+    git_hash,
+    iter_stage_indices,
+    join_dataset,
+    json_key,
+    normalize_model_name,
+    now_utc_naive,
+    parse_datetime,
+    parse_model_tags,
+    parse_nonneg_int,
+    sanitize_json,
+    split_dataset,
 )
-from .connection import Database
+from scoreboard_server.db.connection import init_db
+from scoreboard_server.db.models import Benchmark, BenchmarkCatalog, Checker, Completion, EvalRecord, Score, ScoreModel, Task
+from scoreboard_server.db.resume import ResumeContext, TaskLookup
+from scoreboard_server.db.settings import DatabaseSettings
 
 
-class PublicationConflictError(Exception):
-    pass
+_REF_ANSWER_KEYS = (
+    "ref_answer",
+    "expected_answer",
+    "reference_answer",
+    "expected_judgement",
+    "reference_solution",
+    "canonical_solution",
+    "solution",
+    "output",
+    "target",
+    "final_answer",
+)
+_RAW_RECORD_REF_KEYS = (
+    "expected_answer",
+    "reference_answer",
+    "reference_solution",
+    "canonical_solution",
+    "solution",
+    "output",
+    "target",
+    "final_answer",
+    "answer",
+    "answers",
+    "gold",
+    "test_cases",
+)
+
+_DEFAULT_CATALOG_SOURCE = "lighteval"
+_DEFAULT_CATALOG_TARGET_KIND = "task"
+_DEFAULT_CATALOG_RUN_STATUS = "direct_lighteval_task"
+_DEFAULT_CATALOG_SCOPE = "direct_hf_lighteval_non_function_calling"
 
 
-class CampaignCompletenessError(Exception):
-    def __init__(self, missing: list[str]):
-        self.missing = missing
-        super().__init__(", ".join(missing))
+@dataclass(frozen=True, slots=True)
+class BenchmarkCatalogInput:
+    name: str
+    split: str
+    field: str
+    source: str
+    source_family: str
+    target_kind: str
+    run_status: str
+    scope: str
+    metadata: Any | None
 
 
-class CampaignContractError(Exception):
-    pass
+class ScoreboardStore:
+    def __init__(self, settings: DatabaseSettings | None = None) -> None:
+        self.settings = settings or DatabaseSettings.from_env()
+        self._legacy_naive_timestamps: bool | None = None
 
-
-class ScoreboardRepository:
-    def __init__(self, database: Database):
-        self.database = database
-
-    async def create_campaign(
-        self,
-        *,
-        campaign: CampaignCreate,
-        publisher_principal: str,
-    ) -> CampaignReceipt:
-        pool = self.database.require_pool()
-        async with pool.acquire() as connection, connection.transaction():
-            await connection.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-                campaign.run_key,
-            )
-            existing = await connection.fetchrow(
+    async def _ensure_db(self) -> None:
+        await init_db(self.settings)
+        if self._legacy_naive_timestamps is None:
+            rows = await Tortoise.get_connection("default").execute_query_dict(
                 """
-                SELECT id, status, config_digest, registry_digest,
-                       eval_contract_digest, lighteval_version,
-                       configured_selectors, resolved_selectors,
-                       skipped_selectors, expected_tasks, publisher_principal
-                FROM evaluation_campaign
-                WHERE run_key = $1
-                """,
-                campaign.run_key,
+                SELECT data_type
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'task'
+                  AND column_name = 'created_at'
+                LIMIT 1
+                """
             )
-            expected = [
-                task.model_dump(mode="json") for task in campaign.expected_tasks
-            ]
-            if existing is not None:
-                if existing["publisher_principal"] != publisher_principal:
-                    raise CampaignContractError(
-                        "run key belongs to another publisher principal"
-                    )
-                values = {
-                    "config_digest": campaign.config_digest,
-                    "registry_digest": campaign.registry_digest,
-                    "eval_contract_digest": campaign.eval_contract_digest,
-                    "lighteval_version": campaign.lighteval_version,
-                    "configured_selectors": campaign.configured_selectors,
-                    "resolved_selectors": campaign.resolved_selectors,
-                    "skipped_selectors": campaign.skipped_selectors,
-                    "expected_tasks": expected,
-                }
-                mismatched = [
-                    key for key, value in values.items() if existing[key] != value
-                ]
-                if mismatched:
-                    raise CampaignContractError(
-                        "run key contract mismatch: " + ", ".join(mismatched)
-                    )
-                task_rows = await connection.fetch(
-                    """
-                    SELECT task_identity, content_digest
-                    FROM evaluation_task
-                    WHERE campaign_id = $1
-                    """,
-                    existing["id"],
-                )
-                return CampaignReceipt(
-                    campaign_id=str(existing["id"]),
-                    disposition="unchanged",
-                    status=existing["status"],
-                    expected_task_count=len(expected),
-                    acknowledged_task_digests={
-                        row["task_identity"]: row["content_digest"] for row in task_rows
+            self._legacy_naive_timestamps = bool(
+                rows and rows[0].get("data_type") == "timestamp without time zone"
+            )
+
+    def _db_created_at(self, value: datetime | None = None) -> datetime:
+        timestamp = value or now_utc_naive()
+        if self._legacy_naive_timestamps:
+            return timestamp.replace(tzinfo=None)
+        if timestamp.tzinfo is None:
+            return timestamp.replace(tzinfo=timezone.utc)
+        return timestamp
+
+    def _set_db_created_at(self, model: Any, value: datetime | None = None) -> None:
+        # Tortoise normalizes datetime values during model construction.  For
+        # legacy ``timestamp without time zone`` databases, assign the naive
+        # value after construction so asyncpg receives the type the column
+        # requires.  Newer timestamptz schemas keep an aware UTC value.
+        model.created_at = self._db_created_at(value)
+
+    async def _benchmark(self, dataset: str, *, num_samples: int | None = None) -> Benchmark:
+        await self._ensure_db()
+        raw_name = str(dataset or "").strip()
+        # Names such as ``human_eval`` are complete catalog identifiers, not
+        # necessarily ``name_split`` pairs. Prefer an exact catalog identity
+        # before applying the legacy suffix parser.
+        exact = await Benchmark.filter(
+            benchmark_name=raw_name,
+            benchmark_split="",
+        ).first()
+        # ``benchmark_catalog`` is optional metadata introduced after the
+        # original scoreboard schema.  The production database may still be
+        # a complete legacy database without that table; benchmark lookup
+        # must remain usable for importing official EvalScope results there.
+        try:
+            catalog_exact = await BenchmarkCatalog.filter(
+                benchmark_name=raw_name,
+                benchmark_split="",
+            ).exists()
+        except OperationalError as exc:
+            if "benchmark_catalog" not in str(exc).lower():
+                raise
+            catalog_exact = False
+        if exact is not None or catalog_exact:
+            name, split = raw_name, ""
+        else:
+            name, split = split_dataset(raw_name)
+        defaults = {"url": None, "status": "Todo", "num_samples": int(num_samples or 0)}
+        benchmark, _ = await Benchmark.get_or_create(
+            benchmark_name=name,
+            benchmark_split=split,
+            defaults=defaults,
+        )
+        if num_samples and benchmark.num_samples != int(num_samples):
+            benchmark.num_samples = int(num_samples)
+            await benchmark.save(update_fields=["num_samples"])
+        return benchmark
+
+    async def _model(self, model: str) -> ScoreModel:
+        await self._ensure_db()
+        normalized = normalize_model_name(model)
+        arch, data_version, num_params = parse_model_tags(normalized)
+        score_model, _ = await ScoreModel.get_or_create(
+            model_name=normalized,
+            arch_version=arch,
+            data_version=data_version,
+            num_params=num_params,
+            defaults={},
+        )
+        return score_model
+
+    async def ensure_benchmark_num_samples(self, *, dataset: str, num_samples: int) -> None:
+        if int(num_samples) <= 0:
+            return
+        await self._benchmark(dataset, num_samples=int(num_samples))
+
+    async def upsert_benchmark_catalog(self, *, rows: Sequence[Mapping[str, Any]]) -> int:
+        await self._ensure_db()
+        count = 0
+        async with in_transaction():
+            for row in rows:
+                entry = self._benchmark_catalog_input(row)
+                if entry is None:
+                    continue
+                await BenchmarkCatalog.update_or_create(
+                    benchmark_name=entry.name,
+                    benchmark_split=entry.split,
+                    scope=entry.scope,
+                    defaults={
+                        "field": entry.field,
+                        "source": entry.source,
+                        "source_family": entry.source_family,
+                        "target_kind": entry.target_kind,
+                        "run_status": entry.run_status,
+                        "metadata": entry.metadata,
                     },
                 )
-
-            campaign_id = uuid.uuid4()
-            await connection.execute(
-                """
-                INSERT INTO evaluation_campaign (
-                    id, run_key, status, config_digest, registry_digest,
-                    eval_contract_digest, lighteval_version,
-                    configured_selectors, resolved_selectors, skipped_selectors,
-                    expected_tasks, publisher_principal
-                ) VALUES (
-                    $1, $2, 'incomplete', $3, $4, $5, $6, $7, $8, $9, $10, $11
+                await Benchmark.get_or_create(
+                    benchmark_name=entry.name,
+                    benchmark_split=entry.split,
+                    defaults={"url": None, "status": "Todo", "num_samples": 0},
                 )
-                """,
-                campaign_id,
-                campaign.run_key,
-                campaign.config_digest,
-                campaign.registry_digest,
-                campaign.eval_contract_digest,
-                campaign.lighteval_version,
-                campaign.configured_selectors,
-                campaign.resolved_selectors,
-                campaign.skipped_selectors,
-                expected,
-                publisher_principal,
-            )
-            return CampaignReceipt(
-                campaign_id=str(campaign_id),
-                disposition="created",
-                status="incomplete",
-                expected_task_count=len(expected),
-                acknowledged_task_digests={},
-            )
+                count += 1
+        return count
 
-    async def campaign_status(
+    async def prune_benchmark_catalog(
         self,
-        campaign_id: uuid.UUID,
         *,
-        publisher_principal: str,
-    ) -> CampaignStatus | None:
-        pool = self.database.require_pool()
-        campaign = await pool.fetchrow(
-            """
-            SELECT status, expected_tasks
-            FROM evaluation_campaign
-            WHERE id = $1 AND publisher_principal = $2
-            """,
-            campaign_id,
-            publisher_principal,
+        scope: str,
+        rows: Sequence[Mapping[str, Any]],
+        source: str = _DEFAULT_CATALOG_SOURCE,
+        target_kind: str = _DEFAULT_CATALOG_TARGET_KIND,
+        run_status: str = _DEFAULT_CATALOG_RUN_STATUS,
+    ) -> int:
+        await self._ensure_db()
+        keep = {key for row in rows if (key := self._benchmark_catalog_key(row)) is not None}
+
+        removed = 0
+        catalog_rows = await BenchmarkCatalog.filter(
+            scope=scope,
+            source=source,
+            target_kind=target_kind,
+            run_status=run_status,
         )
-        if campaign is None:
+        async with in_transaction():
+            for row in catalog_rows:
+                if (row.benchmark_name, row.benchmark_split) in keep:
+                    continue
+                await row.delete()
+                removed += 1
+        return removed
+
+    async def list_benchmark_catalog(
+        self,
+        *,
+        scope: str,
+        fields: Sequence[str] | None = None,
+        source: str = _DEFAULT_CATALOG_SOURCE,
+        target_kind: str = _DEFAULT_CATALOG_TARGET_KIND,
+        run_status: str = _DEFAULT_CATALOG_RUN_STATUS,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        await self._ensure_db()
+        query = BenchmarkCatalog.filter(
+            scope=scope,
+            source=source,
+            target_kind=target_kind,
+            run_status=run_status,
+        )
+        if fields:
+            query = query.filter(field__in=[str(item) for item in fields])
+        query = query.order_by("field", "catalog_id")
+        if limit is not None and int(limit) > 0:
+            query = query.limit(int(limit))
+        rows = await query
+        return [self._benchmark_catalog_dict(row) for row in rows]
+
+    async def get_resume_context(
+        self,
+        *,
+        dataset: str,
+        model: str,
+        is_param_search: bool,
+        job_name: str | None = None,
+        sampling_config: dict[str, Any] | None = None,
+        config_path: str | None = None,
+        force_new_task: bool = False,
+    ) -> ResumeContext:
+        benchmark = await self._benchmark(dataset)
+        score_model = await self._model(model)
+        ctx = ResumeContext(benchmark_id=benchmark.benchmark_id, model_id=score_model.model_id)
+        if force_new_task:
+            return ctx
+
+        sanitized_sampling = sanitize_json(sampling_config) if sampling_config is not None else None
+        resolved_config_path = self._task_config_path(config_path)
+        task_query = Task.filter(
+            evaluator=job_name or "",
+            model_id=score_model.model_id,
+            benchmark_id=benchmark.benchmark_id,
+            is_tmp=False,
+            is_param_search=bool(is_param_search),
+        )
+        if resolved_config_path is None:
+            task_query = task_query.filter(config_path__isnull=True)
+        else:
+            task_query = task_query.filter(config_path=resolved_config_path)
+        tasks = await task_query.order_by("task_id")
+        matches: list[TaskLookup] = []
+        completed_ids: list[int] = []
+        for task in tasks:
+            if json_key(task.sampling_config) != json_key(sanitized_sampling):
+                continue
+            status = task.status
+            lookup = TaskLookup(task_id=task.task_id, status=status)
+            matches.append(lookup)
+            if status.lower() == "completed":
+                completed_ids.append(task.task_id)
+
+        resumable = tuple(task.task_id for task in matches if task.status.lower() in {"running", "failed"})
+        ctx.matching_tasks = tuple(matches)
+        ctx.completed_task_ids = tuple(completed_ids)
+        ctx.resumable_task_ids = resumable
+        # Resume only the latest matching run. Older failed runs must never
+        # supersede a newer completed run, while the latest interrupted run
+        # must remain resumable even when older completed runs exist.
+        latest = matches[-1] if matches else None
+        if latest is not None and latest.status.lower() in {"running", "failed"}:
+            ctx.task_id = latest.task_id
+            ctx.can_resume = True
+            ctx.completed_keys = await self.list_completion_keys(task_id=str(ctx.task_id), status="Completed")
+        elif latest is not None:
+            ctx.task_id = latest.task_id
+        return ctx
+
+    async def create_task_from_context(
+        self,
+        *,
+        ctx: ResumeContext,
+        job_name: str | None,
+        dataset: str,
+        model: str,
+        is_param_search: bool,
+        sampling_config: dict[str, Any] | None = None,
+        config_path: str | None = None,
+    ) -> str:
+        if ctx.can_resume and ctx.task_id is not None:
+            await Task.filter(task_id=ctx.task_id).update(status="Running")
+            await Score.filter(task_id=ctx.task_id).delete()
+            return str(ctx.task_id)
+
+        benchmark = await self._benchmark(dataset)
+        score_model = await self._model(model)
+        task = Task(
+            config_path=self._task_config_path(config_path),
+            evaluator=job_name or "",
+            is_param_search=bool(is_param_search),
+            is_tmp=self._task_is_tmp(),
+            created_at=self._db_created_at(),
+            status="Running",
+            git_hash=git_hash(),
+            model=score_model,
+            benchmark=benchmark,
+            description=os.environ.get("RWKV_TASK_DESC"),
+            sampling_config=sanitize_json(sampling_config) if sampling_config is not None else None,
+            log_path=os.environ.get("RWKV_SKILLS_LOG_PATH", ""),
+        )
+        self._set_db_created_at(task)
+        await task.save(force_create=True)
+        return str(task.task_id)
+
+    async def get_or_create_task(
+        self,
+        *,
+        job_name: str | None,
+        job_id: str | None,
+        dataset: str,
+        model: str,
+        is_param_search: bool,
+        sampling_config: dict[str, Any] | None = None,
+        config_path: str | None = None,
+        allow_resume: bool = True,
+    ) -> str:
+        ctx = await self.get_resume_context(
+            dataset=dataset,
+            model=model,
+            is_param_search=is_param_search,
+            job_name=job_name,
+            sampling_config=sampling_config,
+            config_path=config_path,
+            force_new_task=not allow_resume,
+        )
+        return await self.create_task_from_context(
+            ctx=ctx,
+            job_name=job_name,
+            dataset=dataset,
+            model=model,
+            is_param_search=is_param_search,
+            sampling_config=sampling_config,
+            config_path=config_path,
+        )
+
+    async def insert_completion_payloads_batch(self, *, payloads: Sequence[dict[str, Any]], task_id: str) -> int:
+        await self._ensure_db()
+        if not payloads:
+            return 0
+        task = await Task.get(task_id=int(task_id))
+        count = 0
+        async with in_transaction():
+            for payload in payloads:
+                stage = str(payload.get("_stage", "answer")).strip().lower()
+                if stage not in {"answer", "generation"}:
+                    continue
+                sample_index = parse_nonneg_int(payload.get("sample_index"), "sample_index")
+                repeat_index = parse_nonneg_int(payload.get("repeat_index"), "repeat_index")
+                pass_index = parse_nonneg_int(payload.get("pass_index", 0), "pass_index")
+                context = self._build_completion_context(payload)
+                status = canonical_completion_status(payload.get("status", "Completed"))
+                existing = await Completion.get_or_none(
+                    task=task,
+                    sample_index=sample_index,
+                    avg_repeat_index=repeat_index,
+                    pass_index=pass_index,
+                )
+                if existing is None:
+                    completion = Completion(
+                        task=task,
+                        sample_index=sample_index,
+                        avg_repeat_index=repeat_index,
+                        pass_index=pass_index,
+                        context=context,
+                        created_at=self._db_created_at(),
+                        status=status,
+                    )
+                    self._set_db_created_at(completion)
+                    await completion.save(force_create=True)
+                else:
+                    previous_context = (
+                        existing.context if isinstance(existing.context, Mapping) else {}
+                    )
+                    context = self._merge_completion_context(previous_context, context)
+                    existing.context = context
+                    existing.status = status
+                    await existing.save(update_fields=["context", "status"])
+                count += 1
+        return count
+
+    async def insert_completion_payloads_with_task(
+        self,
+        *,
+        payloads: Sequence[dict[str, Any]],
+        task_id: str | None,
+        job_name: str | None,
+        dataset: str,
+        model: str,
+        is_param_search: bool,
+        sampling_config: dict[str, Any] | None = None,
+        config_path: str | None = None,
+        allow_resume: bool = True,
+        num_samples: int | None = None,
+    ) -> tuple[str | None, int]:
+        """Persist real completions and let that write own task creation.
+
+        An empty or non-completion batch performs no database writes. For a
+        new run, task creation and the first completion batch share one
+        transaction, so either both exist or neither exists.
+        """
+
+        accepted = [
+            payload
+            for payload in payloads
+            if str(payload.get("_stage", "answer")).strip().lower()
+            in {"answer", "generation"}
+        ]
+        if not accepted:
+            return task_id, 0
+
+        await self._ensure_db()
+        resolved_task_id = str(task_id).strip() if task_id is not None else ""
+        async with in_transaction():
+            if not resolved_task_id:
+                ctx = await self.get_resume_context(
+                    dataset=dataset,
+                    model=model,
+                    is_param_search=is_param_search,
+                    job_name=job_name,
+                    sampling_config=sampling_config,
+                    config_path=config_path,
+                    force_new_task=not allow_resume,
+                )
+                if (
+                    ctx.can_resume
+                    and ctx.task_id is not None
+                    and await self.count_completions(
+                        task_id=str(ctx.task_id),
+                        status="Completed",
+                    )
+                    <= 0
+                ):
+                    ctx = ResumeContext()
+                resolved_task_id = await self.create_task_from_context(
+                    ctx=ctx,
+                    job_name=job_name,
+                    dataset=dataset,
+                    model=model,
+                    is_param_search=is_param_search,
+                    sampling_config=sampling_config,
+                    config_path=config_path,
+                )
+            if num_samples is not None and int(num_samples) > 0:
+                await self.ensure_benchmark_num_samples(
+                    dataset=dataset,
+                    num_samples=int(num_samples),
+                )
+            inserted = await self.insert_completion_payloads_batch(
+                payloads=accepted,
+                task_id=resolved_task_id,
+            )
+        return resolved_task_id, inserted
+
+    async def insert_completion_payload(self, *, payload: dict[str, Any], task_id: str) -> None:
+        await self.insert_completion_payloads_batch(payloads=[payload], task_id=task_id)
+
+    async def insert_completion_eval_payloads_bulk(
+        self,
+        *,
+        completion_payloads: Sequence[dict[str, Any]],
+        eval_payloads: Sequence[dict[str, Any]],
+        task_id: str,
+    ) -> tuple[int, int]:
+        """Insert an official run without one database round trip per sample.
+
+        Large EvalScope Agent runs carry the full prediction and review in
+        JSONB.  The legacy ingestion path intentionally upserts each row and
+        is useful for resumable interactive runs, but it is prohibitively slow
+        for a completed official report.  This path bulk-inserts new rows,
+        keeps the same canonicalization rules, and leaves existing rows intact
+        so a repeated import remains idempotent.
+        """
+
+        await self._ensure_db()
+        task = await Task.get(task_id=int(task_id))
+        accepted = [
+            payload
+            for payload in completion_payloads
+            if str(payload.get("_stage", "answer")).strip().lower() in {"answer", "generation"}
+        ]
+        if not accepted:
+            return 0, 0
+        existing = await self.list_completion_keys(task_id=task_id)
+        new_payloads: list[dict[str, Any]] = []
+        for payload in accepted:
+            key = (
+                parse_nonneg_int(payload.get("sample_index"), "sample_index"),
+                parse_nonneg_int(payload.get("repeat_index"), "repeat_index"),
+                parse_nonneg_int(payload.get("pass_index", 0), "pass_index"),
+            )
+            if key not in existing:
+                new_payloads.append(payload)
+
+        from scoreboard_server.db.models import Completion as CompletionModel
+
+        async with in_transaction():
+            if new_payloads:
+                completion_rows = []
+                for payload in new_payloads:
+                    completion = CompletionModel(
+                        task=task,
+                        sample_index=parse_nonneg_int(payload.get("sample_index"), "sample_index"),
+                        avg_repeat_index=parse_nonneg_int(payload.get("repeat_index"), "repeat_index"),
+                        pass_index=parse_nonneg_int(payload.get("pass_index", 0), "pass_index"),
+                        context=self._build_completion_context(payload),
+                        created_at=self._db_created_at(),
+                        status=canonical_completion_status(payload.get("status", "Completed")),
+                    )
+                    self._set_db_created_at(completion)
+                    completion_rows.append(completion)
+                await CompletionModel.bulk_create(completion_rows, batch_size=250)
+
+            mapping = await self._completion_id_map(task_id=task_id, status="Completed")
+            existing_eval = {
+                row.completion_id
+                for row in await EvalRecord.filter(completion__task_id=int(task_id)).only("completion_id")
+            }
+            eval_rows = []
+            for payload in eval_payloads:
+                key = (
+                    parse_nonneg_int(payload.get("sample_index"), "sample_index"),
+                    parse_nonneg_int(payload.get("repeat_index"), "repeat_index"),
+                    parse_nonneg_int(payload.get("pass_index", 0), "pass_index"),
+                )
+                completion_id = mapping.get(key)
+                if completion_id is None or completion_id in existing_eval:
+                    continue
+                eval_record = EvalRecord(
+                    completion_id=completion_id,
+                    answer=self._bounded_text(payload.get("answer"), 65_536),
+                    ref_answer=self._bounded_text(self._extract_reference_answer(payload), 4_096),
+                    is_passed=bool(payload.get("is_passed", False)),
+                    fail_reason=self._bounded_text(payload.get("fail_reason"), 2_048),
+                    created_at=self._db_created_at(),
+                )
+                self._set_db_created_at(eval_record)
+                eval_rows.append(eval_record)
+            if eval_rows:
+                await EvalRecord.bulk_create(eval_rows, batch_size=250)
+        return len(new_payloads), len(eval_rows)
+
+    async def ingest_eval_payloads(self, *, payloads: Iterable[dict[str, Any]], task_id: str) -> int:
+        await self._ensure_db()
+        mapping = await self._completion_id_map(task_id=task_id, status="Completed")
+        inserted = 0
+        for payload in payloads:
+            key = (
+                parse_nonneg_int(payload.get("sample_index"), "sample_index"),
+                parse_nonneg_int(payload.get("repeat_index"), "repeat_index"),
+                parse_nonneg_int(payload.get("pass_index", 0), "pass_index"),
+            )
+            completion_id = mapping.get(key)
+            if completion_id is None:
+                continue
+            completion = await Completion.get(completions_id=completion_id)
+            answer = self._bounded_text(payload.get("answer"), 65_536)
+            ref_answer = self._bounded_text(self._extract_reference_answer(payload), 4_096)
+            is_passed = bool(payload.get("is_passed", False))
+            fail_reason = self._bounded_text(payload.get("fail_reason"), 2_048)
+            created_at = self._db_created_at()
+            eval_record = await EvalRecord.filter(completion=completion).first()
+            if eval_record is None:
+                eval_record = EvalRecord(
+                    completion=completion,
+                    answer=answer,
+                    ref_answer=ref_answer,
+                    is_passed=is_passed,
+                    fail_reason=fail_reason,
+                    created_at=created_at,
+                )
+                self._set_db_created_at(eval_record, created_at)
+                await eval_record.save(force_create=True)
+            else:
+                eval_record.answer = answer
+                eval_record.ref_answer = ref_answer
+                eval_record.is_passed = is_passed
+                eval_record.fail_reason = fail_reason
+                self._set_db_created_at(eval_record, created_at)
+                await eval_record.save(update_fields=["answer", "ref_answer", "is_passed", "fail_reason", "created_at"])
+            inserted += 1
+        return inserted
+
+    async def ingest_checker_payloads(self, *, payloads: Iterable[dict[str, Any]], task_id: str) -> int:
+        await self._ensure_db()
+        mapping = await self._completion_id_map(task_id=task_id, status="Completed")
+        existing = {
+            row.completion_id
+            for row in await Checker.filter(completion__task_id=int(task_id)).only("completion_id")
+        }
+        inserted = 0
+        for payload in payloads:
+            key = (
+                parse_nonneg_int(payload.get("sample_index"), "sample_index"),
+                parse_nonneg_int(payload.get("repeat_index"), "repeat_index"),
+                parse_nonneg_int(payload.get("pass_index", 0), "pass_index"),
+            )
+            completion_id = mapping.get(key)
+            if completion_id is None or completion_id in existing:
+                continue
+            completion = await Completion.get(completions_id=completion_id)
+            await Checker.update_or_create(
+                completion=completion,
+                defaults={
+                    "answer_correct": bool(payload.get("answer_correct", False)),
+                    "instruction_following_error": bool(payload.get("instruction_following_error", False)),
+                    "world_knowledge_error": bool(payload.get("world_knowledge_error", False)),
+                    "math_error": bool(payload.get("math_error", False)),
+                    "reasoning_logic_error": bool(payload.get("reasoning_logic_error", False)),
+                    "thought_contains_correct_answer": bool(payload.get("thought_contains_correct_answer", False)),
+                    "needs_human_review": bool(payload.get("needs_human_review", False)),
+                    "reason": str(payload.get("reason") or ""),
+                    "created_at": now_utc_naive(),
+                },
+            )
+            existing.add(completion_id)
+            inserted += 1
+        return inserted
+
+    async def ingest_eval_payload_groups(
+        self,
+        *,
+        task_id: str,
+        completion_payloads: Sequence[dict[str, Any]],
+        payloads_by_group: Mapping[str, Sequence[dict[str, Any]]],
+        primary_group: str,
+    ) -> dict[str, int]:
+        parent_task_id = int(task_id)
+        task_ids: dict[str, int] = {}
+
+        primary_payloads = list(payloads_by_group.get(primary_group, ()))
+        await self.ingest_eval_payloads(payloads=primary_payloads, task_id=str(parent_task_id))
+        task_ids[str(primary_group)] = parent_task_id
+
+        for group, payloads in payloads_by_group.items():
+            if group == primary_group:
+                continue
+            strategy_task_id = await self.create_eval_strategy_task(parent_task_id=parent_task_id, strategy=str(group))
+            await self.insert_completion_payloads_batch(payloads=completion_payloads, task_id=str(strategy_task_id))
+            await self.ingest_eval_payloads(payloads=list(payloads), task_id=str(strategy_task_id))
+            await self.update_task_status(task_id=str(strategy_task_id), status="completed")
+            task_ids[str(group)] = strategy_task_id
+        return task_ids
+
+    async def create_eval_strategy_task(self, *, parent_task_id: int, strategy: str) -> int:
+        await self._ensure_db()
+        parent = await Task.filter(task_id=int(parent_task_id)).select_related("model", "benchmark").first()
+        if parent is None:
+            raise RuntimeError(f"parent task not found: {parent_task_id}")
+
+        parent_desc = str(parent.description or "")
+        desc_parts = [
+            part
+            for part in (
+                parent_desc,
+                f"parent_task_id={parent_task_id}",
+                f"eval_strategy={strategy}",
+            )
+            if part
+        ]
+        task = Task(
+            config_path=parent.config_path,
+            evaluator=f"{parent.evaluator or 'eval'}:{strategy}",
+            is_param_search=True,
+            is_tmp=True,
+            created_at=self._db_created_at(),
+            status="Running",
+            git_hash=parent.git_hash or git_hash(),
+            model=parent.model,
+            benchmark=parent.benchmark,
+            description="; ".join(desc_parts),
+            sampling_config=parent.sampling_config if isinstance(parent.sampling_config, dict) else None,
+            log_path=parent.log_path or "",
+        )
+        self._set_db_created_at(task)
+        await task.save(force_create=True)
+        return int(task.task_id)
+
+    async def record_score_payload(
+        self,
+        *,
+        payload: dict[str, Any],
+        task_id: str,
+        mark_completed: bool = True,
+    ) -> None:
+        await self._ensure_db()
+        task = await Task.get(task_id=int(task_id))
+        cot_mode = canonical_cot_mode(payload)
+        metrics = sanitize_json(payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {})
+        created_at = self._db_created_at(parse_datetime(payload.get("created_at")))
+        score = await Score.filter(task=task).first()
+        if score is None:
+            score = Score(task=task, cot_mode=cot_mode, metrics=metrics, created_at=created_at)
+            self._set_db_created_at(score, created_at)
+            await score.save(force_create=True)
+        else:
+            score.cot_mode = cot_mode
+            score.metrics = metrics
+            self._set_db_created_at(score, created_at)
+            await score.save(update_fields=["cot_mode", "metrics", "created_at"])
+        if mark_completed:
+            task.status = "Completed"
+            await task.save(update_fields=["status"])
+
+    async def count_completions(self, *, task_id: str, status: str | None = None) -> int:
+        query = Completion.filter(task_id=int(task_id))
+        if status:
+            query = query.filter(status=canonical_completion_status(status))
+        return await query.count()
+
+    async def list_completion_keys(self, *, task_id: str, status: str | None = None) -> set[tuple[int, int, int]]:
+        query = Completion.filter(task_id=int(task_id))
+        if status:
+            query = query.filter(status=canonical_completion_status(status))
+        rows = await query.order_by("sample_index", "avg_repeat_index", "pass_index")
+        return {(row.sample_index, row.avg_repeat_index, row.pass_index) for row in rows}
+
+    async def list_completion_payloads(self, *, task_id: str, status: str | None = None) -> list[dict[str, Any]]:
+        rows = await self._completion_rows(task_id=task_id, status=status)
+        payloads: list[dict[str, Any]] = []
+        for row in rows:
+            context = row.context if isinstance(row.context, dict) else {}
+            payload: dict[str, Any] = {
+                "sample_index": row.sample_index,
+                "repeat_index": row.avg_repeat_index,
+                "pass_index": row.pass_index,
+                "status": row.status,
+                "sampling_config": context.get("sampling_config") if isinstance(context.get("sampling_config"), dict) else {},
+                "context": context,
+            }
+            stages = context.get("stages")
+            if isinstance(stages, list):
+                for idx, stage in enumerate(stages, start=1):
+                    if not isinstance(stage, Mapping):
+                        continue
+                    payload[f"prompt{idx}"] = stage.get("prompt")
+                    payload[f"completion{idx}"] = stage.get("completion")
+                    payload[f"stop_reason{idx}"] = stage.get("stop_reason")
+            payloads.append(payload)
+        return payloads
+
+    async def list_latest_scores_for_space(self, *, include_param_search: bool = False) -> list[dict[str, Any]]:
+        rows = await Score.all().select_related("task", "task__model", "task__benchmark")
+        grouped: dict[tuple[int, int, str, str], Score] = {}
+        for row in rows:
+            task = row.task
+            if task.is_tmp:
+                continue
+            if task.is_param_search and not include_param_search:
+                continue
+            key = (task.model_id, task.benchmark_id, task.evaluator, json_key(task.sampling_config))
+            prev = grouped.get(key)
+            if prev is None or (row.created_at, row.score_id) > (prev.created_at, prev.score_id):
+                grouped[key] = row
+        result = [self._score_row_for_space(row) for row in sorted(grouped.values(), key=lambda item: item.created_at)]
+        await self._attach_catalog_fields(result)
+        return result
+
+    async def list_score_history_pairs(self) -> list[dict[str, Any]]:
+        scores = await Score.all().select_related("task", "task__model", "task__benchmark")
+        pairs = {
+            (
+                score.task.model.model_name,
+                join_dataset(score.task.benchmark.benchmark_name, score.task.benchmark.benchmark_split),
+            )
+            for score in scores
+            if not score.task.is_tmp and not score.task.is_param_search
+        }
+        return [{"model": model, "dataset": dataset} for model, dataset in sorted(pairs)]
+
+    async def list_score_history(self, *, model: str, dataset: str) -> list[dict[str, Any]]:
+        benchmark_name, benchmark_split = split_dataset(dataset)
+        rows = await Score.filter(
+            task__model__model_name=normalize_model_name(model),
+            task__benchmark__benchmark_name=benchmark_name,
+            task__benchmark__benchmark_split=benchmark_split,
+            task__is_tmp=False,
+            task__is_param_search=False,
+        ).select_related("task", "task__model", "task__benchmark").order_by("created_at", "score_id")
+        return [self._history_row(row) for row in rows]
+
+    async def list_scores_by_dataset(
+        self,
+        *,
+        dataset: str,
+        model: str,
+        is_param_search: bool,
+    ) -> list[dict[str, Any]]:
+        benchmark_name, benchmark_split = split_dataset(dataset)
+        rows = await Score.filter(
+            task__benchmark__benchmark_name=benchmark_name,
+            task__benchmark__benchmark_split=benchmark_split,
+            task__model__model_name=normalize_model_name(model),
+            task__is_param_search=bool(is_param_search),
+            task__is_tmp=False,
+        ).select_related("task", "task__model", "task__benchmark").order_by("-created_at", "-score_id")
+        result = [self._score_row_for_space(row) for row in rows]
+        await self._attach_catalog_fields(result)
+        return result
+
+    async def get_score_history_detail(self, *, task_id: str) -> dict[str, Any] | None:
+        score = await Score.filter(task_id=int(task_id)).select_related("task", "task__model", "task__benchmark").first()
+        task = await Task.filter(task_id=int(task_id)).select_related("model", "benchmark").first()
+        if score is None and task is None:
             return None
-        task_rows = await pool.fetch(
-            """
-            SELECT task_identity, content_digest
-            FROM evaluation_task
-            WHERE campaign_id = $1
-            """,
-            campaign_id,
-        )
-        digests = {row["task_identity"]: row["content_digest"] for row in task_rows}
-        expected = [task["identity"] for task in campaign["expected_tasks"]]
-        return CampaignStatus(
-            campaign_id=str(campaign_id),
-            status=campaign["status"],
-            expected_task_count=len(expected),
-            acknowledged_task_digests=digests,
-            missing_task_identities=[
-                identity for identity in expected if identity not in digests
-            ],
-        )
+        completion = await Completion.filter(task_id=int(task_id)).order_by("sample_index", "avg_repeat_index", "pass_index").first()
+        return {
+            "score": self._history_row(score) if score else None,
+            "task": self._task_dict(task) if task else None,
+            "context": completion.context if completion else None,
+        }
 
-    async def publish_task(
+    async def get_score_payload(self, *, task_id: str) -> dict[str, Any] | None:
+        score = await Score.filter(task_id=int(task_id)).select_related("task", "task__model", "task__benchmark").first()
+        if score is None:
+            return None
+        result = self._score_row_for_space(score)
+        await self._attach_catalog_fields([result])
+        return result
+
+    async def get_latest_task_generation_progress(
         self,
         *,
-        campaign_id: uuid.UUID,
-        task_identity: str,
-        digest: str,
-        publication: TaskPublication,
-        publisher_principal: str,
-    ) -> TaskReceipt:
-        pool = self.database.require_pool()
-        async with pool.acquire() as connection, connection.transaction():
-            lock_key = f"{campaign_id}:{task_identity}"
-            await connection.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-                lock_key,
-            )
-            campaign = await connection.fetchrow(
-                """
-                SELECT status, expected_tasks, lighteval_version
-                FROM evaluation_campaign
-                WHERE id = $1 AND publisher_principal = $2
-                """,
-                campaign_id,
-                publisher_principal,
-            )
-            if campaign is None:
-                raise CampaignContractError("campaign not found")
-            if campaign["status"] != "incomplete":
-                raise CampaignContractError("complete campaign is immutable")
-            expected = {task["identity"]: task for task in campaign["expected_tasks"]}
-            if task_identity not in expected:
-                raise CampaignContractError(
-                    "task identity is not in campaign expected set"
-                )
-            if publication.campaign_id != str(campaign_id):
-                raise CampaignContractError("body campaign_id does not match path")
-            if publication.task.identity != task_identity:
-                raise CampaignContractError("body task identity does not match path")
-            if publication.task.model_dump(mode="json") != expected[task_identity]:
-                raise CampaignContractError(
-                    "task metadata does not match campaign expected set"
-                )
-            if publication.artifact.lighteval_version != campaign["lighteval_version"]:
-                raise CampaignContractError(
-                    "artifact LightEval version does not match campaign"
-                )
+        evaluator: str,
+        model_name: str,
+        benchmark_name: str,
+        benchmark_split: str,
+    ) -> dict[str, Any] | None:
+        task = await Task.filter(
+            evaluator=evaluator,
+            model__model_name=normalize_model_name(model_name),
+            benchmark__benchmark_name=benchmark_name,
+            benchmark__benchmark_split=benchmark_split,
+            is_param_search=False,
+            is_tmp=False,
+        ).order_by("-task_id").first()
+        if task is None:
+            return None
+        return {
+            "task_id": task.task_id,
+            "status": task.status,
+            "sampling_config": task.sampling_config,
+            "completed_completions": await Completion.filter(task_id=task.task_id, status="Completed").count(),
+            "total_completions": await Completion.filter(task_id=task.task_id).count(),
+            "has_score": await Score.filter(task_id=task.task_id).exists(),
+        }
 
-            existing = await connection.fetchrow(
-                """
-                SELECT id, content_digest
-                FROM evaluation_task
-                WHERE campaign_id = $1 AND task_identity = $2
-                """,
-                campaign_id,
-                task_identity,
-            )
-            if existing is not None:
-                if existing["content_digest"] != digest:
-                    raise PublicationConflictError(task_identity)
-                return TaskReceipt(
-                    evaluation_id=str(existing["id"]),
-                    task_identity=task_identity,
-                    content_digest=digest,
-                    disposition="unchanged",
-                )
-
-            evaluation_id = uuid.uuid4()
-            await connection.execute(
-                """
-                INSERT INTO evaluation_task (
-                    id, campaign_id, task_identity, content_digest, task,
-                    artifact, task_config, model, sampling_config,
-                    primary_metric, aggregates, diagnostics
-                ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
-                )
-                """,
-                evaluation_id,
-                campaign_id,
-                task_identity,
-                digest,
-                publication.task.model_dump(mode="json"),
-                publication.artifact.model_dump(mode="json"),
-                publication.task_config,
-                publication.model.model_dump(mode="json"),
-                publication.sampling_config,
-                publication.primary_metric,
-                publication.aggregates,
-                publication.diagnostics.model_dump(mode="json"),
-            )
-            if publication.details:
-                await connection.executemany(
-                    """
-                    INSERT INTO evaluation_sample (
-                        evaluation_id, sample_index, document_index, outcome, doc, metric,
-                        model_response
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    """,
-                    [
-                        (
-                            evaluation_id,
-                            detail.sample_index,
-                            detail.document_index,
-                            sample_outcome(detail, publication.primary_metric),
-                            detail.doc,
-                            detail.metric,
-                            detail.model_response,
-                        )
-                        for detail in publication.details
-                    ],
-                )
-            return TaskReceipt(
-                evaluation_id=str(evaluation_id),
-                task_identity=task_identity,
-                content_digest=digest,
-                disposition="created",
-            )
-
-    async def finalize_campaign(
-        self,
-        campaign_id: uuid.UUID,
-        *,
-        publisher_principal: str,
-    ) -> FinalizeReceipt:
-        pool = self.database.require_pool()
-        async with pool.acquire() as connection, connection.transaction():
-            await connection.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-                str(campaign_id),
-            )
-            campaign = await connection.fetchrow(
-                """
-                SELECT status, expected_tasks
-                FROM evaluation_campaign
-                WHERE id = $1 AND publisher_principal = $2
-                FOR UPDATE
-                """,
-                campaign_id,
-                publisher_principal,
-            )
-            if campaign is None:
-                raise CampaignContractError("campaign not found")
-            expected = [task["identity"] for task in campaign["expected_tasks"]]
-            task_rows = await connection.fetch(
-                """
-                SELECT task_identity
-                FROM evaluation_task
-                WHERE campaign_id = $1
-                """,
-                campaign_id,
-            )
-            actual = {row["task_identity"] for row in task_rows}
-            missing = [identity for identity in expected if identity not in actual]
-            if missing:
-                raise CampaignCompletenessError(missing)
-            if actual != set(expected):
-                raise CampaignContractError(
-                    "campaign contains task identities outside expected set"
-                )
-            if campaign["status"] == "incomplete":
-                await connection.execute(
-                    """
-                    UPDATE evaluation_campaign
-                    SET status = 'complete', completed_at = now()
-                    WHERE id = $1
-                    """,
-                    campaign_id,
-                )
-            return FinalizeReceipt(
-                campaign_id=str(campaign_id),
-                status="complete",
-                task_count=len(expected),
-            )
-
-    async def list_evaluations(
+    async def list_eval_records_for_space(
         self,
         *,
-        completed_before: datetime,
+        task_id: str,
+        only_wrong: bool,
+        limit: int | None = None,
         offset: int = 0,
-        limit: int = 1000,
-    ) -> EvaluationList:
-        pool = self.database.require_pool()
-        total = await pool.fetchval(
-            """
-            SELECT count(*)
-            FROM evaluation_task AS t
-            JOIN evaluation_campaign AS c ON c.id = t.campaign_id
-            WHERE c.status = 'complete' AND c.completed_at <= $1
-            """,
-            completed_before,
-        )
-        rows = await pool.fetch(
-            """
-            SELECT t.id, t.campaign_id, t.task_identity, t.created_at,
-                   c.completed_at, c.publisher_principal, c.config_digest,
-                   c.registry_digest, c.eval_contract_digest,
-                   c.lighteval_version, c.configured_selectors,
-                   c.resolved_selectors, c.skipped_selectors,
-                   t.task, t.artifact, t.task_config,
-                   t.model, t.sampling_config, t.primary_metric,
-                   t.aggregates, t.diagnostics
-            FROM evaluation_task AS t
-            JOIN evaluation_campaign AS c ON c.id = t.campaign_id
-            WHERE c.status = 'complete' AND c.completed_at <= $1
-            ORDER BY c.completed_at DESC, c.id DESC, t.task_identity
-            OFFSET $2 LIMIT $3
-            """,
-            completed_before,
-            offset,
-            limit,
-        )
-        next_offset = offset + len(rows)
-        return EvaluationList(
-            evaluations=[
-                EvaluationSummary(
-                    evaluation_id=str(row["id"]),
-                    campaign_id=str(row["campaign_id"]),
-                    task_identity=row["task_identity"],
-                    created_at=row["created_at"].isoformat(),
-                    completed_at=row["completed_at"].isoformat(),
-                    task=row["task"],
-                    artifact=row["artifact"],
-                    task_config=row["task_config"],
-                    model=row["model"],
-                    sampling_config=row["sampling_config"],
-                    primary_metric=row["primary_metric"],
-                    aggregates=row["aggregates"],
-                    diagnostics=row["diagnostics"],
-                    provenance=CampaignProvenance(
-                        config_digest=row["config_digest"],
-                        registry_digest=row["registry_digest"],
-                        eval_contract_digest=row["eval_contract_digest"],
-                        lighteval_version=row["lighteval_version"],
-                        configured_selectors=row["configured_selectors"],
-                        resolved_selectors=row["resolved_selectors"],
-                        skipped_selectors=row["skipped_selectors"],
-                        publisher_principal=row["publisher_principal"],
-                    ),
-                )
-                for row in rows
-            ],
-            generated_at=completed_before.isoformat(),
-            total=total,
-            offset=offset,
-            limit=limit,
-            next_offset=next_offset if next_offset < total else None,
+        include_context: bool = True,
+        include_preview: bool = False,
+    ) -> list[dict[str, Any]]:
+        query = EvalRecord.filter(completion__task_id=int(task_id)).select_related("completion")
+        if only_wrong:
+            query = query.filter(is_passed=False)
+        query = query.order_by("completion__sample_index", "completion__avg_repeat_index", "completion__pass_index", "eval_id")
+        if offset > 0:
+            query = query.offset(offset)
+        if limit is not None and limit > 0:
+            query = query.limit(limit)
+        rows = await query
+        payloads: list[dict[str, Any]] = []
+        for row in rows:
+            context = row.completion.context if isinstance(row.completion.context, dict) else {}
+            preview = ""
+            stages = context.get("stages")
+            if isinstance(stages, list) and stages and isinstance(stages[0], Mapping):
+                preview = str(stages[0].get("prompt") or "")[:240]
+            elif include_preview:
+                preview = str(context)[:240]
+            item = {
+                "sample_index": row.completion.sample_index,
+                "repeat_index": row.completion.avg_repeat_index,
+                "pass_index": row.completion.pass_index,
+                "is_passed": row.is_passed,
+                "answer": row.answer,
+                "ref_answer": row.ref_answer,
+                "fail_reason": row.fail_reason,
+                "context_preview": preview,
+            }
+            if include_context:
+                item["context"] = context
+            payloads.append(item)
+        return payloads
+
+    async def get_eval_context_for_space(
+        self,
+        *,
+        task_id: str,
+        sample_index: int,
+        repeat_index: int,
+        pass_index: int = 0,
+    ) -> Any | None:
+        row = await EvalRecord.filter(
+            completion__task_id=int(task_id),
+            completion__sample_index=int(sample_index),
+            completion__avg_repeat_index=int(repeat_index),
+            completion__pass_index=int(pass_index),
+        ).select_related("completion").order_by("-eval_id").first()
+        return row.completion.context if row else None
+
+    async def get_task_bundle(self, *, task_id: str) -> dict[str, Any] | None:
+        task = await Task.filter(task_id=int(task_id)).select_related("model", "benchmark").first()
+        if not task:
+            return None
+        return {"task": self._task_dict(task), "model": self._model_dict(task.model), "benchmark": self._benchmark_dict(task.benchmark)}
+
+    async def list_completions_rows(self, *, task_id: str) -> list[dict[str, Any]]:
+        rows = await Completion.filter(task_id=int(task_id)).order_by("completions_id")
+        return [self._completion_dict(row) for row in rows]
+
+    async def list_eval_rows(self, *, task_id: str) -> list[dict[str, Any]]:
+        rows = await EvalRecord.filter(completion__task_id=int(task_id)).select_related("completion").order_by("eval_id")
+        return [self._eval_dict(row) for row in rows]
+
+    async def list_checker_rows(self, *, task_id: str) -> list[dict[str, Any]]:
+        rows = await Checker.filter(completion__task_id=int(task_id)).select_related("completion").order_by("checker_id")
+        return [self._checker_dict(row) for row in rows]
+
+    async def list_checker_keys(self, *, task_id: str) -> set[tuple[int, int, int]]:
+        rows = await Checker.filter(completion__task_id=int(task_id)).select_related("completion")
+        return {
+            (row.completion.sample_index, row.completion.avg_repeat_index, row.completion.pass_index)
+            for row in rows
+        }
+
+    async def list_scores_rows(self, *, task_id: str) -> list[dict[str, Any]]:
+        rows = await Score.filter(task_id=int(task_id)).order_by("-created_at", "-score_id")
+        return [self._score_dict(row) for row in rows]
+
+    async def _attach_catalog_fields(self, rows: list[dict[str, Any]]) -> None:
+        datasets = sorted({str(row.get("dataset") or "") for row in rows if row.get("dataset")})
+        if not datasets:
+            return
+        parsed = [split_dataset(dataset) for dataset in datasets]
+        names = sorted({name for name, _split in parsed})
+        try:
+            catalog_rows = await BenchmarkCatalog.filter(benchmark_name__in=names)
+        except Exception:  # noqa: BLE001 - old DBs may not have the catalog table until seeded.
+            return
+        lookup = {
+            join_dataset(row.benchmark_name, row.benchmark_split): row.field
+            for row in catalog_rows
+        }
+        for row in rows:
+            field = lookup.get(str(row.get("dataset") or ""))
+            if field:
+                row["field"] = field
+
+    async def update_task_status(self, *, task_id: str, status: str) -> None:
+        await Task.filter(task_id=int(task_id)).update(status=canonical_task_status(status))
+
+    async def _completion_id_map(self, *, task_id: str, status: str | None = None) -> dict[tuple[int, int, int], int]:
+        rows = await self._completion_rows(task_id=task_id, status=status)
+        return {(row.sample_index, row.avg_repeat_index, row.pass_index): row.completions_id for row in rows}
+
+    async def _completion_rows(self, *, task_id: str, status: str | None = None) -> list[Completion]:
+        query = Completion.filter(task_id=int(task_id))
+        if status:
+            query = query.filter(status=canonical_completion_status(status))
+        return await query.order_by("sample_index", "avg_repeat_index", "pass_index")
+
+    @staticmethod
+    def _merge_completion_context(
+        previous: Mapping[str, Any],
+        incoming: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Keep generation metadata when final LightEval scoring enriches a row."""
+
+        merged = dict(incoming)
+        for key in ("sampling_config", "stats"):
+            before, after = previous.get(key), merged.get(key)
+            if isinstance(before, Mapping) and isinstance(after, Mapping):
+                merged[key] = {**before, **after}
+
+        before_stages, after_stages = previous.get("stages"), merged.get("stages")
+        if isinstance(before_stages, list) and isinstance(after_stages, list):
+            stages = []
+            for index, stage in enumerate(after_stages):
+                current = dict(stage) if isinstance(stage, Mapping) else {}
+                prior = before_stages[index] if index < len(before_stages) else None
+                if isinstance(prior, Mapping):
+                    for key in ("prompt", "completion", "stop_reason"):
+                        if current.get(key) in (None, "", []) and prior.get(key) not in (None, "", []):
+                            current[key] = prior[key]
+                stages.append(current)
+            merged["stages"] = stages
+
+        before_agent, after_agent = previous.get("agent_result"), merged.get("agent_result")
+        if isinstance(before_agent, Mapping) and isinstance(after_agent, Mapping):
+            agent = {**before_agent, **after_agent}
+            before_response = before_agent.get("model_response")
+            after_response = after_agent.get("model_response")
+            if isinstance(before_response, Mapping) and isinstance(after_response, Mapping):
+                response = {**before_response, **after_response}
+                for key in ("raw_text", "finish_reason", "usage", "stages", "stages_by_rollout"):
+                    if after_response.get(key) in (None, "", []) and before_response.get(key) not in (None, "", []):
+                        response[key] = before_response[key]
+                agent["model_response"] = response
+            merged["agent_result"] = agent
+        return merged
+
+
+    @staticmethod
+    def _build_completion_context(payload: Mapping[str, Any]) -> dict[str, Any]:
+        stages: list[dict[str, Any]] = []
+        for idx in iter_stage_indices(payload):
+            stages.append(
+                {
+                    "prompt": payload.get(f"prompt{idx}"),
+                    "completion": payload.get(f"completion{idx}"),
+                    "stop_reason": payload.get(f"stop_reason{idx}"),
+                }
+            )
+        context = {"stages": stages, "sampling_config": payload.get("sampling_config", {})}
+        for key in ("stats", "agent_result", "agent_info", "agent_trace", "task_id", "domain", "instruction"):
+            if key in payload:
+                context[key] = payload[key]
+        sanitized = sanitize_json(context)
+        return sanitized if isinstance(sanitized, dict) else {}
+
+    @staticmethod
+    def _bounded_text(value: Any, max_chars: int) -> str:
+        text = str(value or "").replace("\x00", "")
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 20].rstrip() + "\n...[truncated]"
+
+    @staticmethod
+    def _task_config_path(config_path: str | None = None) -> str | None:
+        raw = config_path if config_path is not None else os.environ.get("RWKV_TASK_CONFIG_PATH")
+        value = str(raw or "").strip()
+        return value or None
+
+    @staticmethod
+    def _task_is_tmp() -> bool:
+        return os.environ.get("RWKV_TASK_IS_TMP", "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _normalize_reference_value(value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            return str(value)
+        sanitized = sanitize_json(value)
+        try:
+            return json_key(sanitized)
+        except (TypeError, ValueError):
+            return str(value).strip() or None
+
+    @classmethod
+    def _extract_reference_answer(cls, payload: Mapping[str, Any]) -> str | None:
+        for key in _REF_ANSWER_KEYS:
+            if key not in payload:
+                continue
+            normalized = cls._normalize_reference_value(payload.get(key))
+            if normalized:
+                return normalized
+        raw_record = payload.get("raw_record")
+        if isinstance(raw_record, Mapping):
+            for key in _RAW_RECORD_REF_KEYS:
+                if key not in raw_record:
+                    continue
+                normalized = cls._normalize_reference_value(raw_record.get(key))
+                if normalized:
+                    return normalized
+        return None
+
+    @staticmethod
+    def _score_row_for_space(score: Score) -> dict[str, Any]:
+        task = score.task
+        benchmark = task.benchmark
+        model = task.model
+        dataset = join_dataset(benchmark.benchmark_name, benchmark.benchmark_split)
+        return {
+            "score_id": score.score_id,
+            "task_id": task.task_id,
+            "cot": score.cot_mode != "NoCoT",
+            "cot_mode": score.cot_mode,
+            "metrics": score.metrics,
+            "created_at": score.created_at,
+            "is_param_search": task.is_param_search,
+            "model": model.model_name,
+            "dataset": dataset,
+            "samples": benchmark.num_samples,
+            "problems": benchmark.num_samples,
+            "task": task.evaluator,
+            "task_details": None,
+            "sampling_config": task.sampling_config,
+            "log_path": task.log_path,
+        }
+
+    @staticmethod
+    def _history_row(score: Score) -> dict[str, Any]:
+        row = ScoreboardStore._score_row_for_space(score)
+        row["evaluator"] = score.task.evaluator
+        row["num_samples"] = score.task.benchmark.num_samples
+        return row
+
+    @staticmethod
+    def _task_dict(task: Task) -> dict[str, Any]:
+        return {
+            "task_id": task.task_id,
+            "config_path": task.config_path,
+            "evaluator": task.evaluator,
+            "is_param_search": task.is_param_search,
+            "is_tmp": task.is_tmp,
+            "created_at": task.created_at,
+            "status": task.status,
+            "git_hash": task.git_hash,
+            "model_id": task.model_id,
+            "benchmark_id": task.benchmark_id,
+            "desc": task.description,
+            "sampling_config": task.sampling_config,
+            "log_path": task.log_path,
+        }
+
+    @staticmethod
+    def _completion_dict(completion: Completion) -> dict[str, Any]:
+        return {
+            "completions_id": completion.completions_id,
+            "task_id": completion.task_id,
+            "context": completion.context,
+            "sample_index": completion.sample_index,
+            "avg_repeat_index": completion.avg_repeat_index,
+            "pass_index": completion.pass_index,
+            "created_at": completion.created_at,
+            "status": completion.status,
+        }
+
+    @staticmethod
+    def _eval_dict(eval_record: EvalRecord) -> dict[str, Any]:
+        completion_id = getattr(eval_record, "completion_id", None)
+        if completion_id is None and getattr(eval_record, "completion", None) is not None:
+            completion_id = eval_record.completion.completions_id
+        return {
+            "eval_id": eval_record.eval_id,
+            "completions_id": completion_id,
+            "answer": eval_record.answer,
+            "ref_answer": eval_record.ref_answer,
+            "is_passed": eval_record.is_passed,
+            "fail_reason": eval_record.fail_reason,
+            "created_at": eval_record.created_at,
+        }
+
+    @staticmethod
+    def _checker_dict(checker: Checker) -> dict[str, Any]:
+        completion_id = getattr(checker, "completion_id", None)
+        if completion_id is None and getattr(checker, "completion", None) is not None:
+            completion_id = checker.completion.completions_id
+        return {
+            "checker_id": checker.checker_id,
+            "completions_id": completion_id,
+            "answer_correct": checker.answer_correct,
+            "instruction_following_error": checker.instruction_following_error,
+            "world_knowledge_error": checker.world_knowledge_error,
+            "math_error": checker.math_error,
+            "reasoning_logic_error": checker.reasoning_logic_error,
+            "thought_contains_correct_answer": checker.thought_contains_correct_answer,
+            "needs_human_review": checker.needs_human_review,
+            "reason": checker.reason,
+            "created_at": checker.created_at,
+        }
+
+    @staticmethod
+    def _score_dict(score: Score) -> dict[str, Any]:
+        return {
+            "score_id": score.score_id,
+            "task_id": score.task_id,
+            "cot_mode": score.cot_mode,
+            "metrics": score.metrics,
+            "created_at": score.created_at,
+        }
+
+    @staticmethod
+    def _model_dict(model: ScoreModel) -> dict[str, Any]:
+        return {
+            "model_id": model.model_id,
+            "data_version": model.data_version,
+            "arch_version": model.arch_version,
+            "num_params": model.num_params,
+            "model_name": model.model_name,
+        }
+
+    @staticmethod
+    def _benchmark_dict(benchmark: Benchmark) -> dict[str, Any]:
+        return {
+            "benchmark_id": benchmark.benchmark_id,
+            "benchmark_name": benchmark.benchmark_name,
+            "benchmark_split": benchmark.benchmark_split,
+            "url": benchmark.url,
+            "status": benchmark.status,
+            "num_samples": benchmark.num_samples,
+        }
+
+    @staticmethod
+    def _benchmark_catalog_key(row: Mapping[str, Any]) -> tuple[str, str] | None:
+        name = str(row.get("name") or row.get("benchmark_name") or "").strip()
+        if not name:
+            return None
+        return name, str(row.get("benchmark_split") or "").strip()
+
+    @staticmethod
+    def _benchmark_catalog_input(row: Mapping[str, Any]) -> BenchmarkCatalogInput | None:
+        key = ScoreboardStore._benchmark_catalog_key(row)
+        if key is None:
+            return None
+        field = str(row.get("field") or "").strip()
+        source_family = str(row.get("source_family") or "").strip()
+        if not field or not source_family:
+            return None
+        metadata = sanitize_json(row.get("metadata")) if row.get("metadata") is not None else None
+        return BenchmarkCatalogInput(
+            name=key[0],
+            split=key[1],
+            field=field,
+            source=str(row.get("source") or _DEFAULT_CATALOG_SOURCE).strip(),
+            source_family=source_family,
+            target_kind=str(row.get("target_kind") or _DEFAULT_CATALOG_TARGET_KIND).strip(),
+            run_status=str(row.get("run_status") or _DEFAULT_CATALOG_RUN_STATUS).strip(),
+            scope=str(row.get("scope") or _DEFAULT_CATALOG_SCOPE).strip(),
+            metadata=metadata,
         )
 
-    async def sample_page(
-        self,
-        evaluation_id: uuid.UUID,
-        *,
-        offset: int,
-        limit: int,
-        outcome: AnswerOutcome | None,
-    ) -> SamplePage | None:
-        pool = self.database.require_pool()
-        result = await pool.fetchrow(
-            """
-            SELECT t.primary_metric
-            FROM evaluation_task AS t
-            JOIN evaluation_campaign AS c ON c.id = t.campaign_id
-            WHERE t.id = $1 AND c.status = 'complete'
-            """,
-            evaluation_id,
-        )
-        if result is None:
-            return None
-        total = await pool.fetchval(
-            """
-            SELECT count(*)
-            FROM evaluation_sample
-            WHERE evaluation_id = $1
-              AND ($2::text IS NULL OR outcome = $2)
-            """,
-            evaluation_id,
-            outcome,
-        )
-        rows = await pool.fetch(
-            """
-            SELECT sample_index, document_index, outcome, doc, metric, model_response
-            FROM evaluation_sample
-            WHERE evaluation_id = $1
-              AND ($2::text IS NULL OR outcome = $2)
-            ORDER BY sample_index
-            OFFSET $3 LIMIT $4
-            """,
-            evaluation_id,
-            outcome,
-            offset,
-            limit,
-        )
-        next_offset = offset + len(rows)
-        return SamplePage(
-            evaluation_id=str(evaluation_id),
-            primary_metric=result["primary_metric"],
-            total=total,
-            offset=offset,
-            limit=limit,
-            next_offset=next_offset if next_offset < total else None,
-            items=[
-                SampleDetail(
-                    id=f"{evaluation_id}:{row['sample_index']}",
-                    sample_index=row["sample_index"],
-                    document_index=row["document_index"],
-                    outcome=row["outcome"],
-                    doc=row["doc"],
-                    metric=row["metric"],
-                    model_response=row["model_response"],
-                )
-                for row in rows
-            ],
-        )
+    @staticmethod
+    def _benchmark_catalog_dict(row: BenchmarkCatalog) -> dict[str, Any]:
+        return {
+            "catalog_id": row.catalog_id,
+            "name": join_dataset(row.benchmark_name, row.benchmark_split),
+            "benchmark_name": row.benchmark_name,
+            "benchmark_split": row.benchmark_split,
+            "field": row.field,
+            "source": row.source,
+            "source_family": row.source_family,
+            "target_kind": row.target_kind,
+            "run_status": row.run_status,
+            "scope": row.scope,
+            "metadata": row.metadata,
+        }

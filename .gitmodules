@@ -4,12 +4,3 @@
 [submodule "src/train/verl-rwkv"]
 	path = src/train/verl-rwkv
 	url = https://github.com/rwkv-rs/verl-rwkv.git
-[submodule "src/infer/vllm-rwkv"]
-	path = src/infer/vllm-rwkv
-	url = https://github.com/rwkv-rs/vllm-rwkv
-[submodule "src/kernel/fla-rwkv"]
-	path = src/kernel/fla-rwkv
-	url = https://github.com/rwkv-rs/fla-rwkv
-[submodule "src/kernel/flash-rwkv"]
-	path = src/kernel/flash-rwkv
-	url = https://github.com/rwkv-rs/FlashRWKV.git

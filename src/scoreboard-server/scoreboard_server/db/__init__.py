@@ -1,1 +1,1 @@
-"""PostgreSQL persistence boundary."""
+"""Persistence, schema, and database access."""

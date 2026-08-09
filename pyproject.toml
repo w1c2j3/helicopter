@@ -6,31 +6,36 @@ build-backend = "setuptools.build_meta"
 name = "helicopter"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+  "helicopter-scoreboard-server",
+]
 
 [project.scripts]
 helicopter = "helicopter_cli.__main__:main"
 
 [dependency-groups]
-flash-rwkv = [
-  "flash-rwkv",
-]
-
-fla-rwkv = [
-  "flash-linear-attention[cuda]",
-]
-
-lighteval = [
-  { include-group = "vllm-rwkv" },
-  "httpx[socks]",
-  "langcodes[data]",
-  "lighteval[extended-tasks,math,multilingual] @ git+https://github.com/huggingface/lighteval.git@64f4f5ae173626509fad6e477ca4ee56ebb26129",
+eval = [
+  "lighteval[extended_tasks,litellm,multilingual]",
+  "language-data",
   "more-itertools",
-  "pyarrow>=19.0.0",
-  "ray",
+  "nltk",
+  "zhconv",
 ]
 
-vllm-rwkv = [
+agent = [
+  "evalscope[bfcl,mcp,sandbox,wide-search]>=1.9.1,<2.0.0",
+]
+
+swe-bench = [
+  "evalscope[swe_bench]>=1.9.1,<2.0.0",
+]
+
+terminal-bench = [
+  "evalscope[terminal_bench]>=1.9.1,<2.0.0",
+]
+
+rwkv = [
+  "accelerate",
   "aiohttp>=3.13.3",
   "blake3",
   "cachetools",
@@ -134,24 +139,34 @@ verl-liger = [
 
 [tool.uv]
 package = true
-default-groups = []
 conflicts = [
   [
-    { group = "lighteval" },
-    { group = "verl-rwkv" },
+    { group = "agent" },
+    { group = "eval" },
+  ],
+  [
+    { group = "agent" },
+    { group = "rwkv" },
+  ],
+  [
+    { group = "agent" },
+    { group = "terminal-bench" },
   ],
 ]
 
-[tool.uv.sources]
-flash-rwkv = { path = "src/kernel/flash-rwkv", editable = true }
-flash-linear-attention = { path = "src/kernel/fla-rwkv", editable = true }
-
-[tool.setuptools]
-packages = ["helicopter_cli", "helicopter_lighteval"]
-
-[tool.setuptools.package-dir]
-helicopter_cli = "src/cli/helicopter_cli"
-helicopter_lighteval = "src/eval/lighteval"
-
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.uv.sources]
+helicopter-scoreboard-server = { path = "src/scoreboard-server", editable = true }
+lighteval = { path = "src/eval/lighteval", editable = true }
+
+[tool.setuptools.packages.find]
+where = ["src/cli"]
+include = ["helicopter_cli*"]
+
+[tool.setuptools.package-data]
+helicopter_cli = [
+  "lighteval_data/*.jsonl",
+  "vendor/muldimif/LICENSE",
+]

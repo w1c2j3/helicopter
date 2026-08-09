@@ -5,7 +5,7 @@ from pathlib import Path
 from string import Template
 
 
-ROOT_MARKERS = ("pyproject.toml", "src/infer/vllm-rwkv", "src/train/verl-rwkv")
+ROOT_MARKERS = ("pyproject.toml", "src/train/verl-rwkv")
 
 
 def find_root() -> Path:

@@ -1,1 +1,1 @@
-"""Public API contracts."""
+"""DTO contracts for /api routes."""

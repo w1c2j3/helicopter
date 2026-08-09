@@ -1,0 +1,33 @@
+{
+  "source": "https://evalscope.readthedocs.io/en/latest/get_started/supported_dataset/agent.html",
+  "description": "Agent/FC datasets exposed by the installed EvalScope 1.9.1 benchmark registry.",
+  "datasets": [
+    {"name": "bfcl_v3", "display_name": "BFCL-v3", "categories": ["Agent", "FunctionCalling"]},
+    {"name": "bfcl_v4", "display_name": "BFCL-v4", "categories": ["Agent", "FunctionCalling"]},
+    {"name": "browsecomp", "display_name": "BrowseComp", "categories": ["Agent", "Knowledge", "QA"]},
+    {"name": "claw_eval", "display_name": "Claw-Eval", "categories": ["Agent", "MultiModal", "MultiTurn"]},
+    {"name": "deep_swe", "display_name": "DeepSWE", "categories": ["Agent", "Coding", "MultiTurn"]},
+    {"name": "gaia", "display_name": "GAIA", "categories": ["Agent", "MultiTurn", "Reasoning"]},
+    {"name": "gdpval", "display_name": "GDPval", "categories": ["Agent", "Knowledge", "MultiTurn"]},
+    {"name": "general_fc", "display_name": "General-FunctionCalling", "categories": ["Agent", "Custom", "FunctionCalling"]},
+    {"name": "k2_verifier", "display_name": "K2-Vendor-Verifier", "categories": ["Agent", "FunctionCalling"]},
+    {"name": "kimi_verifier", "display_name": "Kimi-Vendor-Verifier (Param Compliance)", "categories": ["Agent", "FunctionCalling"]},
+    {"name": "mcp_atlas", "display_name": "MCP-Atlas", "categories": ["Agent", "MultiTurn"]},
+    {"name": "minimax_verifier", "display_name": "MiniMax-Vendor-Verifier", "categories": ["Agent", "FunctionCalling"]},
+    {"name": "officeqa", "display_name": "OfficeQA", "categories": ["Agent", "Knowledge", "QA"]},
+    {"name": "researchrubrics", "display_name": "ResearchRubrics", "categories": ["Agent", "MultiTurn", "Reasoning", "Retrieval"]},
+    {"name": "skillsbench", "display_name": "SkillsBench", "categories": ["Agent", "MultiTurn"]},
+    {"name": "swe_bench_lite_agentic", "display_name": "SWE-bench_Lite_Agentic", "categories": ["Coding"]},
+    {"name": "swe_bench_multilingual_agentic", "display_name": "SWE-bench_Multilingual_Agentic", "categories": ["Coding"]},
+    {"name": "swe_bench_pro", "display_name": "SWE-bench_Pro", "categories": ["Coding"]},
+    {"name": "swe_bench_verified_agentic", "display_name": "SWE-bench_Verified_Agentic", "categories": ["Coding"]},
+    {"name": "swe_bench_verified_mini_agentic", "display_name": "SWE-bench_Verified_Mini_Agentic", "categories": ["Coding"]},
+    {"name": "tau2_bench", "display_name": "τ²-bench", "categories": ["Agent", "FunctionCalling", "Reasoning"]},
+    {"name": "tau3_bench", "display_name": "τ³-bench", "categories": ["Agent", "FunctionCalling", "Reasoning"]},
+    {"name": "tau_bench", "display_name": "τ-bench", "categories": ["Agent", "FunctionCalling", "Reasoning"]},
+    {"name": "terminal_bench_v2", "display_name": "Terminal-Bench-2.0", "categories": ["Coding"]},
+    {"name": "terminal_bench_v2_1", "display_name": "Terminal-Bench-2.1", "categories": ["Coding"]},
+    {"name": "toolathlon", "display_name": "Toolathlon Official Service Wrapper", "categories": ["Agent", "FunctionCalling", "MultiTurn"]},
+    {"name": "wide_search", "display_name": "WideSearch", "categories": ["Agent", "MultiTurn", "Retrieval"]}
+  ]
+}

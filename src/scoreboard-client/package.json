@@ -6,15 +6,15 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start -H 0.0.0.0",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "smoke": "PLAYWRIGHT_BROWSERS_PATH=../../.venv/playwright-browsers playwright test"
+    "smoke": "playwright test"
   },
   "dependencies": {
     "next": "^16.1.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "recharts": "^3.8.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",

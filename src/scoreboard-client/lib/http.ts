@@ -15,3 +15,53 @@ export async function getJson<T>(path: string): Promise<T> {
   }
   return res.json() as Promise<T>;
 }
+
+export async function postJson<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(apiUrl(path), {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(`${res.status}: ${await res.text()}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+function adminHeaders(extra?: Record<string, string>): Record<string, string> {
+  return { Accept: "application/json", "X-RWKV-Admin-Request": "1", ...extra };
+}
+
+export async function getJsonAuth<T>(path: string): Promise<T> {
+  const res = await fetch(apiUrl(path), {
+    headers: adminHeaders(),
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  if (!res.ok) {
+    throw new Error(`${res.status}: ${await errText(res)}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+export async function postJsonAuth<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(apiUrl(path), {
+    method: "POST",
+    headers: adminHeaders({ "Content-Type": "application/json" }),
+    body: body === undefined ? undefined : JSON.stringify(body),
+    credentials: "same-origin",
+  });
+  if (!res.ok) {
+    throw new Error(`${res.status}: ${await errText(res)}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+async function errText(res: Response): Promise<string> {
+  try {
+    const data = await res.json();
+    return typeof data?.detail === "string" ? data.detail : JSON.stringify(data);
+  } catch {
+    return res.statusText;
+  }
+}

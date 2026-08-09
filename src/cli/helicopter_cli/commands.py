@@ -1,18 +1,60 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
-from .config import resolve_model_path, table
+from .config import default_config_path, dataset_root, resolve_model_entry, resolve_model_path, table
 from .env import env_value, pick
+from .rwkv_config import (
+    PROMPT_MODES,
+    alias_task_specs,
+    normalize_policy,
+    prompt_template_for_mode as rwkv_prompt_template,
+    select_task_specs,
+)
 from .paths import resolve_path
 
 
 WKV_MODES = ("fp16", "fp32io16")
 EMB_DEVICES = ("cpu", "gpu")
+LIGHTEVAL_BACKENDS = ("endpoint-litellm",)
+
+# Request-level sampling names accepted by the local vLLM OpenAI-compatible
+# endpoint. ``max_tokens`` is translated to LightEval's ``max_new_tokens``
+# only inside generation_parameters; the raw values are also passed through
+# a small local LiteLLM compatibility patch so provider-specific fields are
+# not silently discarded.
+VLLM_SAMPLING_FIELDS = (
+    "max_tokens",
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "seed",
+    "repetition_penalty",
+    "frequency_penalty",
+    "presence_penalty",
+    "penalty_decay",
+    "stop",
+)
+LIGHTEVAL_SAMPLING_FIELDS = frozenset(
+    {
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "seed",
+        "repetition_penalty",
+        "frequency_penalty",
+        "presence_penalty",
+    }
+)
+TASK_SAMPLING_FIELDS = frozenset({*VLLM_SAMPLING_FIELDS, "context_budget"})
 
 
 @dataclass
@@ -23,11 +65,46 @@ class CommandPlan:
     env: dict[str, str]
 
 
-def prepend_venv_path(env: dict[str, str], root: Path) -> None:
-    venv = resolve_path(
-        str(env_value(env, "HELICOPTER_VENV", "VENV", "REMOTE_VENV") or ".venv"),
-        root=root,
-        env=env,
+def format_hydra_file_list(value: Any, *, root: Path, env: dict[str, str]) -> str:
+    if isinstance(value, list):
+        files = [str(resolve_path(str(path), root=root, env=env)) for path in value]
+        return "[" + ",".join(f"'{path}'" for path in files) + "]"
+    return str(value)
+
+
+def format_hydra_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    return str(value)
+
+
+def resolve_prompt_mode(args: Any, *, env: dict[str, str], prompt: dict[str, Any]) -> str:
+    """Resolve one explicit prompt profile for the whole child process."""
+
+    mode = pick(
+        getattr(args, "prompt_mode", None),
+        env_value(env, "HELICOPTER_PROMPT_MODE"),
+        "naive_cot",
+    )
+    mode = str(mode).strip().lower()
+    if mode not in PROMPT_MODES:
+        allowed = ", ".join(PROMPT_MODES)
+        raise SystemExit(f"prompt mode must be one of: {allowed}; got {mode!r}")
+    return mode
+
+
+def prompt_template_for_mode(prompt: dict[str, Any], mode: str | None = None) -> str:
+    """Return the process-wide RWKV wrapper selected by the run argument."""
+
+    selected = str(mode or "naive_cot").strip().lower()
+    return rwkv_prompt_template(selected)
+
+
+def prepend_venv_path(env: dict[str, str], root: Path, config: dict[str, Any]) -> None:
+    paths = table(config, "paths")
+    venv_value = pick(
+        paths.get("venv"),
+        env_value(env, "HELICOPTER_VENV", "VENV", "REMOTE_VENV"),
     )
     bin_dir = venv / "bin"
     if bin_dir.exists():
@@ -117,6 +194,1250 @@ def _strip_vllm_env(env: dict[str, str]) -> dict[str, str]:
     return {key: value for key, value in env.items() if not key.startswith("VLLM_")}
 
 
+def prepend_pythonpath(env: dict[str, str], path: Path) -> None:
+    current = env.get("PYTHONPATH")
+    text = str(path)
+    if current:
+        paths = current.split(os.pathsep)
+        if text not in paths:
+            env["PYTHONPATH"] = os.pathsep.join([text, *paths])
+    else:
+        env["PYTHONPATH"] = text
+
+
+def parse_vllm_env_overrides(values: list[str] | None) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for value in values or []:
+        key, separator, env_value = value.partition("=")
+        if not separator or not key:
+            raise SystemExit(f"invalid --vllm-env value: {value!r}; expected KEY=VALUE")
+        if not key.startswith("VLLM_"):
+            raise SystemExit(f"invalid --vllm-env key: {key}; key must start with VLLM_")
+        parsed[key] = env_value
+    return parsed
+
+
+def config_vllm_env(infer: dict[str, Any]) -> dict[str, str]:
+    value = infer.get("vllm_env", {})
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise SystemExit("[infer].vllm_env must be a TOML table")
+    parsed: dict[str, str] = {}
+    for key, env_value in value.items():
+        if not str(key).startswith("VLLM_"):
+            raise SystemExit(f"invalid [infer].vllm_env key: {key}; key must start with VLLM_")
+        parsed[str(key)] = str(env_value)
+    return parsed
+
+
+def infer_settings(config: dict[str, Any], model: dict[str, Any]) -> dict[str, Any]:
+    base = table(config, "infer")
+    model_infer = model.get("infer", {})
+    if model_infer is None:
+        return dict(base)
+    if not isinstance(model_infer, dict):
+        raise SystemExit("model infer settings must be a TOML table")
+    merged = {**base, **model_infer}
+    base_env = base.get("vllm_env", {})
+    model_env = model_infer.get("vllm_env", {})
+    if isinstance(base_env, dict) or isinstance(model_env, dict):
+        merged["vllm_env"] = {
+            **(base_env if isinstance(base_env, dict) else {}),
+            **(model_env if isinstance(model_env, dict) else {}),
+        }
+    return merged
+
+
+def takeoff_value(
+    takeoff: dict[str, Any],
+    env: dict[str, str],
+    config_key: str,
+    env_key: str,
+    default: Any = None,
+) -> Any:
+    return pick(env_value(env, env_key), takeoff.get(config_key), default)
+
+
+def append_hydra_override(overrides: list[str], key: str, value: Any, *, optional: bool = False) -> None:
+    if optional and (value is None or str(value) == ""):
+        return
+    overrides.append(f"{key}={format_hydra_value(value)}")
+
+
+def bool_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def append_cli_option(command: list[str], option: str, value: Any, *, optional: bool = True) -> None:
+    if optional and (value is None or str(value) == ""):
+        return
+    command.extend([option, str(value)])
+
+
+def append_cli_flag(command: list[str], option: str, value: Any) -> None:
+    if value is not None and bool_value(value):
+        command.append(option)
+
+
+def normalize_openai_base_url(base_url: str) -> str:
+    """Ensure an OpenAI-compatible base URL carries a path (defaulting to /v1).
+
+    Mirrors the behavior of the removed openai_client.normalize_api_base(): a
+    bare host such as ``http://host:8000`` becomes ``http://host:8000/v1`` so
+    LiteLLM posts to ``.../v1/chat/completions``. URLs that already have a path
+    (``.../v1``, ``.../custom``) are left untouched apart from trailing-slash
+    trimming.
+    """
+    trimmed = base_url.rstrip("/")
+    parsed = urlsplit(trimmed)
+    if parsed.scheme and parsed.netloc and parsed.path == "":
+        return f"{trimmed}/v1"
+    return trimmed
+
+
+def local_openai_base_url(config: dict[str, Any], env: dict[str, str], args: Any) -> str:
+    lighteval = table(config, "lighteval")
+    runtime = table(config, "runtime")
+    model = resolve_model_entry(config, args.model) if getattr(args, "model", None) else {}
+    configured = pick(
+        getattr(args, "base_url", None),
+        model.get("base_url"),
+        env_value(env, "HELICOPTER_EVAL_BASE_URL", "OPENAI_BASE_URL"),
+        lighteval.get("base_url"),
+    )
+    if configured:
+        return normalize_openai_base_url(str(configured))
+
+    host = str(pick(runtime.get("client_host"), default="127.0.0.1"))
+    port = str(pick(runtime.get("port"), default="8000"))
+    return f"http://{host}:{port}/v1"
+
+
+def is_local_base_url(base_url: str) -> bool:
+    return any(token in base_url for token in ("127.0.0.1", "localhost", "0.0.0.0"))
+
+
+def lighteval_model_name(model_name: str, provider: str | None) -> str:
+    if provider and "/" not in model_name:
+        return f"{provider}/{model_name}"
+    return model_name
+
+
+def lighteval_output_dir(config: dict[str, Any], *, root: Path, env: dict[str, str], args: Any) -> str:
+    lighteval = table(config, "lighteval")
+    value = pick(getattr(args, "output_dir", None), lighteval.get("output_dir"), "results/lighteval")
+    if getattr(args, "prompt_mode", None) and not getattr(args, "output_dir", None):
+        value = str(Path(str(value)) / str(args.prompt_mode).strip().lower())
+    return str(resolve_path(str(value), root=root, env=env))
+
+
+def lighteval_path_arg(value: Any, *, root: Path, env: dict[str, str]) -> str | None:
+    if value is None or str(value) == "":
+        return None
+    text = str(value)
+    suffix = Path(text).suffix.lower()
+    if suffix in {".yaml", ".yml", ".py", ".txt"}:
+        return str(resolve_path(text, root=root, env=env))
+    return text
+
+
+def resolve_lighteval_sampling(
+    args: Any,
+    *,
+    env: dict[str, str],
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """Resolve vLLM request sampling without inventing provider defaults.
+
+    ``[sampling]`` is the canonical configuration surface. The old
+    ``[lighteval].max_new_tokens`` and ``--max-new-tokens`` names remain as a
+    compatibility fallback because LightEval itself still calls this value
+    ``max_new_tokens``.
+    """
+    sampling = table(config, "sampling")
+    if not isinstance(sampling, dict):
+        raise SystemExit("[sampling] must be a TOML table")
+    lighteval = table(config, "lighteval")
+
+    resolved: dict[str, Any] = {}
+    for field in VLLM_SAMPLING_FIELDS:
+        cli_value = getattr(args, field, None)
+        if field == "max_tokens":
+            cli_value = pick(cli_value, getattr(args, "max_new_tokens", None))
+            value = pick(
+                cli_value,
+                env_value(
+                    env,
+                    "HELICOPTER_EVAL_MAX_TOKENS",
+                    "HELICOPTER_EVAL_MAX_NEW_TOKENS",
+                ),
+                sampling.get(field),
+                lighteval.get("max_new_tokens"),
+            )
+            if isinstance(value, dict):
+                prompt_mode = resolve_prompt_mode(
+                    args,
+                    env=env,
+                    prompt=table(config, "prompt"),
+                )
+                if prompt_mode not in value:
+                    raise SystemExit(
+                        "sampling.max_tokens has no budget for prompt mode "
+                        f"{prompt_mode!r}"
+                    )
+                value = value[prompt_mode]
+        elif field == "stop":
+            value = pick(
+                cli_value,
+                env_value(env, "HELICOPTER_EVAL_STOP"),
+                sampling.get(field),
+            )
+        else:
+            value = pick(
+                cli_value,
+                env_value(env, f"HELICOPTER_EVAL_{field.upper()}"),
+                sampling.get(field),
+            )
+        if value is not None:
+            resolved[field] = value
+    return resolved
+
+
+def _format_lighteval_value(value: Any) -> str:
+    if isinstance(value, (str, list, tuple, dict)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def format_lighteval_sampling(sampling: dict[str, Any]) -> str | None:
+    """Format only fields understood by LightEval's GenerationParameters."""
+    generation: dict[str, Any] = {}
+    for field, value in sampling.items():
+        if field == "max_tokens":
+            generation["max_new_tokens"] = value
+        elif field == "stop":
+            # The LightEval CLI parser rewrites ``word:`` patterns even inside
+            # quoted stop strings (for example ``User:``), corrupting JSON.
+            # The raw-completion patch receives stop separately via
+            # HELICOPTER_VLLM_SAMPLING_JSON.
+            continue
+        elif field in LIGHTEVAL_SAMPLING_FIELDS:
+            generation[field] = value
+    if not generation:
+        return None
+    values = ",".join(
+        f"{field}:{_format_lighteval_value(value)}"
+        for field, value in generation.items()
+    )
+    return f"generation_parameters={{{values}}}"
+
+
+def resolve_lighteval_request_sampling(
+    args: Any,
+    *,
+    env: dict[str, str],
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """Resolve request sampling without overriding G1h per-task lengths."""
+
+    sampling = resolve_lighteval_sampling(args, env=env, config=config)
+    if isinstance(table(config, "lighteval").get("g1h"), dict):
+        # LiteLLM merges generation_parameters after the per-Doc max_tokens.
+        # Leaving max_tokens here would turn every G1h task into an 8192-token
+        # request and defeat generation_size/gpass_generation_size in the
+        # configured task aliases.
+        sampling = {key: value for key, value in sampling.items() if key != "max_tokens"}
+    return sampling
+
+
+def resolve_lighteval_g1h_policy(
+    args: Any,
+    *,
+    env: dict[str, str],
+    config: dict[str, Any],
+    prompt_mode: str | None = None,
+) -> dict[str, Any] | None:
+    """Resolve the native g1h avg/rollout policy for the LightEval child.
+
+    The task module is imported inside the spawned LightEval process, so the
+    policy is passed as JSON rather than reconstructed from a second config
+    file.  Task names are passed separately to keep the DB/catalog names
+    unchanged in result files and scoreboard rows.
+    """
+
+    lighteval = table(config, "lighteval")
+    policy = lighteval.get("g1h")
+    if not isinstance(policy, dict) or not policy:
+        # A standalone benchmark TOML is model-agnostic and therefore does
+        # not contain a [lighteval.g1h] section.  Build the launcher policy
+        # from the benchmark's generic evaluation contract in memory.  This
+        # keeps avg/native and all k/n controls in the benchmark file without
+        # coupling that file to one model family.
+        benchmark_specs = config.get("_benchmark_specs", {})
+        if not isinstance(benchmark_specs, dict) or len(benchmark_specs) != 1:
+            return None
+        spec = next(iter(benchmark_specs.values()))
+        if not isinstance(spec, dict):
+            return None
+        evaluation = spec.get("evaluation", {})
+        benchmark = spec.get("benchmark", {})
+        prompt = table(config, "prompt")
+        if not isinstance(evaluation, dict) or not isinstance(benchmark, dict):
+            return None
+        prompt_mode = str(prompt_mode or "naive_cot").strip().lower()
+        policy = {
+            "metric": str(evaluation.get("metric", "avg")),
+            "prompt_style": "normal" if prompt_mode.startswith("normal") else "naive",
+            "zero_shot": True,
+            "avg_k": int(evaluation.get("avg_k", 1)),
+            "rollout_n": int(evaluation.get("rollout_n", evaluation.get("avg_k", 1))),
+            "generation_size": int(evaluation.get("generation_size", 2048)),
+            "gpass_generation_size": int(evaluation.get("gpass_generation_size", 4096)),
+            "target_generations_per_benchmark": int(
+                evaluation.get("target_generations_per_benchmark", 5000)
+            ),
+            "large_benchmark_generation_threshold": int(
+                evaluation.get("large_benchmark_generation_threshold", 20000)
+            ),
+            "large_benchmark_sample_rate": float(
+                evaluation.get("large_benchmark_sample_rate", 0.2)
+            ),
+            "variant_selection": "avg_then_gpass",
+        }
+        task_name = str(benchmark.get("task", "")).strip()
+        if task_name:
+            policy["task_evaluations"] = {task_name: dict(evaluation)}
+
+    try:
+        policy = dict(policy)
+        if prompt_mode:
+            policy["prompt_mode"] = prompt_mode
+        resolved = normalize_policy(policy)
+        tasks = pick(getattr(args, "tasks", None), lighteval.get("tasks"))
+        if tasks:
+            if isinstance(tasks, list):
+                raw_specs = [str(item).strip() for item in tasks if str(item).strip()]
+            else:
+                raw_specs = [item.strip() for item in str(tasks).split(",") if item.strip()]
+            selected = select_task_specs(raw_specs, resolved)
+            benchmark_specs = config.get("_benchmark_specs", {})
+            task_evaluations: dict[str, dict[str, Any]] = {}
+            if isinstance(benchmark_specs, dict):
+                for task_name, _fewshot in selected:
+                    benchmark_spec = benchmark_specs.get(task_name)
+                    if not isinstance(benchmark_spec, dict):
+                        continue
+                    evaluation = benchmark_spec.get("evaluation", {})
+                    if isinstance(evaluation, dict):
+                        task_evaluations[task_name] = dict(evaluation)
+            if task_evaluations:
+                resolved["task_evaluations"] = task_evaluations
+            resolved["selected_tasks"] = [name for name, _fewshot in selected]
+            resolved["tasks"] = alias_task_specs(selected, resolved)
+        return resolved
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+
+
+def resolve_lighteval_task_request_policy(
+    *,
+    config: dict[str, Any],
+    selected_tasks: list[str],
+    base_sampling: dict[str, Any],
+    prompt_mode: str | None = None,
+) -> dict[str, Any]:
+    """Resolve TOML domain settings to exact LightEval task request settings."""
+
+    from .non_fc_lighteval_catalog import domain_for_task
+
+    def string_list(value: Any, *, key: str) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise SystemExit(f"{key} must be a TOML string array")
+        return value
+
+    def configured_request_format(
+        task_name: str,
+        *,
+        domain: str,
+        formats: dict[str, Any],
+    ) -> str | None:
+        canonical = str(task_name).split("|", 1)[0]
+        if canonical.startswith("g1h__"):
+            canonical = canonical[len("g1h__") :]
+        exact_matches: list[str] = []
+        domain_defaults: list[str] = []
+        for format_name, raw_format in formats.items():
+            if not isinstance(raw_format, dict):
+                raise SystemExit(f"[prompt.formats.{format_name}] must be a TOML table")
+            tasks = string_list(raw_format.get("tasks"), key=f"prompt.formats.{format_name}.tasks")
+            prefixes = string_list(
+                raw_format.get("task_prefixes"),
+                key=f"prompt.formats.{format_name}.task_prefixes",
+            )
+            domains = string_list(
+                raw_format.get("domains"),
+                key=f"prompt.formats.{format_name}.domains",
+            )
+            if canonical in tasks or any(canonical.startswith(prefix) for prefix in prefixes):
+                exact_matches.append(format_name)
+            elif domain in domains:
+                domain_defaults.append(format_name)
+        if len(exact_matches) > 1:
+            names = ", ".join(exact_matches)
+            raise SystemExit(f"task {canonical!r} matches multiple prompt formats: {names}")
+        if exact_matches:
+            return exact_matches[0]
+        if len(domain_defaults) > 1:
+            names = ", ".join(domain_defaults)
+            raise SystemExit(f"domain {domain!r} has multiple default prompt formats: {names}")
+        return domain_defaults[0] if domain_defaults else None
+
+    stops = table(config, "stops")
+    stop_domains = stops.get("domains", {})
+    if not isinstance(stop_domains, dict):
+        raise SystemExit("[stops.domains] must be a TOML table")
+    stop_formats = stops.get("formats", {})
+    if not isinstance(stop_formats, dict):
+        raise SystemExit("[stops.formats] must be a TOML table")
+    sampling = table(config, "sampling")
+    sampling_domains = sampling.get("domains", {})
+    if not isinstance(sampling_domains, dict):
+        raise SystemExit("[sampling.domains] must be a TOML table")
+    sampling_formats = sampling.get("formats", {})
+    if not isinstance(sampling_formats, dict):
+        raise SystemExit("[sampling.formats] must be a TOML table")
+    prompt = table(config, "prompt")
+    prompt_domains = prompt.get("domains", {})
+    if not isinstance(prompt_domains, dict):
+        raise SystemExit("[prompt.domains] must be a TOML table")
+    prompt_formats = prompt.get("formats", {})
+    if not isinstance(prompt_formats, dict):
+        raise SystemExit("[prompt.formats] must be a TOML table")
+    allowed_domains = prompt.get("allowed_domains")
+    if allowed_domains is not None:
+        if not isinstance(allowed_domains, list) or not all(
+            isinstance(item, str) and item.strip() for item in allowed_domains
+        ):
+            raise SystemExit("[prompt].allowed_domains must be a TOML array of domain names")
+        allowed_domains = {item.strip() for item in allowed_domains}
+
+    benchmark_specs = config.get("_benchmark_specs", {})
+    if not isinstance(benchmark_specs, dict):
+        raise SystemExit("internal benchmark specification map must be a table")
+    prompt_mode = str(prompt_mode or "naive_cot").strip().lower()
+    if prompt_mode not in PROMPT_MODES:
+        allowed = ", ".join(PROMPT_MODES)
+        raise SystemExit(f"prompt mode must be one of: {allowed}; got {prompt_mode!r}")
+    if not isinstance(prompt.get("templates", {}), dict):
+        raise SystemExit("[prompt.templates] must be a TOML table")
+
+    def benchmark_spec_for_task(
+        canonical: str,
+    ) -> dict[str, Any] | None:
+        exact = benchmark_specs.get(canonical)
+        if exact is not None:
+            if not isinstance(exact, dict):
+                raise SystemExit(
+                    f"benchmark specification for {canonical!r} must be a table"
+                )
+            return exact
+        parent_matches = [
+            (configured_task, candidate)
+            for configured_task, candidate in benchmark_specs.items()
+            if canonical.startswith(f"{configured_task}:")
+        ]
+        if not parent_matches:
+            return None
+        configured_task, candidate = max(
+            parent_matches,
+            key=lambda item: len(item[0]),
+        )
+        if not isinstance(candidate, dict):
+            raise SystemExit(
+                f"benchmark specification for {configured_task!r} must be a table"
+            )
+        return candidate
+
+    def sampling_for_mode(
+        raw_sampling: dict[str, Any],
+        *,
+        source: str,
+    ) -> dict[str, Any]:
+        resolved = dict(raw_sampling)
+        max_tokens = resolved.get("max_tokens")
+        if isinstance(max_tokens, dict):
+            if prompt_mode not in max_tokens:
+                raise SystemExit(
+                    f"{source} sampling.max_tokens has no budget for prompt mode "
+                    f"{prompt_mode!r}"
+                )
+            max_tokens = max_tokens[prompt_mode]
+            resolved["max_tokens"] = max_tokens
+        if max_tokens is not None and (
+            isinstance(max_tokens, bool)
+            or not isinstance(max_tokens, int)
+            or max_tokens <= 0
+        ):
+            raise SystemExit(f"{source} sampling.max_tokens must resolve to a positive integer")
+        return resolved
+
+    tasks: dict[str, Any] = {}
+    for task_name in selected_tasks:
+        canonical = str(task_name).split("|", 1)[0]
+        if canonical.startswith("g1h__"):
+            canonical = canonical[len("g1h__") :]
+        benchmark_spec = benchmark_spec_for_task(canonical)
+        benchmark = benchmark_spec.get("benchmark", {}) if benchmark_spec else {}
+        spec_prompt = benchmark_spec.get("prompt", {}) if benchmark_spec else {}
+        benchmark_sampling = benchmark_spec.get("sampling", {}) if benchmark_spec else {}
+        if not isinstance(benchmark, dict) or not isinstance(spec_prompt, dict):
+            raise SystemExit(f"benchmark specification for {canonical!r} is malformed")
+        if not isinstance(benchmark_sampling, dict):
+            raise SystemExit(f"benchmark sampling for {canonical!r} must be a TOML table")
+        benchmark_sampling = sampling_for_mode(
+            benchmark_sampling,
+            source=f"benchmark {canonical!r}",
+        )
+        domain = str(benchmark.get("field")) if benchmark else domain_for_task(task_name)
+        if not domain:
+            raise SystemExit(f"no benchmark domain is registered for LightEval task {task_name!r}")
+        allowed_modes = benchmark.get("allowed_modes") if benchmark else None
+        if allowed_modes is not None and prompt_mode not in allowed_modes:
+            raise SystemExit(
+                f"prompt mode does not allow benchmark {canonical!r}: "
+                f"mode={prompt_mode!r} allowed={allowed_modes}"
+            )
+        if allowed_domains is not None and domain not in allowed_domains:
+            raise SystemExit(
+                f"prompt mode does not allow the {domain!r} domain for LightEval task {task_name!r}"
+            )
+        domain_stops = stop_domains.get(domain)
+        if domain_stops is not None and not isinstance(domain_stops, list):
+            raise SystemExit(f"[stops.domains].{domain} must be a TOML array")
+        domain_sampling = sampling_domains.get(domain, {})
+        if not isinstance(domain_sampling, dict):
+            raise SystemExit(f"[sampling.domains.{domain}] must be a TOML table")
+        request_format = (
+            str(spec_prompt.get("format"))
+            if spec_prompt.get("format")
+            else configured_request_format(
+                task_name,
+                domain=domain,
+                formats=prompt_formats,
+            )
+        )
+        format_stops = stop_formats.get(request_format) if request_format else None
+        if format_stops is not None and not isinstance(format_stops, list):
+            raise SystemExit(f"[stops.formats].{request_format} must be a TOML array")
+        configured_stops = [*(domain_stops or []), *(format_stops or [])]
+        if prompt_mode.startswith("naive"):
+            # Official RWKV eval stops on the next User turn or EOD. EOD is
+            # the endpoint EOS token and is intentionally not a text stop.
+            resolved_stops = ["\nUser:"]
+        else:
+            # Normal/chat-format runs retain the configured ✿ delimiter and
+            # also keep the official next-turn guard as a safety net.
+            resolved_stops = list(dict.fromkeys(["\nUser:", *configured_stops])) or None
+        format_sampling = sampling_formats.get(request_format, {}) if request_format else {}
+        if not isinstance(format_sampling, dict):
+            raise SystemExit(f"[sampling.formats.{request_format}] must be a TOML table")
+        unknown_domain = set(domain_sampling) - set(TASK_SAMPLING_FIELDS)
+        if unknown_domain:
+            fields = ", ".join(sorted(unknown_domain))
+            raise SystemExit(f"[sampling.domains.{domain}] has unsupported fields: {fields}")
+        unknown_format = set(format_sampling) - set(TASK_SAMPLING_FIELDS)
+        if unknown_format:
+            fields = ", ".join(sorted(unknown_format))
+            raise SystemExit(f"[sampling.formats.{request_format}] has unsupported fields: {fields}")
+        unknown_benchmark = set(benchmark_sampling) - set(TASK_SAMPLING_FIELDS)
+        if unknown_benchmark:
+            fields = ", ".join(sorted(unknown_benchmark))
+            raise SystemExit(f"benchmark {canonical!r} has unsupported sampling fields: {fields}")
+        domain_prompt = prompt_domains.get(domain, {})
+        if not isinstance(domain_prompt, dict):
+            raise SystemExit(f"[prompt.domains.{domain}] must be a TOML table")
+        format_prompt = prompt_formats.get(request_format, {}) if request_format else {}
+        if not isinstance(format_prompt, dict):
+            raise SystemExit(f"[prompt.formats.{request_format}] must be a TOML table")
+        # The model protocol wrapper is code-owned; benchmark TOMLs cannot
+        # override the selected naive/normal format.
+        prompt_template = prompt_template_for_mode(prompt, prompt_mode)
+        if not prompt_template:
+            # Model-agnostic example configs may intentionally leave prompt
+            # assembly to LightEval. Only benchmark-owned configs need the
+            # explicit RWKV template contract.
+            prompt_template = None
+        if prompt_mode.startswith("naive") and isinstance(prompt_template, str):
+            prompt_template = prompt_template.replace(
+                "User: {query}\nAssistant:",
+                "User: {query}\n\nAssistant:",
+            )
+        if prompt_template is not None and (
+            not isinstance(prompt_template, str) or "{query}" not in prompt_template
+        ):
+            raise SystemExit(
+                f"[prompt.domains.{domain}].template must be a string containing {{query}}"
+            )
+        multi_turn_template = format_prompt.get(
+            "multi_turn_template",
+            domain_prompt.get("multi_turn_template", prompt.get("multi_turn_template")),
+        )
+        required_multi_turn_fields = ("{first_prompt}", "{first_answer}", "{query}")
+        if multi_turn_template is not None and (
+            not isinstance(multi_turn_template, str)
+            or any(field not in multi_turn_template for field in required_multi_turn_fields)
+        ):
+            raise SystemExit("prompt multi_turn_template must contain {first_prompt}, {first_answer}, and {query}")
+        resolved_sampling = {
+            **base_sampling,
+            **domain_sampling,
+            **format_sampling,
+            **benchmark_sampling,
+        }
+        task_policy = {
+            "domain": domain,
+            "format": request_format,
+            "prompt_mode": prompt_mode,
+            "inherit_task_stops": bool(stops.get("inherit_task_stops", True)),
+            "stop": resolved_stops,
+            "sampling": resolved_sampling,
+        }
+        if benchmark_spec:
+            task_policy["benchmark_config_path"] = str(benchmark_spec.get("_path", ""))
+            task_policy["scoring"] = dict(benchmark_spec.get("scoring", {}))
+        if prompt_template is not None:
+            task_policy["prompt_template"] = prompt_template
+        if multi_turn_template is not None:
+            task_policy["multi_turn_template"] = multi_turn_template
+        tasks[task_name] = task_policy
+    return {"tasks": tasks}
+
+
+def build_lighteval_model_args(
+    args: Any,
+    *,
+    root: Path,
+    env: dict[str, str],
+    config: dict[str, Any],
+) -> tuple[str, str | None]:
+    raw_model_args = lighteval_path_arg(getattr(args, "model_args", None), root=root, env=env)
+    model = resolve_model_entry(config, args.model)
+    api_key = pick(
+        getattr(args, "api_key", None),
+        model.get("api_key"),
+        env_value(env, "HELICOPTER_EVAL_API_KEY", "OPENAI_API_KEY"),
+        table(config, "lighteval").get("api_key"),
+    )
+    if raw_model_args:
+        if not api_key and is_local_base_url(local_openai_base_url(config, env, args)):
+            api_key = "EMPTY"
+        return raw_model_args, str(api_key) if api_key else None
+
+    lighteval = table(config, "lighteval")
+    provider = str(pick(getattr(args, "provider", None), lighteval.get("provider"), "openai"))
+    served_model_name = str(
+        pick(
+            getattr(args, "lighteval_model_name", None),
+            model.get("served_model_name"),
+            model.get("requested_name"),
+            args.model,
+        )
+    )
+    model_name = lighteval_model_name(served_model_name, provider)
+    base_url = local_openai_base_url(config, env, args)
+
+    parts = [
+        f"model_name={model_name}",
+        f"provider={provider}",
+        f"base_url={base_url}",
+        "use_cache=false",
+    ]
+    concurrent_requests = pick(
+        getattr(args, "concurrent_requests", None),
+        env_value(env, "HELICOPTER_EVAL_CONCURRENT_REQUESTS"),
+        lighteval.get("concurrent_requests"),
+    )
+    request_timeout = pick(
+        getattr(args, "request_timeout", None),
+        env_value(env, "HELICOPTER_EVAL_REQUEST_TIMEOUT"),
+        lighteval.get("request_timeout"),
+        lighteval.get("timeout"),
+    )
+    max_model_length = pick(
+        getattr(args, "max_model_length", None),
+        env_value(env, "HELICOPTER_EVAL_MAX_MODEL_LENGTH"),
+        lighteval.get("max_model_length"),
+        model.get("max_model_len"),
+    )
+    sampling = resolve_lighteval_request_sampling(args, env=env, config=config)
+    if concurrent_requests is not None:
+        parts.append(f"concurrent_requests={concurrent_requests}")
+    if request_timeout is not None:
+        parts.append(f"timeout={request_timeout}")
+    if max_model_length is not None:
+        parts.append(f"max_model_length={max_model_length}")
+    sampling_arg = format_lighteval_sampling(sampling)
+    if sampling_arg is not None:
+        parts.append(sampling_arg)
+
+    if not api_key and is_local_base_url(base_url):
+        api_key = "EMPTY"
+    return ",".join(parts), str(api_key) if api_key else None
+
+
+def build_lighteval_plan(
+    args: Any,
+    *,
+    root: Path,
+    env: dict[str, str],
+    config: dict[str, Any],
+) -> CommandPlan:
+    if args.backend != "endpoint-litellm":
+        raise SystemExit(f"unsupported LightEval backend: {args.backend}")
+
+    lighteval = table(config, "lighteval")
+    python = python_executable(config, root=root, env=env)
+    model_args, api_key = build_lighteval_model_args(args, root=root, env=env, config=config)
+    sampling = resolve_lighteval_request_sampling(args, env=env, config=config)
+    command = [
+        python,
+        "-m",
+        "lighteval",
+        "endpoint",
+        "litellm",
+        model_args,
+        args.tasks,
+        "--output-dir",
+        lighteval_output_dir(config, root=root, env=env, args=args),
+    ]
+
+    for option, value in (
+        ("--max-samples", pick(getattr(args, "max_samples", None), lighteval.get("max_samples"))),
+        (
+            "--dataset-loading-processes",
+            pick(
+                getattr(args, "dataset_loading_processes", None),
+                lighteval.get("dataset_loading_processes"),
+            ),
+        ),
+        (
+            "--num-fewshot-seeds",
+            pick(getattr(args, "num_fewshot_seeds", None), lighteval.get("num_fewshot_seeds")),
+        ),
+        (
+            "--custom-tasks",
+            lighteval_path_arg(
+                pick(getattr(args, "custom_tasks", None), lighteval.get("custom_tasks")),
+                root=root,
+                env=env,
+            ),
+        ),
+        ("--results-org", pick(getattr(args, "results_org", None), lighteval.get("results_org"))),
+        ("--job-id", getattr(args, "job_id", None)),
+    ):
+        append_cli_option(command, option, value)
+
+    save_details = pick(getattr(args, "save_details", None), lighteval.get("save_details"), True)
+    append_cli_flag(command, "--save-details", save_details)
+    append_cli_flag(
+        command,
+        "--load-tasks-multilingual",
+        pick(getattr(args, "load_tasks_multilingual", None), lighteval.get("load_tasks_multilingual")),
+    )
+    append_cli_flag(command, "--push-to-hub", pick(getattr(args, "push_to_hub", None), lighteval.get("push_to_hub")))
+    append_cli_flag(
+        command,
+        "--public-run",
+        pick(getattr(args, "public_run", None), lighteval.get("public_run")),
+    )
+
+    for extra in getattr(args, "extra", None) or []:
+        command.append(str(extra))
+
+    shown_env = {"PYTHON": python}
+    plan_env = strip_vllm_env(env)
+    # The repository carries the LightEval source that this command is meant
+    # to exercise.  Put it on the child interpreter's PYTHONPATH explicitly
+    # instead of relying only on an editable-install record in the venv.
+    # Keeping the source path in the launch contract makes local changes
+    # effective even when the command is started from a different interpreter.
+    lighteval_source = (root / "src/eval/lighteval/src").resolve()
+    if not lighteval_source.is_dir():
+        raise SystemExit(f"local LightEval source not found: {lighteval_source}")
+    prepend_pythonpath(plan_env, lighteval_source)
+    prepend_pythonpath(plan_env, root / "src/cli")
+    plan_env["HELICOPTER_LIGHTEEVAL_SOURCE_ROOT"] = str(lighteval_source)
+    plan_env["HELICOPTER_LIGHTEEVAL_ASSERT_LOCAL_SOURCE"] = "1"
+    plan_env["HELICOPTER_PATCH_LIGHTEVAL_LITELLM_LOGPROBS"] = "1"
+    plan_env["HELICOPTER_PATCH_LIGHTEVAL_DATASET_RETRIES"] = "1"
+    plan_env["HELICOPTER_LIGHTEVAL_DATASET_ONLINE_FALLBACK"] = "1"
+    plan_env["HELICOPTER_SCOREBOARD_DB_ONLY"] = "1"
+    plan_env["HELICOPTER_PROJECT_ROOT"] = str(root)
+    model_entry = resolve_model_entry(config, args.model)
+    plan_env["HELICOPTER_SCOREBOARD_MODEL_NAME"] = str(
+        pick(
+            getattr(args, "lighteval_model_name", None),
+            model_entry.get("served_model_name"),
+            model_entry.get("requested_name"),
+            args.model,
+        )
+    )
+    prompt = table(config, "prompt")
+    prompt_mode = resolve_prompt_mode(args, env=env, prompt=prompt)
+    prompt_template = prompt_template_for_mode(prompt, prompt_mode)
+    if prompt_template:
+        plan_env["HELICOPTER_PROMPT_TEMPLATE"] = prompt_template
+    if prompt_mode:
+        plan_env["HELICOPTER_SCOREBOARD_PROMPT_MODE"] = prompt_mode
+        plan_env["HELICOPTER_PROMPT_MODE"] = prompt_mode
+    plan_env["HELICOPTER_SCOREBOARD_COT_MODE"] = "NoCoT" if "nocot" in prompt_mode.lower() else "CoT"
+    configured_path = Path(args.config) if getattr(args, "config", None) else default_config_path(root)
+    if not configured_path.is_absolute():
+        configured_path = root / configured_path
+    plan_env["HELICOPTER_SCOREBOARD_CONFIG_PATH"] = str(configured_path.resolve())
+    if sampling:
+        plan_env["HELICOPTER_VLLM_SAMPLING_JSON"] = json.dumps(
+            sampling, ensure_ascii=False, separators=(",", ":")
+        )
+    if api_key:
+        plan_env["OPENAI_API_KEY"] = api_key
+    g1h_policy = resolve_lighteval_g1h_policy(
+        args,
+        env=env,
+        config=config,
+        prompt_mode=prompt_mode,
+    )
+    if g1h_policy is not None:
+        selected_tasks = [str(item) for item in g1h_policy.get("selected_tasks", [])]
+        request_policy = resolve_lighteval_task_request_policy(
+            config=config,
+            selected_tasks=selected_tasks,
+            base_sampling=sampling,
+            prompt_mode=prompt_mode,
+        )
+        plan_env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"] = json.dumps(
+            request_policy,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        task_selection = ",".join(str(item) for item in g1h_policy.pop("tasks", []))
+        plan_env["HELICOPTER_LIGHTEEVAL_G1H_POLICY"] = json.dumps(
+            g1h_policy,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if task_selection:
+            plan_env["HELICOPTER_LIGHTEEVAL_TASKS"] = ",".join(
+                str(item) for item in g1h_policy.get("selected_tasks", [])
+            )
+            try:
+                task_index = command.index(args.tasks)
+            except ValueError as error:
+                raise SystemExit("internal error: LightEval task argument was not found") from error
+            command[task_index] = task_selection
+    return CommandPlan(command=command, cwd=root, shown_env=shown_env, env=plan_env)
+
+
+# Output formats each lighteval-tasks action's delegate parser actually accepts.
+# The shared front-end parser allows the union of these, so we validate the
+# (action, format) pair here rather than letting the spawned subprocess exit 2.
+_LIGHTEVAL_TASKS_FORMATS: dict[str, frozenset[str]] = {
+    "export": frozenset({"text", "jsonl"}),
+    "judges": frozenset({"text", "jsonl", "summary"}),
+    "coverage": frozenset({"text", "jsonl", "summary", "tasks"}),
+}
+
+
+def validate_lighteval_tasks_args(args: Any) -> None:
+    """Reject flag combinations the front-end accepts but the delegate rejects.
+
+    The shared ``lighteval-tasks`` parser exposes --format/--contains/--limit/
+    --include-supersets for every action, but the underlying subcommands support
+    different subsets. Fail fast with a clear message instead of forwarding an
+    argument that makes the spawned process exit 2 (or silently drop it).
+    """
+    action = args.task_action
+    fmt = getattr(args, "format", None)
+    allowed = _LIGHTEVAL_TASKS_FORMATS.get(action)
+    if allowed is not None and fmt is not None and fmt not in allowed:
+        raise SystemExit(
+            f"helicopter eval lighteval-tasks {action} does not support --format {fmt}; "
+            f"choose one of: {', '.join(sorted(allowed))}"
+        )
+
+    if action == "coverage":
+        for flag, value in (
+            ("--contains", getattr(args, "contains", None)),
+            ("--limit", getattr(args, "limit", None)),
+            ("--include-supersets", getattr(args, "include_supersets", None)),
+        ):
+            if value:
+                raise SystemExit(f"helicopter eval lighteval-tasks coverage does not support {flag}")
+    elif action == "judges":
+        if getattr(args, "include_supersets", None):
+            raise SystemExit(
+                "helicopter eval lighteval-tasks judges does not support --include-supersets; "
+                "supersets are always expanded to their member tasks"
+            )
+    elif action in {"list", "dump"}:
+        unsupported = [
+            flag
+            for flag, value in (
+                ("--output", getattr(args, "output", None)),
+                ("--contains", getattr(args, "contains", None)),
+                ("--limit", getattr(args, "limit", None)),
+                ("--include-supersets", getattr(args, "include_supersets", None)),
+            )
+            if value
+        ]
+        if unsupported:
+            raise SystemExit(
+                f"helicopter eval lighteval-tasks {action} does not support "
+                f"{', '.join(unsupported)}; use `export` for filtering and file output"
+            )
+
+
+def build_lighteval_tasks_plan(
+    args: Any,
+    *,
+    root: Path,
+    env: dict[str, str],
+    config: dict[str, Any],
+) -> CommandPlan:
+    validate_lighteval_tasks_args(args)
+    python = python_executable(config, root=root, env=env)
+    lighteval = table(config, "lighteval")
+    custom_tasks = lighteval_path_arg(
+        pick(getattr(args, "custom_tasks", None), lighteval.get("custom_tasks")),
+        root=root,
+        env=env,
+    )
+    load_tasks_multilingual = pick(
+        getattr(args, "load_tasks_multilingual", None),
+        lighteval.get("load_tasks_multilingual"),
+    )
+
+    if args.task_action in {"export", "coverage", "judges"}:
+        command = [python, "-m", "helicopter_cli.lighteval_tasks", args.task_action]
+        append_cli_flag(command, "--load-multilingual", load_tasks_multilingual)
+        append_cli_option(command, "--custom-tasks", custom_tasks)
+        append_cli_option(command, "--output", getattr(args, "output", None))
+        append_cli_option(command, "--format", getattr(args, "format", None))
+        if args.task_action == "coverage":
+            append_cli_option(
+                command,
+                "--source",
+                lighteval_path_arg(getattr(args, "source", None), root=root, env=env),
+            )
+            append_cli_option(command, "--source-format", getattr(args, "source_format", None))
+            append_cli_option(command, "--candidate-limit", getattr(args, "candidate_limit", None))
+        if args.task_action == "judges" and getattr(args, "tasks", None):
+            command.append(args.tasks)
+        # --contains/--limit are only defined by the export and judges delegates;
+        # --include-supersets only by export. coverage rejects all three (guarded
+        # in validate_lighteval_tasks_args above).
+        if args.task_action in {"export", "judges"}:
+            for pattern in getattr(args, "contains", None) or []:
+                append_cli_option(command, "--contains", pattern, optional=False)
+            append_cli_option(command, "--limit", getattr(args, "limit", None))
+        if args.task_action == "export":
+            append_cli_flag(command, "--include-supersets", getattr(args, "include_supersets", None))
+        return CommandPlan(command=command, cwd=root, shown_env={"PYTHON": python}, env=strip_vllm_env(env))
+
+    if args.task_action == "inspect":
+        if not args.tasks:
+            raise SystemExit("helicopter eval lighteval-tasks inspect requires a task id")
+        if bool_value(getattr(args, "show_config", False)):
+            command = [python, "-m", "helicopter_cli.lighteval_tasks", "inspect", args.tasks]
+            append_cli_flag(command, "--load-multilingual", load_tasks_multilingual)
+            append_cli_option(command, "--num-samples", getattr(args, "num_samples", None))
+            append_cli_option(command, "--custom-tasks", custom_tasks)
+            append_cli_flag(command, "--show-config", getattr(args, "show_config", None))
+            return CommandPlan(command=command, cwd=root, shown_env={"PYTHON": python}, env=strip_vllm_env(env))
+
+        command = [python, "-m", "lighteval", "tasks", args.task_action]
+        command.append(args.tasks)
+        append_cli_flag(command, "--load-multilingual", load_tasks_multilingual)
+        append_cli_option(command, "--num-samples", getattr(args, "num_samples", None))
+        append_cli_flag(command, "--show-config", getattr(args, "show_config", None))
+    else:
+        command = [python, "-m", "lighteval", "tasks", args.task_action]
+        append_cli_flag(command, "--load-tasks-multilingual", load_tasks_multilingual)
+
+    append_cli_option(command, "--custom-tasks", custom_tasks)
+    return CommandPlan(command=command, cwd=root, shown_env={"PYTHON": python}, env=strip_vllm_env(env))
+
+
+def build_lighteval_export_plan(
+    args: Any,
+    *,
+    root: Path,
+    env: dict[str, str],
+    config: dict[str, Any],
+) -> CommandPlan:
+    python = python_executable(config, root=root, env=env)
+    command = [python, "-m", "helicopter_cli.lighteval_export"]
+    for detail in args.details:
+        command.append(str(resolve_path(str(detail), root=root, env=env)))
+    append_cli_option(command, "--output", getattr(args, "output", None))
+    append_cli_option(command, "--format", getattr(args, "format", None))
+    return CommandPlan(command=command, cwd=root, shown_env={"PYTHON": python}, env=strip_vllm_env(env))
+
+
+def build_grpo_hydra_overrides(
+    *,
+    model_path: Path,
+    data_root: Path,
+    dataset: dict[str, Any],
+    takeoff: dict[str, Any],
+    env: dict[str, str],
+    root: Path,
+    verl_path: Path,
+    rwkv_lm_path: Path,
+    num_nodes: Any,
+    num_devices: Any,
+) -> list[str]:
+    train_files = env_value(env, "TRAIN_FILES")
+    if train_files is None:
+        if "train_files" in dataset:
+            train_files = format_hydra_file_list(dataset["train_files"], root=root, env=env)
+        else:
+            train_files = f"['{data_root}/train.parquet']"
+
+    val_files = env_value(env, "VAL_FILES")
+    if val_files is None:
+        if "val_files" in dataset:
+            val_files = format_hydra_file_list(dataset["val_files"], root=root, env=env)
+        else:
+            val_files = f"['{data_root}/test.parquet']"
+
+    dynamic_bsz = takeoff_value(takeoff, env, "rwkv_use_dynamic_bsz", "RWKV_USE_DYNAMIC_BSZ", False)
+    ppo_micro_batch_size = takeoff_value(takeoff, env, "ppo_micro_batch_size", "PPO_MICRO_BATCH_SIZE", 8)
+    ppo_max_token_len_per_gpu = takeoff_value(
+        takeoff,
+        env,
+        "ppo_max_token_len_per_gpu",
+        "PPO_MAX_TOKEN_LEN_PER_GPU",
+        8192,
+    )
+    rollout_tensor_parallel_size = takeoff_value(
+        takeoff,
+        env,
+        "rollout_tensor_parallel_size",
+        "ROLLOUT_TP",
+        1,
+    )
+    rollout_gpu_memory_utilization = takeoff_value(
+        takeoff,
+        env,
+        "rollout_gpu_memory_utilization",
+        "ROLLOUT_GPU_MEM_UTIL",
+    )
+    rollout_n = takeoff_value(takeoff, env, "rollout_n", "ROLLOUT_N", 8)
+    rollout_max_num_seqs = takeoff_value(takeoff, env, "rollout_max_num_seqs", "ROLLOUT_MAX_NUM_SEQS")
+    rollout_max_num_batched_tokens = takeoff_value(
+        takeoff,
+        env,
+        "rollout_max_num_batched_tokens",
+        "ROLLOUT_MAX_NUM_BATCHED_TOKENS",
+    )
+    rollout_n_gpus_per_node = takeoff_value(
+        takeoff,
+        env,
+        "rollout_n_gpus_per_node",
+        "ROLLOUT_NGPUS_PER_NODE",
+    )
+    rollout_data_parallel_size = takeoff_value(
+        takeoff,
+        env,
+        "rollout_data_parallel_size",
+        "ROLLOUT_DP",
+    )
+    rollout_pipeline_parallel_size = takeoff_value(
+        takeoff,
+        env,
+        "rollout_pipeline_parallel_size",
+        "ROLLOUT_PP",
+    )
+    trainer_n_gpus_per_node = takeoff_value(
+        takeoff,
+        env,
+        "trainer_n_gpus_per_node",
+        "TRAIN_NGPUS_PER_NODE",
+        num_devices,
+    )
+
+    reward_path = verl_path / "examples/rwkv_trainer/math_dapo_reward.py"
+    overrides = [
+        f"algorithm.adv_estimator={format_hydra_value(takeoff_value(takeoff, env, 'adv_estimator', 'ADV_ESTIMATOR', 'grpo'))}",
+        "algorithm.use_kl_in_reward=False",
+        f"data.train_files={train_files}",
+        f"data.val_files={val_files}",
+        f"data.train_batch_size={format_hydra_value(takeoff_value(takeoff, env, 'train_batch_size', 'TRAIN_BATCH_SIZE', 56))}",
+        f"data.max_prompt_length={format_hydra_value(takeoff_value(takeoff, env, 'max_prompt_length', 'MAX_PROMPT_LENGTH', 512))}",
+        f"data.max_response_length={format_hydra_value(takeoff_value(takeoff, env, 'max_response_length', 'MAX_RESPONSE_LENGTH', 512))}",
+        "data.filter_overlong_prompts=True",
+        "data.truncation=error",
+        f"reward.custom_reward_function.path={reward_path}",
+        "reward.custom_reward_function.name=compute_score",
+        f"reward.reward_manager.name={format_hydra_value(takeoff_value(takeoff, env, 'reward_manager', 'REWARD_MANAGER', 'naive'))}",
+        "model@actor_rollout_ref.model=rwkv_native",
+        f"actor_rollout_ref.model.path={model_path}",
+        f"actor_rollout_ref.model.rwkv_lm_path={rwkv_lm_path}",
+        "actor@actor_rollout_ref.actor=rwkv_lm",
+        f"actor_rollout_ref.actor.engine.rwkv_lm_path={rwkv_lm_path}",
+        f"actor_rollout_ref.actor.optim.lr={format_hydra_value(takeoff_value(takeoff, env, 'actor_lr', 'ACTOR_LR', '1e-5'))}",
+        f"actor_rollout_ref.actor.ppo_mini_batch_size={format_hydra_value(takeoff_value(takeoff, env, 'ppo_mini_batch_size', 'PPO_MINI_BATCH_SIZE', 56))}",
+        f"actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu={format_hydra_value(ppo_micro_batch_size)}",
+        f"actor_rollout_ref.actor.use_dynamic_bsz={format_hydra_value(dynamic_bsz)}",
+        f"actor_rollout_ref.actor.ppo_max_token_len_per_gpu={format_hydra_value(ppo_max_token_len_per_gpu)}",
+        f"actor_rollout_ref.actor.use_kl_loss={format_hydra_value(takeoff_value(takeoff, env, 'actor_use_kl_loss', 'ACTOR_USE_KL_LOSS', False))}",
+        f"actor_rollout_ref.actor.kl_loss_coef={format_hydra_value(takeoff_value(takeoff, env, 'actor_kl_loss_coef', 'ACTOR_KL_LOSS_COEF', 0.0))}",
+        f"actor_rollout_ref.actor.kl_loss_type={format_hydra_value(takeoff_value(takeoff, env, 'actor_kl_loss_type', 'ACTOR_KL_LOSS_TYPE', 'low_var_kl'))}",
+    ]
+    append_hydra_override(
+        overrides,
+        "actor_rollout_ref.actor.optim.lr_warmup_steps",
+        takeoff_value(takeoff, env, "actor_lr_warmup_steps", "ACTOR_LR_WARMUP_STEPS"),
+        optional=True,
+    )
+    append_hydra_override(
+        overrides,
+        "actor_rollout_ref.actor.optim.weight_decay",
+        takeoff_value(takeoff, env, "actor_weight_decay", "ACTOR_WEIGHT_DECAY"),
+        optional=True,
+    )
+    append_hydra_override(
+        overrides,
+        "actor_rollout_ref.actor.entropy_coeff",
+        takeoff_value(takeoff, env, "actor_entropy_coeff", "ACTOR_ENTROPY_COEFF"),
+        optional=True,
+    )
+    append_hydra_override(
+        overrides,
+        "actor_rollout_ref.actor.optim.clip_grad",
+        takeoff_value(takeoff, env, "actor_grad_clip", "ACTOR_GRAD_CLIP"),
+        optional=True,
+    )
+    append_hydra_override(
+        overrides,
+        "actor_rollout_ref.actor.clip_ratio_low",
+        takeoff_value(takeoff, env, "clip_ratio_low", "CLIP_RATIO_LOW"),
+        optional=True,
+    )
+    append_hydra_override(
+        overrides,
+        "actor_rollout_ref.actor.clip_ratio_high",
+        takeoff_value(takeoff, env, "clip_ratio_high", "CLIP_RATIO_HIGH"),
+        optional=True,
+    )
+    append_hydra_override(
+        overrides,
+        "actor_rollout_ref.actor.clip_ratio_c",
+        takeoff_value(takeoff, env, "clip_ratio_c", "CLIP_RATIO_C"),
+        optional=True,
+    )
+
+    overrides.extend(
+        [
+            "ref@actor_rollout_ref.ref=rwkv_lm",
+            f"actor_rollout_ref.ref.engine.rwkv_lm_path={rwkv_lm_path}",
+            f"actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu={format_hydra_value(ppo_micro_batch_size)}",
+            f"actor_rollout_ref.ref.log_prob_use_dynamic_bsz={format_hydra_value(dynamic_bsz)}",
+            f"actor_rollout_ref.ref.log_prob_max_token_len_per_gpu={format_hydra_value(ppo_max_token_len_per_gpu)}",
+            "actor_rollout_ref.rollout.name=vllm",
+            "actor_rollout_ref.rollout.load_format=auto",
+            f"actor_rollout_ref.rollout.tensor_model_parallel_size={format_hydra_value(rollout_tensor_parallel_size)}",
+            f"actor_rollout_ref.rollout.n={format_hydra_value(rollout_n)}",
+            "actor_rollout_ref.rollout.enable_prefix_caching=False",
+            f"actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu={format_hydra_value(ppo_micro_batch_size)}",
+            f"actor_rollout_ref.rollout.log_prob_use_dynamic_bsz={format_hydra_value(dynamic_bsz)}",
+            f"actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu={format_hydra_value(ppo_max_token_len_per_gpu)}",
+            "+actor_rollout_ref.rollout.engine_kwargs.vllm.tokenizer_mode=rwkv",
+            "actor_rollout_ref.hybrid_engine=False",
+            f"rollout.nnodes={format_hydra_value(num_nodes)}",
+        ]
+    )
+    append_hydra_override(
+        overrides,
+        "actor_rollout_ref.rollout.gpu_memory_utilization",
+        rollout_gpu_memory_utilization,
+        optional=True,
+    )
+    append_hydra_override(
+        overrides,
+        "actor_rollout_ref.rollout.max_num_seqs",
+        rollout_max_num_seqs,
+        optional=True,
+    )
+    append_hydra_override(
+        overrides,
+        "actor_rollout_ref.rollout.max_num_batched_tokens",
+        rollout_max_num_batched_tokens,
+        optional=True,
+    )
+    append_hydra_override(overrides, "rollout.n_gpus_per_node", rollout_n_gpus_per_node, optional=True)
+    for config_key, env_key, hydra_key in (
+        (
+            "rollout_n_gpus_per_node",
+            "ROLLOUT_NGPUS_PER_NODE",
+            "actor_rollout_ref.rollout.n_gpus_per_node",
+        ),
+        ("rollout_mode", "ROLLOUT_MODE", "actor_rollout_ref.rollout.mode"),
+        ("rollout_data_parallel_size", "ROLLOUT_DP", "actor_rollout_ref.rollout.data_parallel_size"),
+        (
+            "rollout_pipeline_parallel_size",
+            "ROLLOUT_PP",
+            "actor_rollout_ref.rollout.pipeline_model_parallel_size",
+        ),
+        (
+            "rollout_checkpoint_engine_backend",
+            "ROLLOUT_CHECKPOINT_ENGINE_BACKEND",
+            "actor_rollout_ref.rollout.checkpoint_engine.backend",
+        ),
+        (
+            "rollout_correction_bypass_mode",
+            "ROLLOUT_CORRECTION_BYPASS_MODE",
+            "algorithm.rollout_correction.bypass_mode",
+        ),
+    ):
+        append_hydra_override(
+            overrides,
+            hydra_key,
+            takeoff_value(takeoff, env, config_key, env_key),
+            optional=True,
+        )
+
+    overrides.extend(
+        [
+            "critic.enable=False",
+            'trainer.logger=["console"]',
+            f"trainer.project_name={format_hydra_value(takeoff_value(takeoff, env, 'project_name', 'PROJECT_NAME', 'verl_rwkv_grpo'))}",
+            f"trainer.experiment_name={format_hydra_value(takeoff_value(takeoff, env, 'experiment_name', 'EXPERIMENT_NAME', 'rwkv7_grpo_vllm'))}",
+            f"trainer.nnodes={format_hydra_value(num_nodes)}",
+            f"trainer.n_gpus_per_node={format_hydra_value(trainer_n_gpus_per_node)}",
+            f"trainer.save_freq={format_hydra_value(takeoff_value(takeoff, env, 'save_freq', 'SAVE_FREQ', 20))}",
+            f"trainer.test_freq={format_hydra_value(takeoff_value(takeoff, env, 'test_freq', 'TEST_FREQ', -1))}",
+            f"trainer.val_before_train={format_hydra_value(takeoff_value(takeoff, env, 'val_before_train', 'VAL_BEFORE_TRAIN', False))}",
+            f"trainer.total_epochs={format_hydra_value(takeoff_value(takeoff, env, 'total_epochs', 'TOTAL_EPOCHS', 2))}",
+        ]
+    )
+    append_hydra_override(
+        overrides,
+        "trainer.total_training_steps",
+        takeoff_value(takeoff, env, "total_training_steps", "TOTAL_TRAINING_STEPS"),
+        optional=True,
+    )
+    return overrides
+
+
 def build_infer_plan(
     args: Any,
     *,
@@ -125,7 +1446,7 @@ def build_infer_plan(
     config: dict[str, Any],
 ) -> CommandPlan:
     model_path, model = resolve_model_path(config, args.model, root=root, env=env)
-    infer = table(config, "infer")
+    infer = infer_settings(config, model)
     runtime = table(config, "runtime")
     gpu = table(config, "gpu")
 
@@ -168,8 +1489,11 @@ def build_infer_plan(
     if not args.dry_run and not model_path.is_file():
         raise SystemExit(f"RWKV checkpoint not found: {model_path}")
 
+    vllm_bin = str(
+        resolve_path(str(infer.get("vllm_bin")), root=root, env=env) if infer.get("vllm_bin") else "vllm"
+    )
     command = [
-        "vllm",
+        vllm_bin,
         "serve",
         str(model_path),
         "--host",
@@ -226,15 +1550,21 @@ def build_infer_plan(
         else str(auto_tool_choice).strip().lower() in {"1", "true", "yes", "on"}
     ):
         command.append("--enable-auto-tool-choice")
+        tool_call_parser = pick(
+            getattr(args, "tool_call_parser", None),
+            env_value(env, "VLLM_TOOL_CALL_PARSER"),
+            infer.get("tool_call_parser"),
+            default="rwkv",
+        )
+        if str(tool_call_parser or "").strip():
+            command.extend(["--tool-call-parser", str(tool_call_parser).strip()])
 
-    shown_env: dict[str, str] = {}
-    _apply_rwkv_env(
-        shown_env,
-        wkv_mode=wkv_mode,
-        emb_device=emb_device,
-        allow_fp16_accumulation=allow_fp16_accumulation,
-    )
-    plan_env = _strip_vllm_env(env)
+    shown_env = {
+        **config_vllm_env(infer),
+        **parse_vllm_env_overrides(args.vllm_env),
+    }
+    apply_rwkv_env(shown_env, wkv_mode=wkv_mode, emb_device=emb_device)
+    plan_env = strip_vllm_env(env)
     plan_env.update(shown_env)
     return CommandPlan(command=command, cwd=root, shown_env=shown_env, env=plan_env)
 
@@ -263,23 +1593,79 @@ def build_takeoff_plan(
         root=root,
         env=env,
     )
+    vllm_rwkv_value = pick(
+        paths.get("vllm_rwkv_path"),
+        env_value(env, "HELICOPTER_VLLM_RWKV_PATH", "VLLM_RWKV_PATH"),
+    )
+    if not vllm_rwkv_value:
+        raise SystemExit(
+            "takeoff requires an external vllm-rwkv checkout via "
+            "[paths].vllm_rwkv_path or HELICOPTER_VLLM_RWKV_PATH"
+        )
     vllm_rwkv_path = resolve_path(
-        str(
-            env_value(env, "HELICOPTER_VLLM_RWKV_PATH", "VLLM_RWKV_PATH")
-            or "src/infer/vllm-rwkv"
-        ),
+        str(vllm_rwkv_value),
         root=root,
         env=env,
+    ).resolve()
+
+    has_train_files = "train_files" in dataset or env_value(env, "TRAIN_FILES") is not None
+    has_val_files = "val_files" in dataset or env_value(env, "VAL_FILES") is not None
+    dataset_uses_explicit_files = has_train_files and has_val_files
+    if not args.dry_run:
+        for path, message in (
+            (model_path, "RWKV checkpoint not found"),
+            (rwkv_lm_path, "rwkv-lm repository not found"),
+            (vllm_rwkv_path, "vllm-rwkv repository not found"),
+        ):
+            exists = path.is_dir() if "repository" in message or "root" in message else path.is_file()
+            if not exists:
+                raise SystemExit(f"{message}: {path}")
+        if not dataset_uses_explicit_files and not data_root.is_dir():
+            raise SystemExit(f"dataset root not found: {data_root}")
+
+    wkv_mode = str(
+        pick(
+            args.wkv_mode,
+            env_value(env, "HELICOPTER_TAKEOFF_WKV_MODE", "VLLM_RWKV7_WKV_MODE"),
+            takeoff.get("wkv_mode"),
+            default="fp32io16",
+        )
     )
-    python = python_executable(root=root, env=env, require_configured=True)
-    for path, label in (
-        (config_path, "MaxRL config"),
-        (verl_path, "verl-rwkv checkout"),
-        (rwkv_lm_path, "rwkv-lm checkout"),
-        (vllm_rwkv_path, "vllm-rwkv checkout"),
-    ):
-        if not path.exists():
-            raise SystemExit(f"{label} not found: {path}")
+    emb_device_value = pick(
+        args.emb_device,
+        env_value(env, "HELICOPTER_TAKEOFF_EMB_DEVICE"),
+        takeoff.get("emb_device"),
+        default="gpu",
+    )
+    emb_device = str(emb_device_value) if emb_device_value is not None else None
+    num_nodes = pick(
+        args.num_nodes,
+        env_value(env, "HELICOPTER_NUM_NODES", "NNODES"),
+        gpu.get("num_nodes"),
+        takeoff.get("num_nodes"),
+        default=1,
+    )
+    num_devices = pick(
+        args.num_devices,
+        env_value(env, "HELICOPTER_NUM_DEVICES", "NGPUS_PER_NODE"),
+        gpu.get("num_devices"),
+        takeoff.get("num_devices"),
+        default=8,
+    )
+
+    python = python_executable(config, root=root, env=env, require_configured=True)
+    shown_env: dict[str, str] = {}
+    apply_rwkv_env(shown_env, wkv_mode=wkv_mode, emb_device=emb_device)
+    shown_env["PYTHON"] = python
+    shown_env["RWKV_MODEL_PATH"] = str(model_path)
+    shown_env["RWKV_LM_PATH"] = str(rwkv_lm_path)
+    plan_env = strip_vllm_env(env)
+    plan_env.update(shown_env)
+    current_pythonpath = plan_env.get("PYTHONPATH")
+    plan_env["PYTHONPATH"] = (
+        f"{vllm_rwkv_path}{os.pathsep}{current_pythonpath}" if current_pythonpath else str(vllm_rwkv_path)
+    )
+    shown_env["PYTHONPATH"] = plan_env["PYTHONPATH"]
 
     command = [
         python,

@@ -1,11 +1,20 @@
-import { EvaluationProvider } from "../components/EvaluationProvider";
+import { AdminPage } from "../components/AdminPage";
 import { DashboardPage } from "../components/DashboardPage";
 import { HistoryPage } from "../components/HistoryPage";
+import { TuningPage } from "../components/TuningPage";
+import { api } from "../lib/api";
+import { createMockLeaderboard, createMockMeta } from "../lib/mockLeaderboard";
 
 export const dynamic = "force-dynamic";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
-const PAGE_BASE = (process.env.NEXT_PUBLIC_BASE_PATH ?? "").replace(/\/$/, "");
+const PAGE_BASE = normalizeBasePath(process.env.NEXT_PUBLIC_BASE_PATH);
+
+function normalizeBasePath(input: string | undefined): string {
+  const value = (input || "").trim();
+  if (!value) return "";
+  return `${value.startsWith("/") ? "" : "/"}${value}`.replace(/\/+$/, "");
+}
 
 function pageHref(path: string): string {
   return PAGE_BASE ? `${PAGE_BASE}${path}` : path;
@@ -20,31 +29,74 @@ function value(params: Record<string, string | string[] | undefined>, key: strin
 export default async function Home({ searchParams }: { searchParams: SearchParams }) {
   const params = await searchParams;
   const page = value(params, "page", "dashboard");
+  const view = value(params, "view", "benchmark_detail_latest");
+  const model = value(params, "model", "");
+  const tab = value(params, "tab", "knowledge");
   const isHistory = page === "history";
+  const isTuning = page === "normal" || page === "tuning";
+  const isDashboard = !isHistory && !isTuning && page !== "admin";
+  const needsLeaderboard = isDashboard || isTuning;
+  const useMockData = process.env.SCOREBOARD_USE_MOCK_DATA === "true";
+  let loadError: string | null = null;
+  const meta = needsLeaderboard
+    ? useMockData
+      ? createMockMeta()
+      : await api.meta().catch((error: unknown) => {
+          loadError = error instanceof Error ? error.message : String(error);
+          return null;
+        })
+    : null;
+  const selectedModel = meta ? model || meta.auto_label : model;
+  const leaderboard = meta
+    ? useMockData
+      ? createMockLeaderboard()
+      : await api.leaderboard(selectedModel, view).catch((error: unknown) => {
+          loadError = error instanceof Error ? error.message : String(error);
+          return null;
+        })
+    : null;
+
+  const subtitle = isDashboard
+    ? "评测看板 · 全参数规模对比"
+    : isHistory
+      ? "分数历史 · 运行记录与来源追踪"
+      : isTuning
+        ? "提示词与采样参数对比"
+        : "评测调度与运行管理";
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell${isDashboard ? " dashboard-shell reference-shell" : ""}`}>
       <header className="app-header">
         <div>
-          <h1>RWKV Skills</h1>
-          <div className="subtitle">
-            {isHistory
-              ? "评估历史 · 原生指标与来源"
-              : "评测看板 · 配置的 LightEval 评估集"}
-          </div>
+          <h1>RWKV <span className="brand-accent">Skills</span></h1>
+          <div className="subtitle">{subtitle}</div>
         </div>
         <nav className="page-nav">
-          <a className={!isHistory ? "active" : ""} href={pageHref("/?page=dashboard")}>
-            评测看板
-          </a>
-          <a className={isHistory ? "active" : ""} href={pageHref("/?page=history")}>
-            分数历史
-          </a>
+          <a className={isDashboard ? "active" : ""} href={pageHref("/?page=dashboard")}>评测看板</a>
+          <a className={isHistory ? "active" : ""} href={pageHref("/?page=history")}>分数历史</a>
+          {page === "admin" ? <a className="active" href={pageHref("/?page=admin")}>管理面板</a> : null}
+          {page !== "admin" ? <a href={pageHref("/?page=admin")}>任务管理</a> : null}
         </nav>
       </header>
-      <EvaluationProvider>
-        {isHistory ? <HistoryPage /> : <DashboardPage />}
-      </EvaluationProvider>
+      {loadError ? <div className="error-bar">加载评测看板失败：{loadError}</div> : null}
+      {isHistory ? (
+        <HistoryPage />
+      ) : isTuning && leaderboard ? (
+        <TuningPage leaderboard={leaderboard} />
+      ) : page === "admin" ? (
+        <AdminPage />
+      ) : meta && leaderboard ? (
+        <DashboardPage
+          meta={meta}
+          leaderboard={leaderboard}
+          model={selectedModel}
+          view={view}
+          tab={tab}
+          isMockData={useMockData}
+        />
+      ) : (
+        <div className="empty">暂无数据。</div>
+      )}
     </main>
   );
 }

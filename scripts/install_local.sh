@@ -12,13 +12,6 @@ UPDATE_UV="${UPDATE_UV:-0}"
 UV_UPGRADE="${UV_UPGRADE:-0}"
 RUN_PIP_CHECK="${RUN_PIP_CHECK:-1}"
 UV_SYNC_INEXACT="${UV_SYNC_INEXACT:-1}"
-CLEAN_SUBMODULE_VENVS="${CLEAN_SUBMODULE_VENVS:-1}"
-CLEAN_VLLM_CMAKE_CACHE="${CLEAN_VLLM_CMAKE_CACHE:-1}"
-VLLM_TARGET_DEVICE="${VLLM_TARGET_DEVICE:-cuda}"
-VLLM_BUILD_PROFILE="${VLLM_BUILD_PROFILE:-rwkv}"
-VLLM_VERSION_OVERRIDE="${VLLM_VERSION_OVERRIDE:-}"
-VLLM_REBUILD="${VLLM_REBUILD:-auto}"
-FLASH_RWKV_REBUILD="${FLASH_RWKV_REBUILD:-auto}"
 VERL_REINSTALL="${VERL_REINSTALL:-auto}"
 CMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-RelWithDebInfo}"
 BUILD_TMPDIR="${BUILD_TMPDIR:-}"
@@ -32,18 +25,8 @@ BUN_LINUX_AARCH64_SHA256="a27ffb63a8310375836e0d6f668ae17fa8d8d18b88c37c821c6533
 
 export VLLM_BUILD_PROFILE
 
-VLLM="$ROOT/src/infer/vllm-rwkv"
-FLASH_RWKV="$ROOT/src/kernel/flash-rwkv"
-FLA_RWKV="$ROOT/src/kernel/fla-rwkv"
 RWKV_LM="$ROOT/src/train/rwkv-lm"
 VERL="$ROOT/src/train/verl-rwkv"
-SCOREBOARD_SERVER="$ROOT/src/scoreboard-server"
-SCOREBOARD_CLIENT="$ROOT/src/scoreboard-client"
-STAMP_DIR="$VENV/.helicopter-stamps"
-VLLM_STAMP="$STAMP_DIR/vllm-native.sha256"
-FLASH_RWKV_STAMP="$STAMP_DIR/flash-rwkv-native.sha256"
-EVAL_STAMP_DIR="$EVAL_VENV/.helicopter-stamps"
-EVAL_VLLM_STAMP="$EVAL_STAMP_DIR/vllm-native.sha256"
 
 export PATH="$VENV/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
@@ -326,58 +309,6 @@ check_native_env() {
   fi
 }
 
-check_cuda_env() {
-  native_component_enabled || return 0
-  [[ "$VLLM_TARGET_DEVICE" == "cuda" ]] || return 0
-
-  if ! have nvcc && [[ -n "${CUDA_HOME:-}" && -x "$CUDA_HOME/bin/nvcc" ]]; then
-    export PATH="$CUDA_HOME/bin:$PATH"
-  fi
-
-  have nvcc || die "nvcc is required for VLLM_TARGET_DEVICE=cuda; set CUDA_HOME or install the CUDA toolkit"
-
-  if [[ -z "${CUDA_HOME:-}" ]]; then
-    CUDA_HOME="$(cd "$(dirname "$(command -v nvcc)")/.." && pwd)"
-    export CUDA_HOME CUDA_PATH="$CUDA_HOME"
-  fi
-
-  have nvidia-smi || warn "nvidia-smi is not on PATH; nvcc exists, so build can continue"
-}
-
-configure_cuda_arch_list() {
-  native_component_enabled || return 0
-  [[ "$VLLM_TARGET_DEVICE" == "cuda" ]] || return 0
-  [[ -z "${TORCH_CUDA_ARCH_LIST:-}" ]] || return 0
-  local runtime_venv="$VENV"
-  if ! vllm_package_enabled && component_enabled lighteval; then
-    runtime_venv="$EVAL_VENV"
-  fi
-  [[ -x "$runtime_venv/bin/python" ]] || return 0
-
-  local arch_list
-  arch_list="$("$runtime_venv/bin/python" - <<'PY'
-import torch
-
-if not torch.cuda.is_available() or torch.cuda.device_count() == 0:
-    raise SystemExit(0)
-
-capabilities = {
-    torch.cuda.get_device_capability(index)
-    for index in range(torch.cuda.device_count())
-}
-supported_arches = set(torch.cuda.get_arch_list())
-
-if capabilities == {(12, 1)} and "sm_121" not in supported_arches and "sm_120" in supported_arches:
-    print("12.0+PTX")
-PY
-)"
-
-  if [[ -n "$arch_list" ]]; then
-    export TORCH_CUDA_ARCH_LIST="$arch_list"
-    echo "Using TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST for CUDA 12.1 devices supported by sm_120"
-  fi
-}
-
 sync_uv_env() {
   local sync_args=(sync)
   [[ -n "$UV_INDEX_URL" ]] && sync_args+=(--index-url "$UV_INDEX_URL")
@@ -398,283 +329,10 @@ sync_uv_env() {
   run "$UV" "${sync_args[@]}"
 }
 
-sync_lighteval_env() {
-  component_enabled lighteval || return 0
-  if [[ ! -x "$EVAL_VENV/bin/python" ]]; then
-    run "$UV" venv --allow-existing --python "$PYTHON_VERSION" "$EVAL_VENV"
-  fi
-
-  local sync_args=(
-    sync
-    --project "$ROOT"
-    --active
-    --inexact
-    --no-default-groups
-    --group lighteval
-  )
-  append_uv_sync_policy sync_args
-  [[ -n "$UV_INDEX_URL" ]] && sync_args+=(--index-url "$UV_INDEX_URL")
-  run env VIRTUAL_ENV="$EVAL_VENV" "$UV" "${sync_args[@]}"
-}
-
-sync_scoreboard_server() {
-  component_enabled scoreboard-server || return 0
-  [[ -f "$SCOREBOARD_SERVER/uv.lock" ]] ||
-    die "Scoreboard server lock is missing: $SCOREBOARD_SERVER/uv.lock"
-
-  local sync_args=(
-    sync
-    --project "$SCOREBOARD_SERVER"
-    --active
-    --inexact
-    --no-default-groups
-    --group dev
-  )
-  append_uv_sync_policy sync_args
-  [[ -n "$UV_INDEX_URL" ]] && sync_args+=(--index-url "$UV_INDEX_URL")
-  run env VIRTUAL_ENV="$VENV" "$UV" "${sync_args[@]}"
-}
-
-sync_scoreboard_client() {
-  component_enabled scoreboard-client || return 0
-  [[ -f "$SCOREBOARD_CLIENT/package.json" ]] ||
-    die "Scoreboard client package.json is missing"
-  [[ -f "$SCOREBOARD_CLIENT/bun.lock" ]] ||
-    die "Scoreboard client lock is missing"
-
-  local install_args=(install --cwd "$SCOREBOARD_CLIENT")
-  [[ "$UV_UPGRADE" == "0" ]] && install_args+=(--frozen-lockfile)
-  if [[ "${DRY_RUN:-0}" == "1" ]]; then
-    print_cmd "$VENV/bin/bun" "${install_args[@]}"
-    print_cmd env \
-      PLAYWRIGHT_BROWSERS_PATH="$VENV/playwright-browsers" \
-      "$VENV/bin/bun" run --cwd "$SCOREBOARD_CLIENT" playwright install chromium
-    return 0
-  fi
-  ensure_bun
-  run "$VENV/bin/bun" "${install_args[@]}"
-  run env \
-    PLAYWRIGHT_BROWSERS_PATH="$VENV/playwright-browsers" \
-    "$VENV/bin/bun" run --cwd "$SCOREBOARD_CLIENT" playwright install chromium
-}
-
-vllm_native_fingerprint() {
-  local target_venv="${1:-$VENV}"
-  {
-    printf 'VLLM_TARGET_DEVICE=%s\n' "$VLLM_TARGET_DEVICE"
-    printf 'VLLM_VERSION_OVERRIDE=%s\n' "$VLLM_VERSION_OVERRIDE"
-    printf 'CMAKE_BUILD_TYPE=%s\n' "$CMAKE_BUILD_TYPE"
-    printf 'TORCH_CUDA_ARCH_LIST=%s\n' "${TORCH_CUDA_ARCH_LIST:-}"
-    "$target_venv/bin/python" - <<'PY'
-import platform
-import sys
-
-import torch
-
-print(f"python={sys.version}")
-print(f"platform={platform.platform()}")
-print(f"torch={torch.__version__}")
-print(f"torch_cuda={torch.version.cuda}")
-PY
-    find "$VLLM/CMakeLists.txt" "$VLLM/setup.py" "$VLLM/cmake" "$VLLM/csrc" \
-      -type f -print 2>/dev/null | LC_ALL=C sort | while IFS= read -r path; do
-        sha256sum "$path"
-      done
-  } | sha256sum | awk '{print $1}'
-}
-
-vllm_native_ready() {
-  local target_venv="${1:-$VENV}"
-  local -a modules=(vllm._C_stable_libtorch vllm.rwkv7_ops)
-  [[ "$VLLM_BUILD_PROFILE" == "rwkv" ]] &&
-    modules=(vllm._rapid_sampling vllm.rwkv7_ops)
-  "$target_venv/bin/python" - "${modules[@]}" <<'PY' >/dev/null
-import importlib
-import sys
-
-import vllm
-
-for module in sys.argv[1:]:
-    importlib.import_module(module)
-PY
-}
-
-vllm_editable_ready() {
-  local target_venv="${1:-$VENV}"
-  "$target_venv/bin/python" - "$VLLM/vllm" <<'PY' >/dev/null
-import importlib.util
-import sys
-from pathlib import Path
-
-spec = importlib.util.find_spec("vllm")
-if spec is None:
-    raise SystemExit(1)
-
-locations = tuple(spec.submodule_search_locations or ())
-if len(locations) == 1:
-    package_root = Path(locations[0])
-elif spec.origin is not None:
-    package_root = Path(spec.origin).parent
-else:
-    raise SystemExit(1)
-
-expected_root = Path(sys.argv[1])
-raise SystemExit(package_root.resolve() != expected_root.resolve())
-PY
-}
-
 verl_ready() {
   "$VENV/bin/python" - <<'PY' >/dev/null
 import verl
 PY
-}
-
-flash_rwkv_editable_ready() {
-  "$VENV/bin/python" - "$FLASH_RWKV/flash_rwkv" <<'PY' >/dev/null
-import importlib.metadata
-import importlib.util
-import sys
-from pathlib import Path
-
-spec = importlib.util.find_spec("flash_rwkv")
-if spec is None:
-    raise SystemExit(1)
-
-locations = tuple(spec.submodule_search_locations or ())
-if len(locations) == 1:
-    package_root = Path(locations[0])
-elif spec.origin is not None:
-    package_root = Path(spec.origin).parent
-else:
-    raise SystemExit(1)
-
-expected_root = Path(sys.argv[1])
-if package_root.resolve() != expected_root.resolve():
-    raise SystemExit(1)
-if importlib.metadata.version("flash-rwkv") != "0.1.0":
-    raise SystemExit(1)
-PY
-}
-
-flash_rwkv_native_ready() {
-  flash_rwkv_editable_ready
-  "$VENV/bin/python" - <<'PY' >/dev/null
-import flash_rwkv._C
-PY
-}
-
-fla_rwkv_editable_ready() {
-  "$VENV/bin/python" - "$FLA_RWKV/fla" <<'PY' >/dev/null
-import importlib.util
-import sys
-from pathlib import Path
-
-spec = importlib.util.find_spec("fla")
-if spec is None:
-    raise SystemExit(1)
-
-locations = tuple(spec.submodule_search_locations or ())
-if len(locations) == 1:
-    package_root = Path(locations[0])
-elif spec.origin is not None:
-    package_root = Path(spec.origin).parent
-else:
-    raise SystemExit(1)
-
-expected_root = Path(sys.argv[1])
-raise SystemExit(package_root.resolve() != expected_root.resolve())
-PY
-}
-
-flash_rwkv_native_fingerprint() {
-  {
-    printf 'TORCH_CUDA_ARCH_LIST=%s\n' "${TORCH_CUDA_ARCH_LIST:-}"
-    printf 'CUDA_HOME=%s\n' "${CUDA_HOME:-}"
-    "$VENV/bin/python" - <<'PY'
-import platform
-import sys
-
-import torch
-
-print(f"python={sys.version}")
-print(f"platform={platform.platform()}")
-print(f"torch={torch.__version__}")
-print(f"torch_cuda={torch.version.cuda}")
-PY
-    find \
-      "$FLASH_RWKV/setup.py" \
-      "$FLASH_RWKV/pyproject.toml" \
-      "$FLASH_RWKV/csrc" \
-      -type f -print 2>/dev/null |
-      LC_ALL=C sort |
-      while IFS= read -r path; do
-        sha256sum "$path"
-      done
-  } | sha256sum | awk '{print $1}'
-}
-
-install_flash_rwkv_package() {
-  local pip=( "$UV" pip install )
-  [[ -n "$UV_INDEX_URL" ]] && pip+=(--index-url "$UV_INDEX_URL")
-  pip+=(--project "$ROOT" --python "$VENV/bin/python")
-
-  mkdir -p "$(dirname "$FLASH_RWKV_STAMP")"
-  local fingerprint
-  fingerprint="$(flash_rwkv_native_fingerprint)"
-  if [[ "$FLASH_RWKV_REBUILD" != "1" &&
-        -f "$FLASH_RWKV_STAMP" ]] &&
-     [[ "$(cat "$FLASH_RWKV_STAMP")" == "$fingerprint" ]] &&
-     flash_rwkv_native_ready; then
-    echo "FlashRWKV native extension is already built for this source and environment; reusing existing install"
-    return 0
-  fi
-
-  run "${pip[@]}" --no-deps --no-build-isolation -e "$FLASH_RWKV"
-  flash_rwkv_native_ready
-  fingerprint="$(flash_rwkv_native_fingerprint)"
-  printf '%s\n' "$fingerprint" >"$FLASH_RWKV_STAMP"
-}
-
-install_vllm_package() {
-  local target_venv="${1:-$VENV}"
-  local target_stamp="${2:-$VLLM_STAMP}"
-  local pip=( "$UV" pip install )
-  [[ -n "$UV_INDEX_URL" ]] && pip+=(--index-url "$UV_INDEX_URL")
-  pip+=(--project "$ROOT" --python "$target_venv/bin/python" )
-
-  if [[ "${DRY_RUN:-0}" == "1" && ! -x "$target_venv/bin/python" ]]; then
-    print_cmd env \
-      VLLM_TARGET_DEVICE="$VLLM_TARGET_DEVICE" \
-      VLLM_VERSION_OVERRIDE="$VLLM_VERSION_OVERRIDE" \
-      VLLM_USE_PRECOMPILED="${VLLM_USE_PRECOMPILED:-0}" \
-      CMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
-      "${pip[@]}" --no-deps --no-build-isolation -e "$VLLM" --torch-backend=auto
-    return 0
-  fi
-
-  mkdir -p "$(dirname "$target_stamp")"
-  local fingerprint
-  fingerprint="$(vllm_native_fingerprint "$target_venv")"
-
-  if [[ "$VLLM_REBUILD" != "1" && -f "$target_stamp" ]] &&
-     [[ "$(cat "$target_stamp")" == "$fingerprint" ]] &&
-     vllm_native_ready "$target_venv" &&
-     vllm_editable_ready "$target_venv"; then
-    echo "vLLM native extensions are already built for this source and environment; reusing existing install"
-    return 0
-  fi
-
-  run env \
-    VLLM_TARGET_DEVICE="$VLLM_TARGET_DEVICE" \
-    VLLM_VERSION_OVERRIDE="$VLLM_VERSION_OVERRIDE" \
-    VLLM_USE_PRECOMPILED="${VLLM_USE_PRECOMPILED:-0}" \
-    CMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
-    "${pip[@]}" --no-deps --no-build-isolation -e "$VLLM" --torch-backend=auto
-
-  vllm_native_ready "$target_venv"
-  vllm_editable_ready "$target_venv"
-  fingerprint="$(vllm_native_fingerprint "$target_venv")"
-  printf '%s\n' "$fingerprint" >"$target_stamp"
 }
 
 install_rwkv_lm_package() {
@@ -762,17 +420,11 @@ sync_lighteval_env
 sync_scoreboard_server
 sync_scoreboard_client
 check_native_env
-check_cuda_env
-configure_cuda_arch_list
-(vllm_package_enabled || component_enabled lighteval) && clean_vllm_cmake_cache
-vllm_package_enabled && install_vllm_package "$VENV" "$VLLM_STAMP"
-component_enabled lighteval &&
-  install_vllm_package "$EVAL_VENV" "$EVAL_VLLM_STAMP"
-component_enabled rwkv-lm && install_rwkv_lm_package
-component_enabled verl-rwkv && install_verl_package
-component_enabled flash-rwkv && install_flash_rwkv_package
-if component_enabled fla-rwkv && [[ "${DRY_RUN:-0}" != "1" ]]; then
-  fla_rwkv_editable_ready
+install_rwkv_lm_package
+install_verl_package
+
+if [[ "$RUN_PIP_CHECK" == "1" ]]; then
+  run "$UV" pip check --project "$ROOT" --python "$VENV/bin/python"
 fi
 python_component_enabled && check_python_packages
 check_lighteval_packages

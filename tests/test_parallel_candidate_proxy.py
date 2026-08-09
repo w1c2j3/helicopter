@@ -1,0 +1,928 @@
+from __future__ import annotations
+
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.request import Request, urlopen
+
+import pytest
+
+from helicopter_cli.parallel_candidate_proxy import (
+    Candidate,
+    ParallelCandidateConfig,
+    ParallelCandidateProxy,
+    _aggregate_prompt,
+    _candidate_prompt,
+    _response_usage,
+    parse_candidate,
+    parse_candidates,
+    parse_transport_candidate,
+    parse_transport_candidates,
+)
+from helicopter_cli.rwkv_agent_prompt import (
+    LongContextConfig,
+    RWKV_FLOWER_JSON_PROMPT_STYLE,
+    build_rwkv_json_call_prompt,
+    compact_messages_for_long_context,
+    normalize_messages,
+    trim_message_history,
+)
+
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "bash",
+            "description": "Run a shell command.",
+            "parameters": {
+                "type": "object",
+                "properties": {"command": {"type": "string"}},
+                "required": ["command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "submit",
+            "description": "Submit the final answer.",
+            "parameters": {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": ["answer"],
+            },
+        },
+    },
+]
+
+
+def test_response_usage_is_present_when_upstream_omits_usage() -> None:
+    assert _response_usage(None) == {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+    usage = {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
+    assert _response_usage(usage) is usage
+
+
+def test_parse_candidate_is_strict_and_schema_bound() -> None:
+    candidate = parse_candidate(
+        '{"name":"bash","arguments":{"command":"echo hi"},"confidence":0.9,"evidence":"user asked to run it"}',
+        tools=TOOLS,
+    )
+    assert candidate.name == "bash"
+    assert candidate.arguments == {"command": "echo hi"}
+
+    transport_wrapped = parse_candidate(
+        '{"name":"bash","arguments":"{\\"command\\":\\"echo hi\\"}","id":"call_1"}',
+        tools=TOOLS,
+    )
+    assert transport_wrapped.arguments == {"command": "echo hi"}
+
+    with pytest.raises(ValueError, match="unknown fields"):
+        parse_candidate('{"name":"bash","arguments":{"command":"echo hi","invented":1}}', tools=TOOLS)
+    with pytest.raises(ValueError, match="missing required"):
+        parse_candidate('{"name":"bash","arguments":{}}', tools=TOOLS)
+    with pytest.raises(ValueError, match="not in the supplied tools"):
+        parse_candidate('{"name":"python","arguments":{}}', tools=TOOLS)
+    with pytest.raises(ValueError, match="must start"):
+        parse_candidate('reasoning first\n{"name":"bash","arguments":{"command":"echo hi"}}', tools=TOOLS)
+
+    search_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "search",
+                "description": "Search.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"queries": {"type": "array", "items": {"type": "string"}}},
+                    "required": ["queries"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+    ]
+    with pytest.raises(ValueError, match=r"queries\[0\] must be string"):
+        parse_candidate(
+            '{"name":"search","arguments":{"queries":[{"query":"wrong shape"}]}}',
+            tools=search_tools,
+        )
+
+
+def test_parse_transport_candidate_does_not_judge_schema() -> None:
+    candidate = parse_transport_candidate(
+        '{"name":"bash","arguments":{"command":null,"unknown":1}}',
+        tools=TOOLS,
+    )
+    assert candidate.name == "bash"
+    assert candidate.arguments == {"command": None, "unknown": 1}
+
+
+@pytest.mark.parametrize("arguments", ["1.25", 1.25, ["not", "an", "object"]])
+def test_parse_transport_candidate_preserves_non_object_arguments(arguments: object) -> None:
+    candidate = parse_transport_candidate(
+        json.dumps({"name": "bash", "arguments": arguments}),
+        tools=TOOLS,
+    )
+
+    assert candidate.arguments == {}
+    expected_text = (
+        arguments
+        if isinstance(arguments, str)
+        else json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+    )
+    assert candidate.arguments_text == expected_text
+
+
+def test_parse_transport_candidates_splits_adjacent_json_objects_without_judging() -> None:
+    candidates = parse_transport_candidates(
+        '{"name":"bash","arguments":{"command":"pwd"}}'
+        '{"name":"bash","arguments":{"command":"ls"}}',
+        tools=TOOLS,
+    )
+
+    assert [candidate.arguments for candidate in candidates] == [
+        {"command": "pwd"},
+        {"command": "ls"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "completion",
+    [
+        '</think>{"name":"bash","arguments":{"command":"echo hi"}}',
+        '</think>```json\n{"name":"bash","arguments":{"command":"echo hi"}}\n```',
+        'reasoning first\n</think>```json\n{"name":"bash","arguments":{"command":"echo hi"}}\n```',
+    ],
+)
+def test_parse_candidate_accepts_json_after_explicit_think_close(completion: str) -> None:
+    candidate = parse_candidate(completion, tools=TOOLS)
+
+    assert candidate.name == "bash"
+    assert candidate.arguments == {"command": "echo hi"}
+
+
+def test_parse_candidate_accepts_one_strict_native_tool_call_envelope() -> None:
+    candidate = parse_candidate(
+        '{"tool_calls":[{"id":"call_1","type":"function",'
+        '"function":{"name":"bash","arguments":"{\\"command\\":\\"echo hi\\"}"}}]}',
+        tools=TOOLS,
+    )
+
+    assert candidate.name == "bash"
+    assert candidate.arguments == {"command": "echo hi"}
+
+
+def test_parse_candidate_accepts_bfcl_function_map_text() -> None:
+    candidate = parse_candidate(
+        '[{"bash":{"command":"echo hi"}}]',
+        tools=TOOLS,
+    )
+
+    assert candidate.name == "bash"
+    assert candidate.arguments == {"command": "echo hi"}
+
+
+def test_parse_candidate_accepts_one_candidate_wrapped_in_json_array() -> None:
+    candidate = parse_candidate(
+        '[{"name":"bash","arguments":{"command":"echo hi"},'
+        '"confidence":1.0,"evidence":"single aggregate candidate"}]',
+        tools=TOOLS,
+    )
+
+    assert candidate.name == "bash"
+    assert candidate.arguments == {"command": "echo hi"}
+
+
+def test_parse_candidate_rejects_empty_or_multiple_candidate_arrays() -> None:
+    with pytest.raises(ValueError, match="exactly one candidate"):
+        parse_candidate("[]", tools=TOOLS)
+    with pytest.raises(ValueError, match="exactly one candidate"):
+        parse_candidate(
+            '[{"name":"bash","arguments":{"command":"pwd"}},'
+            '{"name":"submit","arguments":{"answer":"done"}}]',
+            tools=TOOLS,
+        )
+
+
+def test_parse_candidate_rejects_multiple_native_tool_calls_without_selecting_one() -> None:
+    with pytest.raises(ValueError, match="exactly one call"):
+        parse_candidate(
+            '{"tool_calls":['
+            '{"function":{"name":"bash","arguments":"{\\"command\\":\\"pwd\\"}"}},'
+            '{"function":{"name":"submit","arguments":"{\\"answer\\":\\"done\\"}"}}'
+            ']}',
+            tools=TOOLS,
+        )
+
+
+def test_parse_candidates_accepts_strict_multi_call_array_and_native_envelope() -> None:
+    candidates = parse_candidates(
+        '[{"name":"bash","arguments":{"command":"pwd"}},'
+        '{"name":"bash","arguments":{"command":"ls"}}]',
+        tools=TOOLS,
+    )
+    assert [candidate.arguments for candidate in candidates] == [{"command": "pwd"}, {"command": "ls"}]
+
+    native = parse_candidates(
+        '{"tool_calls":['
+        '{"function":{"name":"bash","arguments":"{\\"command\\":\\"pwd\\"}"}},'
+        '{"function":{"name":"bash","arguments":"{\\"command\\":\\"ls\\"}"}}'
+        ']}',
+        tools=TOOLS,
+    )
+    assert [candidate.arguments for candidate in native] == [{"command": "pwd"}, {"command": "ls"}]
+
+    with pytest.raises(ValueError, match="unknown fields"):
+        parse_candidates(
+            '[{"name":"bash","arguments":{"command":"pwd"}},'
+            '{"name":"submit","arguments":{"answer":"done","duration":10}}]',
+            tools=TOOLS,
+        )
+
+
+def test_candidate_prompt_compacts_large_tool_schema() -> None:
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "large_tool",
+                "description": "tool description " * 400,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "parameter description " * 400,
+                        }
+                    },
+                    "required": ["command"],
+                },
+            },
+        }
+    ]
+    prompt, trace = _candidate_prompt(
+        tools,
+        [{"role": "user", "content": "Run the requested action."}],
+        config=ParallelCandidateConfig(prompt_max_chars=2048, context_chars=256),
+    )
+
+    assert trace["prompt_over_budget"] is False
+    assert len(prompt) < 2048
+    assert prompt.count("tool description") < 20
+    assert prompt.count("parameter description") < 20
+    assert '"command"' in prompt
+
+
+def test_proxy_records_aggregate_error_before_strict_single_candidate_fallback(tmp_path: Path) -> None:
+    received: list[dict[str, object]] = []
+
+    class UpstreamHandler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+            received.append(payload)
+            if "aggregator for a parallel" in payload["prompt"]:
+                content = '{"name":"bash","arguments":{}}'
+            else:
+                content = '{"name":"bash","arguments":{"command":"echo hi"}}'
+            response = json.dumps(
+                {
+                    "id": "upstream",
+                    "model": payload["model"],
+                    "choices": [
+                        {
+                            "text": content,
+                            "finish_reason": "stop",
+                        }
+                    ],
+                }
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), UpstreamHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    trace = tmp_path / "parallel.jsonl"
+    proxy = ParallelCandidateProxy(
+        f"http://127.0.0.1:{upstream.server_port}/v1",
+        api_key="secret",
+        trace_path=trace,
+        config=ParallelCandidateConfig(chunk_tools=2, batch_size=1),
+    )
+    try:
+        proxy.start()
+        source = {
+            "model": "rwkv",
+            "messages": [{"role": "user", "content": "Run the requested command."}],
+            "tools": TOOLS,
+            "tool_choice": "auto",
+            "temperature": 0,
+            "max_tokens": 512,
+        }
+        request = Request(
+            f"{proxy.base_url}/chat/completions",
+            data=json.dumps(source).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": "Bearer client-secret"},
+            method="POST",
+        )
+        with urlopen(request, timeout=10) as response:  # noqa: S310 - test-only local server
+            result = json.loads(response.read())
+    finally:
+        proxy.close()
+        upstream.shutdown()
+        upstream.server_close()
+        thread.join(timeout=5)
+
+    assert len(received) == 2
+    assert result["choices"][0]["finish_reason"] == "tool_calls"
+    assert result["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "bash"
+    route = json.loads(trace.read_text(encoding="utf-8"))["router"]
+    assert route["fallback_used"] is True
+    assert "missing required" in route["aggregate"]["error"]
+
+
+def test_proxy_returns_multiple_strict_aggregate_tool_calls(tmp_path: Path) -> None:
+    received: list[dict[str, object]] = []
+
+    class UpstreamHandler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+            received.append(payload)
+            if "aggregator for a parallel" in payload["prompt"]:
+                content = (
+                    '[{"name":"bash","arguments":{"command":"pwd"}},'
+                    '{"name":"bash","arguments":{"command":"ls"}}]'
+                )
+            else:
+                content = '{"name":"bash","arguments":{"command":"pwd"}}'
+            response = json.dumps(
+                {
+                    "id": "upstream",
+                    "model": payload["model"],
+                    "choices": [{"text": content, "finish_reason": "stop"}],
+                }
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), UpstreamHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    trace = tmp_path / "parallel-multi.jsonl"
+    proxy = ParallelCandidateProxy(
+        f"http://127.0.0.1:{upstream.server_port}/v1",
+        api_key="secret",
+        trace_path=trace,
+        config=ParallelCandidateConfig(chunk_tools=2, batch_size=1),
+    )
+    try:
+        proxy.start()
+        source = {
+            "model": "rwkv",
+            "messages": [{"role": "user", "content": "Run pwd and ls."}],
+            "tools": TOOLS,
+            "tool_choice": "auto",
+            "temperature": 0,
+            "max_tokens": 512,
+        }
+        request = Request(
+            f"{proxy.base_url}/chat/completions",
+            data=json.dumps(source).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": "Bearer client-secret"},
+            method="POST",
+        )
+        with urlopen(request, timeout=10) as response:  # noqa: S310 - test-only local server
+            result = json.loads(response.read())
+    finally:
+        proxy.close()
+        upstream.shutdown()
+        upstream.server_close()
+        thread.join(timeout=5)
+
+    calls = result["choices"][0]["message"]["tool_calls"]
+    assert len(received) == 2
+    assert result["choices"][0]["finish_reason"] == "tool_calls"
+    assert [json.loads(call["function"]["arguments"]) for call in calls] == [
+        {"command": "pwd"},
+        {"command": "ls"},
+    ]
+    route = json.loads(trace.read_text(encoding="utf-8"))["router"]
+    assert route["fallback_used"] is False
+    assert len(route["selected_candidates"]) == 2
+
+
+def test_rwkv_prompt_uses_role_transcript_and_newest_history_budget() -> None:
+    messages = [
+        {"role": "system", "content": "Original system prompt: never change this text."},
+        {"role": "user", "content": "old context " + "x" * 100},
+        {"role": "assistant", "content": '{"name":"bash","arguments":{"command":"pwd"}}'},
+        {"role": "tool", "content": "tool output: " + "y" * 80},
+        {"role": "user", "content": "run the final command"},
+    ]
+    bounded, truncated = trim_message_history(messages, max_chars=340)
+    assert truncated is True
+    assert bounded[-1]["content"] == "run the final command"
+    assert any("truncated" in item["content"] for item in bounded)
+
+    compacted, trace = compact_messages_for_long_context(
+        messages,
+        config=LongContextConfig(min_long_text_chars=80, max_chunk_chars=30, max_evidence_chars=90),
+    )
+    assert trace["compacted_message_count"] >= 1
+    assert "Long document compacted" in compacted[1]["content"]
+
+    prompt, prompt_trace = build_rwkv_json_call_prompt(
+        "Router instructions",
+        compacted,
+        history_max_chars=600,
+        prompt_max_chars=1200,
+    )
+    assert "System: Router instructions" in prompt
+    assert "System: Original system prompt: never change this text." in prompt
+    assert "User: Function output:" in prompt
+    assert "Assistant: <think></think>\n```json" in prompt
+    assert prompt.endswith("Assistant: <think></think>\n```json\n")
+    assert prompt_trace["prompt_chars"] == len(prompt)
+
+
+def test_normalize_messages_recovers_evalscope_chat_message_repr() -> None:
+    malformed_wire_content = (
+        "[ChatMessageUser(id='abc123', content='Find the answer\\nfrom the corpus.', "
+        "source=None, metadata=None, internal=None, perf_metrics=None, role='user', "
+        "tool_call_id=None)]"
+    )
+    source = [{"role": "user", "content": malformed_wire_content}]
+
+    normalized = normalize_messages(source)
+
+    assert normalized == [{"role": "user", "content": "Find the answer\nfrom the corpus."}]
+    assert source[0]["content"] == malformed_wire_content
+
+    embedded = [{"role": "user", "content": "Question: " + malformed_wire_content + "\nKeep this."}]
+    assert normalize_messages(embedded) == [
+        {"role": "user", "content": "Question: Find the answer\nfrom the corpus.\nKeep this."}
+    ]
+
+
+def test_parallel_candidate_route_preserves_recovered_agent_question(tmp_path: Path) -> None:
+    malformed_wire_content = (
+        "[ChatMessageUser(id='abc123', content='Find the answer from the corpus.', "
+        "source=None, metadata=None, internal=None, perf_metrics=None, role='user', "
+        "tool_call_id=None)]"
+    )
+    seen_prompts: list[str] = []
+    proxy = ParallelCandidateProxy(
+        "http://127.0.0.1:1/v1",
+        api_key="secret",
+        trace_path=tmp_path / "parallel-repr.jsonl",
+    )
+
+    def fake_request(payload: dict[str, object]) -> tuple[int, dict[str, str], dict[str, object], dict[str, object]]:
+        seen_prompts.append(str(payload["prompt"]))
+        body = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": '{"name":"bash","arguments":{"command":"grep answer corpus"},"confidence":0.9}',
+                    },
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+        return 200, {}, body, {}
+
+    proxy._request_upstream = fake_request  # type: ignore[method-assign]
+    result, trace = proxy._route(
+        {
+            "model": "rwkv",
+            "messages": [{"role": "user", "content": malformed_wire_content}],
+            "tools": [TOOLS[0]],
+            "tool_choice": "auto",
+            "max_tokens": 2048,
+        }
+    )
+
+    assert result["choices"][0]["finish_reason"] == "tool_calls"
+    assert trace["candidate_count"] == 1
+    assert seen_prompts
+    assert "User: Find the answer from the corpus." in seen_prompts[0]
+    assert "ChatMessageUser" not in seen_prompts[0]
+
+
+def test_parallel_candidate_route_preserves_multiple_transport_calls(tmp_path: Path) -> None:
+    proxy = ParallelCandidateProxy(
+        "http://127.0.0.1:1/v1",
+        api_key="secret",
+        trace_path=tmp_path / "parallel-multiple-transport.jsonl",
+    )
+
+    def fake_request(payload: dict[str, object]) -> tuple[int, dict[str, str], dict[str, object], dict[str, object]]:
+        return 200, {}, {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": (
+                        '{"name":"bash","arguments":{"command":"pwd"}}'
+                        '{"name":"bash","arguments":{"command":"ls"}}'
+                    ),
+                },
+                "finish_reason": "stop",
+            }]
+        }, {}
+
+    proxy._request_upstream = fake_request  # type: ignore[method-assign]
+    result, trace = proxy._route(
+        {
+            "model": "rwkv",
+            "messages": [{"role": "user", "content": "Run both commands."}],
+            "tools": [TOOLS[0]],
+            "tool_choice": "auto",
+            "max_tokens": 2048,
+        }
+    )
+
+    tool_calls = result["choices"][0]["message"]["tool_calls"]
+    assert [json.loads(call["function"]["arguments"]) for call in tool_calls] == [
+        {"command": "pwd"},
+        {"command": "ls"},
+    ]
+    assert trace["candidate_count"] == 0
+    assert trace["transport_candidate_count"] == 2
+    assert trace["transport_fallback_used"] is True
+    assert trace["native_fallback_used"] is False
+
+
+def test_rwkv_flower_json_prompt_uses_g1h_nocot_transcript() -> None:
+    prompt, _ = build_rwkv_json_call_prompt(
+        "Keep the original system instruction.",
+        [
+            {"role": "system", "content": "Source system instruction."},
+            {"role": "user", "content": "Run the requested action."},
+        ],
+        history_max_chars=600,
+        prompt_max_chars=1200,
+        prompt_style=RWKV_FLOWER_JSON_PROMPT_STYLE,
+    )
+
+    assert "User\u273fSystem:\nKeep the original system instruction.\u273f" in prompt
+    assert "User\u273fSystem:\nSource system instruction.\u273f" in prompt
+    assert "User\u273fRun the requested action.\u273f" in prompt
+    assert prompt.endswith("Bot\u273f<think></think>\n```json\n")
+
+
+def test_aggregate_prompt_bounds_large_tool_catalog_after_candidate_validation() -> None:
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": f"tool_{index}",
+                "description": "A long tool description. " * 80,
+                "parameters": {
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "required": ["value"],
+                },
+            },
+        }
+        for index in range(40)
+    ]
+    prompt, trace = _aggregate_prompt(
+        [Candidate(name="tool_0", arguments={"value": "ok"}, confidence=0.9, evidence="validated")],
+        tools,
+        [{"role": "user", "content": "Run the best available action."}],
+        config=ParallelCandidateConfig(prompt_max_chars=2048, context_chars=256),
+    )
+
+    assert trace["prompt_over_budget"] is False
+    assert "Valid tool names:" in prompt
+    assert '"tool_0"' in prompt
+    assert '"properties"' not in prompt
+
+
+def test_aggregate_prompt_limits_candidates_by_confidence() -> None:
+    prompt, _trace = _aggregate_prompt(
+        [
+            Candidate(name="bash", arguments={"command": "echo high"}, confidence=0.9, evidence="high"),
+            Candidate(name="submit", arguments={"answer": "low"}, confidence=0.1, evidence="low"),
+        ],
+        TOOLS,
+        [{"role": "user", "content": "Run the requested action."}],
+        config=ParallelCandidateConfig(max_candidates=1),
+    )
+
+    assert '"command":"echo high"' in prompt
+    assert '"answer":"low"' not in prompt
+
+
+def test_aggregate_prompt_exposes_allowed_argument_keys_without_full_schemas() -> None:
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "create_player_profile",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "player_name": {"type": "string"},
+                        "_class": {"type": "string"},
+                    },
+                    "required": ["player_name", "_class"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+    ]
+    prompt, trace = _aggregate_prompt(
+        [Candidate(name="create_player_profile", arguments={"player_name": "StarPlayer", "_class": "Mage"}, confidence=1.0, evidence="validated")],
+        tools,
+        [{"role": "user", "content": "Create the player."}],
+        config=ParallelCandidateConfig(prompt_max_chars=2048),
+    )
+
+    assert trace["prompt_over_budget"] is False
+    assert '"allowed_argument_names":["_class","player_name"]' in prompt
+    assert '"required_argument_names":["player_name","_class"]' in prompt
+    assert '"properties"' not in prompt
+
+
+def test_parallel_candidate_proxy_returns_validated_tool_call_and_trace(tmp_path) -> None:
+    received: list[dict[str, object]] = []
+    received_paths: list[str] = []
+
+    class UpstreamHandler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            payload = json.loads(body)
+            received.append(payload)
+            received_paths.append(self.path)
+            prompt = payload["prompt"].lower()
+            if "aggregator for a parallel" in prompt:
+                content = '{"name":"bash","arguments":{"command":"echo hi"},"confidence":0.95,"evidence":"validated candidate"}'
+            elif '"name":"bash"' in prompt:
+                content = '{"name":"bash","arguments":{"command":"echo hi"},"confidence":0.8,"evidence":"user request"}'
+            elif '"name":"submit"' in prompt:
+                content = '{"name":"submit","arguments":{"answer":"done"},"confidence":0.7,"evidence":"submit candidate"}'
+            else:
+                content = "not a candidate"
+            response = json.dumps(
+                {
+                    "id": "upstream",
+                    "model": payload["model"],
+                    "choices": [
+                        {
+                            "text": content,
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+                }
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), UpstreamHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    trace = tmp_path / "parallel.jsonl"
+    proxy = ParallelCandidateProxy(
+        f"http://127.0.0.1:{upstream.server_port}/v1",
+        api_key="secret",
+        trace_path=trace,
+        config=ParallelCandidateConfig(chunk_tools=1, batch_size=2, fallback_to_highest_confidence=False),
+    )
+    try:
+        proxy.start()
+        source = {
+            "model": "rwkv",
+            "messages": [
+                {"role": "system", "content": "Keep this system message unchanged."},
+                {"role": "user", "content": "Run the requested command."},
+            ],
+            "tools": TOOLS,
+            "tool_choice": "auto",
+            "temperature": 0,
+            "max_tokens": 512,
+        }
+        request = Request(
+            f"{proxy.base_url}/chat/completions",
+            data=json.dumps(source).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": "Bearer client-secret"},
+            method="POST",
+        )
+        with urlopen(request, timeout=10) as response:  # noqa: S310 - test-only local server
+            result = json.loads(response.read())
+    finally:
+        proxy.close()
+        upstream.shutdown()
+        upstream.server_close()
+        thread.join(timeout=5)
+
+    tool_calls = result["choices"][0]["message"]["tool_calls"]
+    assert result["choices"][0]["finish_reason"] == "tool_calls"
+    assert tool_calls[0]["function"]["name"] == "bash"
+    assert json.loads(tool_calls[0]["function"]["arguments"]) == {"command": "echo hi"}
+    assert result["usage"] == {"prompt_tokens": 30, "completion_tokens": 6, "total_tokens": 36}
+    assert received
+    assert all(payload["prompt"].endswith("Assistant: <think></think>\n```json\n") for payload in received)
+    assert all("tools" not in payload for payload in received)
+    assert all("messages" not in payload for payload in received)
+    assert all("Keep this system message unchanged." in payload["prompt"] for payload in received)
+    assert all("Conversation transcript JSON:" not in payload["prompt"] for payload in received)
+    assert all("Assistant: <think></think>\n```json" in payload["prompt"] for payload in received)
+    assert all("Bot\u273f<think></think>\n```json" not in payload["prompt"] for payload in received)
+    assert all(
+        "System: Keep this system message unchanged."
+        in payload["prompt"]
+        for payload in received
+    )
+    assert all("User: Run the requested command." in payload["prompt"] for payload in received)
+    assert received_paths
+    assert all(path == "/v1/completions" for path in received_paths)
+
+    record = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
+    assert record["request"]["json"]["messages"][0]["content"] == "Keep this system message unchanged."
+    assert record["router"]["mode"] == "parallel_candidate"
+    assert record["router"]["candidate_count"] == 2
+    assert record["response"]["body"]["choices"][0]["message"]["tool_calls"]
+    assert record["response"]["body"]["usage"] == {"prompt_tokens": 30, "completion_tokens": 6, "total_tokens": 36}
+
+
+def test_parallel_candidate_proxy_preserves_native_tool_call_when_candidates_fail(tmp_path) -> None:
+    received_paths: list[str] = []
+    native_payloads: list[dict[str, object]] = []
+
+    class UpstreamHandler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            payload = json.loads(body)
+            received_paths.append(self.path)
+            if self.path == "/v1/chat/completions":
+                native_payloads.append(payload)
+                response_body = {
+                    "id": "native-upstream",
+                    "object": "chat.completion",
+                    "model": "rwkv",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call-native",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "bash",
+                                            "arguments": '{"command":"echo native"}',
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+                }
+            else:
+                assert self.path == "/v1/completions"
+                response_body = {
+                    "id": "candidate-upstream",
+                    "model": payload["model"],
+                    "choices": [{"text": "not a candidate", "finish_reason": "stop"}],
+                }
+            response = json.dumps(response_body).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), UpstreamHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    trace = tmp_path / "parallel-native-fallback.jsonl"
+    proxy = ParallelCandidateProxy(
+        f"http://127.0.0.1:{upstream.server_port}/v1",
+        api_key="secret",
+        trace_path=trace,
+        config=ParallelCandidateConfig(chunk_tools=1, batch_size=2, fallback_to_highest_confidence=False),
+    )
+    source = {
+        "model": "rwkv",
+        "messages": [{"role": "user", "content": "Run the command."}],
+        "tools": TOOLS,
+        "tool_choice": "auto",
+        "temperature": 0,
+        "max_tokens": 512,
+    }
+    try:
+        result, route_trace = proxy._route(source)
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+        thread.join(timeout=5)
+
+    assert result["id"] == "native-upstream"
+    assert result["choices"][0]["finish_reason"] == "tool_calls"
+    assert result["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "bash"
+    assert received_paths.count("/v1/completions") == 2
+    assert received_paths[-1] == "/v1/chat/completions"
+    assert native_payloads == [source]
+    assert route_trace["candidate_count"] == 0
+    assert route_trace["native_fallback_used"] is True
+    assert route_trace["native_fallback"]["status"] == 200
+
+
+def test_parallel_candidate_proxy_trace_encodes_bytes_without_breaking_response(tmp_path) -> None:
+    trace = tmp_path / "parallel-bytes.jsonl"
+    proxy = ParallelCandidateProxy(
+        "http://127.0.0.1:1/v1",
+        api_key="secret",
+        trace_path=trace,
+    )
+    proxy._route = lambda _source: (  # type: ignore[method-assign]
+        {"choices": []},
+        {"mode": "test", "raw": b"\x00\xff"},
+    )
+    try:
+        proxy.start()
+        request = Request(
+            f"{proxy.base_url}/chat/completions",
+            data=json.dumps({"model": "rwkv", "messages": [], "tools": TOOLS}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=10) as response:  # noqa: S310 - test-only local server
+            assert response.status == 200
+            assert json.loads(response.read()) == {"choices": []}
+    finally:
+        proxy.close()
+
+    record = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
+    assert record["router"]["raw"] == {"__type__": "bytes", "base64": "AP8="}
+
+
+def test_parallel_candidate_proxy_direct_route_parses_upstream_json() -> None:
+    proxy = ParallelCandidateProxy("http://127.0.0.1:1/v1", api_key="secret", trace_path=Path("trace.jsonl"))
+    proxy._forward = lambda *_args, **_kwargs: (  # type: ignore[method-assign]
+        200,
+        {"Content-Type": "application/json"},
+        b'{"id":"upstream","model":"rwkv","choices":[]}',
+    )
+
+    result, route_trace = proxy._route({"model": "rwkv", "messages": []})
+
+    assert result["model"] == "rwkv"
+    assert result["id"] == "upstream"
+    assert route_trace["mode"] == "direct"
+    assert route_trace["upstream_response"]["model"] == "rwkv"
+
+
+def test_upstream_candidate_payload_has_flower_response_stops() -> None:
+    proxy = ParallelCandidateProxy("http://127.0.0.1:1/v1", api_key="secret", trace_path=Path("trace.jsonl"))
+
+    payload = proxy._upstream_payload(
+        {"model": "rwkv", "temperature": 0.0},
+        "Bot\u273f<think></think>\n```json\n",
+        max_tokens=2048,
+    )
+
+    assert payload["prompt"] == "Bot\u273f<think></think>\n```json\n"
+    assert "messages" not in payload
+    assert payload["stop"][:2] == ["\n```", "```"]
+    assert "\u273f" in payload["stop"]
+    preserved = proxy._upstream_payload(
+        {"model": "rwkv", "stop": ["CUSTOM"]},
+        "prompt",
+        max_tokens=128,
+    )
+    assert preserved["stop"] == ["CUSTOM"]
+    assert preserved["prompt"] == "prompt"

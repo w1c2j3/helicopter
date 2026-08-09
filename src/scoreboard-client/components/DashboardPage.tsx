@@ -1,20 +1,24 @@
 "use client";
 
-import { EvaluationDetails } from "./EvaluationDetails";
-import { EvaluationMatrix } from "./EvaluationMatrix";
-import { useEvaluations } from "./EvaluationProvider";
+import type { LeaderboardResponse } from "../lib/dtos/api/leaderboard";
+import type { MetaResponse } from "../lib/dtos/api/meta";
+import { ReferenceEvaluationBoard } from "./ReferenceEvaluationBoard";
 
-export function DashboardPage() {
-  const { status, data, error } = useEvaluations();
-  if (status === "loading") return <p>正在读取完整 campaign…</p>;
-  if (status === "error") return <p className="error-bar">加载失败：{error}</p>;
-  if (!data?.evaluations.length) {
-    return <p className="empty">尚无已完成的 LightEval campaign。</p>;
-  }
+interface Props {
+  meta: MetaResponse;
+  leaderboard: LeaderboardResponse;
+  model: string;
+  view: string;
+  tab: string;
+  isMockData: boolean;
+}
+
+export function DashboardPage({ meta, leaderboard }: Props) {
   return (
-    <div className="stack">
-      <EvaluationMatrix />
-      <EvaluationDetails />
-    </div>
+    <>
+      {meta.errors.length ? <div className="error-bar">{meta.errors.join("; ")}</div> : null}
+      {leaderboard.errors.length ? <div className="error-bar">{leaderboard.errors.join("; ")}</div> : null}
+      <ReferenceEvaluationBoard matrix={leaderboard.matrix} />
+    </>
   );
 }

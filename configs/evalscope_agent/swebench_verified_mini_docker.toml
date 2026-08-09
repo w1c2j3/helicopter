@@ -1,0 +1,24 @@
+# Docker-backed SWE-bench Verified Mini Agentic profile.
+#
+# This profile is intentionally limited to the 50-sample mini set.  The full
+# Verified/Multilingual/Pro suites build or pull substantially more images and
+# must not be started until the Docker filesystem budget has been checked.
+
+[evalscope]
+binary = "evalscope"
+eval_type = "openai_api"
+eval_batch_size = 1
+request_timeout = 1800
+generation_config = { max_tokens = 2048, temperature = 1e-5, timeout = 1800 }
+
+[evalscope.agent_config]
+strategy = "swe_bench_toolcall"
+tools = ["bash"]
+environment = "docker"
+max_steps = 250
+
+[evalscope.dataset_args.swe_bench_verified_mini_agentic.extra_params]
+build_docker_images = true
+pull_remote_images_if_available = true
+force_arch = ""
+dockerhub_username = "swebench"
