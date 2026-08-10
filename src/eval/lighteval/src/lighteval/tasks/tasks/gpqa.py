@@ -53,31 +53,29 @@ def sample_to_fewshot(sample):
     return f"{sample.input}\n\n" + f"ANSWER: {sample.target}"
 
 
+def _raw_gpqa_query(line, choices: list[str]) -> str:
+    """Serialize only GPQA dataset fields, without an answer or CoT cue."""
+
+    question = str(line["Question"])
+    rendered_choices = "\n".join(
+        f"{letter}) {str(choice)}"
+        for letter, choice in zip(ascii_uppercase, choices)
+    )
+    return f"{question}\n\n{rendered_choices}"
+
+
 def gpqa_prompt(line, task_name: str = None):
-    GPQA_QUERY_TEMPLATE = """
-Answer the following multiple choice question. The last line of your response should be of the following format: 'Answer: $LETTER' (without quotes) where LETTER is one of ABCD. Think step by step before answering.
-
-{Question}
-
-A) {A}
-B) {B}
-C) {C}
-D) {D}
-""".strip()
     gold_index = random.randint(0, 3)
     choices = [line["Incorrect Answer 1"], line["Incorrect Answer 2"], line["Incorrect Answer 3"]]
     choices.insert(gold_index, line["Correct Answer"])
-
-    query = GPQA_QUERY_TEMPLATE.format(
-        A=choices[0], B=choices[1], C=choices[2], D=choices[3], Question=line["Question"]
-    )
+    query = _raw_gpqa_query(line, choices)
 
     return Doc(
         task_name=task_name,
         query=query,
+        raw_query=query,
         choices=list(ascii_uppercase)[: len(choices)],
         gold_index=gold_index,
-        instruction=query,
     )
 
 
@@ -85,23 +83,14 @@ def gpqa_instruct_prompt(line, task_name: str = None):
     gold_index = random.randint(0, 3)
     choices = [line["Incorrect Answer 1"], line["Incorrect Answer 2"], line["Incorrect Answer 3"]]
     choices.insert(gold_index, line["Correct Answer"])
-    instruction = "Answer the following multiple choice question. The last line of your response should be of the following format: 'Answer: $LETTER' (without quotes) where LETTER is one of ABCD. Think step by step before answering."
-    query_template = "{Instruction}\n\n{Question}\n\nA) {A}\nB) {B}\nC) {C}\nD) {D}"
-    query = query_template.format(
-        A=choices[0].strip(),
-        B=choices[1].strip(),
-        C=choices[2].strip(),
-        D=choices[3].strip(),
-        Question=line["Question"].strip(),
-        Instruction=instruction,
-    )
+    query = _raw_gpqa_query(line, choices)
 
     return Doc(
         task_name=task_name,
         query=query,
+        raw_query=query,
         choices=list(ascii_uppercase)[: len(choices)],
         gold_index=gold_index,
-        instruction=instruction,
     )
 
 

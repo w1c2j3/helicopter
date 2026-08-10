@@ -89,6 +89,10 @@ class Doc:
         original_query (str | None):
             The query before any preprocessing or modification.
 
+        raw_query (str | None):
+            Exact dataset text for raw completion profiles. This excludes any
+            task-authored answer-format, reasoning, or role instructions.
+
         # Set by task parameters
         id (str):
             Unique identifier for this evaluation instance.
@@ -198,6 +202,9 @@ class Doc:
     # The uncoditioned query shouldn't contain any information about the task, thus usually it's empty string or 'Answer:'.
     unconditioned_query: str | None = None
     original_query: str | None = None  # the query before preprocessing, if stored
+    # Exact dataset text used by raw completion profiles. Unlike ``query``,
+    # this field must never contain benchmark instructions added by LightEval.
+    raw_query: str | None = None
 
     id: str = ""
     task_name: str = ""

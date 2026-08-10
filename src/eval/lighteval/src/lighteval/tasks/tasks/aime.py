@@ -27,8 +27,6 @@ starred:
 true
 """
 
-from textwrap import dedent
-
 from inspect_ai.dataset import Sample
 from inspect_ai.solver import generate, prompt_template
 
@@ -37,15 +35,9 @@ from lighteval.tasks.lighteval_task import LightevalTaskConfig
 from lighteval.tasks.requests import Doc
 
 
-# Prompt template adapted from
-# - simple-evals: https://github.com/openai/simple-evals/blob/6e84f4e2aed6b60f6a0c7b8f06bbbf4bfde72e58/math_eval.py#L17
-# - Llama 3: https://huggingface.co/datasets/meta-llama/Llama-3.2-1B-Instruct-evals/viewer/Llama-3.2-1B-Instruct-evals__math__details?views%5B%5D=llama_32_1b_instruct_evals__math__details
-# Note that it is important to have the final answer in a box for math-verify to work correctly
-MATH_PROMPT_TEMPLATE = dedent("""
-Solve the following math problem efficiently and clearly.  The last line of your response should be of the following format: 'Therefore, the final answer is: $\\boxed{{ANSWER}}$. I hope it is correct' (without quotes) where ANSWER is just the final number or expression that solves the problem. Think step by step before answering.
-
-{prompt}
-""")
+# Evaluation prompts must preserve the dataset problem verbatim. Reasoning mode
+# belongs to the model profile, not to the benchmark task definition.
+MATH_PROMPT_TEMPLATE = "{prompt}"
 
 
 def record_to_sample(record):
@@ -53,9 +45,11 @@ def record_to_sample(record):
 
 
 def aime_prompt(line, task_name: str = None):
+    problem = str(line["problem"])
     return Doc(
         task_name=task_name,
-        query=MATH_PROMPT_TEMPLATE.format(prompt=line["problem"]),
+        query=problem,
+        raw_query=problem,
         choices=[line["answer"]],
         gold_index=0,
     )

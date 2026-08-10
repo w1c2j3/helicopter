@@ -41,9 +41,11 @@ from lighteval.utils.imports import requires
 # Very specific task where there are no precise outputs but instead we test if the format obeys rules
 @requires("langdetect")
 def ifeval_prompt(line, task_name: str = ""):
+    prompt = str(line["prompt"])
     return Doc(
         task_name=task_name,
-        query=line["prompt"],
+        query=prompt,
+        raw_query=prompt,
         choices=[""],
         gold_index=0,
         instruction="",

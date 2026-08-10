@@ -21,6 +21,7 @@
 # SOFTWARE.
 
 import logging
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from json import JSONDecodeError
@@ -30,6 +31,7 @@ from tqdm import tqdm
 
 from lighteval.data import GenerativeTaskDataset
 from lighteval.models.abstract_model import LightevalModel, ModelConfig
+from lighteval.models.endpoints.rwkv_profile import RWKVCompletionProfile
 from lighteval.models.model_output import ModelResponse
 from lighteval.tasks.prompt_manager import PromptManager
 from lighteval.tasks.requests import Doc, SamplingMethod
@@ -96,6 +98,9 @@ class LiteLLMModelConfig(ModelConfig):
             Multiplier for increasing sleep time between retries. Default is 2.0.
         timeout (float):
             Request timeout in seconds. Default is None (no timeout).
+        rwkv_profile (str | None):
+            Path to a strict TOML profile that enables raw RWKV
+            ``/v1/completions`` requests directly from this source client.
         generation_parameters (GenerationParameters, optional, defaults to empty GenerationParameters):
             Configuration parameters that control text generation behavior, including
             temperature, top_p, max_new_tokens, etc.
@@ -130,6 +135,9 @@ class LiteLLMModelConfig(ModelConfig):
     api_retry_sleep: float = 1.0
     api_retry_multiplier: float = 2.0
     timeout: float | None = None
+    # Enables the repository's strict raw /v1/completions path. Sampling and
+    # prompt construction come exclusively from this TOML profile.
+    rwkv_profile: str | None = None
 
 
 @requires("litellm")
@@ -153,6 +161,11 @@ class LiteLLMClient(LightevalModel):
         self.API_RETRY_SLEEP = config.api_retry_sleep
         self.API_RETRY_MULTIPLIER = config.api_retry_multiplier
         self.timeout = config.timeout
+        self.rwkv_profile = (
+            RWKVCompletionProfile.from_path(config.rwkv_profile)
+            if config.rwkv_profile
+            else None
+        )
 
         self._tokenizer = encode
         self.pairwise_tokenization = False
@@ -338,6 +351,9 @@ class LiteLLMClient(LightevalModel):
         Returns:
             list[ModelResponse]: list of generated responses.
         """
+        if self.rwkv_profile is not None:
+            return self._rwkv_profile_greedy_until(docs)
+
         dataset = GenerativeTaskDataset(requests=docs, num_dataset_splits=self.DATASET_SPLITS)
         results = []
 
@@ -376,6 +392,104 @@ class LiteLLMClient(LightevalModel):
                 results.append(cur_response)
 
         return dataset.get_original_order(results)
+
+    def _rwkv_completion_url(self) -> str:
+        if not self.base_url:
+            raise ValueError("rwkv_profile requires base_url")
+        base = self.base_url.rstrip("/")
+        return f"{base}/completions" if base.endswith("/v1") else f"{base}/v1/completions"
+
+    def _rwkv_completion_headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        api_key = self.api_key or os.environ.get("OPENAI_API_KEY")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        return headers
+
+    def _rwkv_profile_request(self, prompt: str) -> ModelResponse:
+        profile = self.rwkv_profile
+        if profile is None:  # pragma: no cover - guarded by caller
+            raise RuntimeError("RWKV completion profile is not configured")
+        served_model = self.model.split("/", 1)[1] if self.model.startswith("openai/") else self.model
+        payload = profile.completion_payload(served_model=served_model, prompt=prompt)
+        last_error: Exception | None = None
+
+        for attempt in range(self.API_MAX_RETRY):
+            try:
+                response = requests.post(
+                    self._rwkv_completion_url(),
+                    headers=self._rwkv_completion_headers(),
+                    json=payload,
+                    timeout=self.timeout or 180,
+                )
+                try:
+                    response.raise_for_status()
+                except requests.HTTPError as error:
+                    body = response.text.strip()
+                    raise RuntimeError(
+                        f"completion endpoint returned HTTP {response.status_code}: {body[:2000]}"
+                    ) from error
+                body = response.json()
+                choices = sorted(body.get("choices") or [], key=lambda choice: choice.get("index", 0))
+                if len(choices) != profile.num_samples:
+                    raise RuntimeError(
+                        f"completion response returned {len(choices)} choices; expected {profile.num_samples}"
+                    )
+                raw_texts = [str(choice.get("text") or "") for choice in choices]
+                texts = list(raw_texts)
+                if profile.prompt_template.rstrip().endswith(("<think", "</think")):
+                    texts = [text[1:].lstrip() if text.startswith(">") else text for text in texts]
+                result = ModelResponse(text=texts, input=prompt)
+                result.raw_text = raw_texts
+                result.finish_reason = [choice.get("finish_reason") for choice in choices]
+                result.usage = body.get("usage")
+                result.request_payload = payload
+                return result
+            except Exception as error:  # noqa: BLE001 - retry endpoint failures uniformly
+                last_error = error
+                if attempt + 1 < self.API_MAX_RETRY:
+                    wait_time = min(64, self.API_RETRY_SLEEP * (self.API_RETRY_MULTIPLIER**attempt))
+                    logger.warning(
+                        "RWKV completion request failed: %s; retrying in %s seconds (%s/%s)",
+                        error,
+                        wait_time,
+                        attempt + 1,
+                        self.API_MAX_RETRY,
+                    )
+                    time.sleep(wait_time)
+        raise RuntimeError(f"RWKV completion request failed after retries: {last_error}")
+
+    def _rwkv_profile_greedy_until(self, docs: list[Doc]) -> list[ModelResponse]:
+        profile = self.rwkv_profile
+        if profile is None:  # pragma: no cover - guarded by caller
+            raise RuntimeError("RWKV completion profile is not configured")
+
+        configured_tasks = set(profile.tasks)
+        prompts: list[str] = []
+        for doc in docs:
+            task_name = str(doc.task_name).split("|", 1)[0]
+            if task_name not in configured_tasks:
+                raise ValueError(
+                    f"task {task_name!r} is not listed in RWKV profile {profile.name!r}"
+                )
+            if doc.raw_query is None:
+                raise ValueError(
+                    f"task {task_name!r} did not provide Doc.raw_query for raw-input profile {profile.name!r}"
+                )
+            doc.num_samples = profile.num_samples
+            doc.generation_size = int(profile.sampling["max_tokens"])
+            prompts.append(profile.render_prompt(str(doc.raw_query)))
+
+        with ThreadPoolExecutor(max_workers=self.concurrent_requests) as executor:
+            results = list(
+                tqdm(
+                    executor.map(self._rwkv_profile_request, prompts),
+                    total=len(prompts),
+                    desc="RWKV completions",
+                    disable=self.disable_tqdm,
+                )
+            )
+        return results
 
     @property
     def tokenizer(self):
