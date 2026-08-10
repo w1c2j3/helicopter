@@ -1,0 +1,42 @@
+[model_catalog]
+path = "configs/models/g1h-single-replica.toml"
+
+[profile]
+name = "g1h-7.2b-coding-nocot"
+model = "g1h-7.2b"
+tasks = [
+  "lcb:codegeneration",
+  "lcb:codegeneration_release_latest",
+  "lcb:codegeneration_release_v5",
+]
+adapter = "code"
+raw_input = true
+
+[prompt]
+mode = "naive_nocot"
+template = "User: {query}\n\nAssistant: <think></think>"
+
+[evaluation]
+metric = "pass@1"
+num_samples = 8
+
+[sampling]
+max_tokens = 4096
+temperature = 0.8
+top_p = 0.35
+top_k = 40
+presence_penalty = 0.65
+frequency_penalty = 0.25
+repetition_penalty = 1.0
+penalty_decay = 0.99
+stop_token_ids = [0]
+
+[lighteval]
+provider = "openai"
+base_url = "http://127.0.0.1:29572/v1"
+output_dir = "results/lighteval/g1h-7.2b/coding-nocot"
+save_details = true
+dataset_loading_processes = 1
+load_tasks_multilingual = true
+concurrent_requests = 8
+request_timeout = 900
