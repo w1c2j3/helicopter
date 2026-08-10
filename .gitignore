@@ -2,6 +2,22 @@
 .env.*
 !.env.example
 
+# Local-only deployment and evaluator overrides. Keep the directory placeholder.
+configs/remote/*
+!configs/remote/.gitkeep
+configs/eval/local*.toml
+configs/eval/private*.toml
+configs/eval/secret*.toml
+configs/eval/*_local.toml
+configs/eval/*_private.toml
+configs/eval/*_secret.toml
+*.local
+*.local.*
+*.private
+*.private.*
+*.secret
+*.secret.*
+
 __pycache__/
 *.py[cod]
 *.so
@@ -27,6 +43,14 @@ build/
 dist/
 *.egg-info/
 
+# Nested package-manager and frontend build products.
+**/node_modules/
+**/.next/
+**/test-results/
+**/target/
+**/.cache/
+*.tsbuildinfo
+
 
 /logs/
 /runs/
@@ -49,6 +73,33 @@ dist/
 *.log
 *.tmp
 *.swp
+
+# lm-eval/LightEval runtime outputs. Canonical reports use descriptive names
+# under docs/ and are not matched by these generated-file patterns.
+**/results.json
+**/summary.json
+**/artifacts.json
+**/analysis_artifacts.json
+**/results_*.json
+**/records.jsonl
+**/errors.jsonl
+**/samples_*.jsonl
+**/details.parquet
+**/pool-manifest.json
+**/rwkv-vllm-pool.json
+**/logs/
+**/runs/
+**/outputs/
+**/evaluation_outputs/
+**/benchmark_outputs/
+
+# Local service state and databases.
+*.pid
+*.sock
+*.sqlite
+*.sqlite3
+*.db
+*.whl
 .DS_Store
 .idea/
 .vscode/

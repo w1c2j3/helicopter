@@ -122,6 +122,46 @@ class RecordingClient:
         self.calls.append((campaign_id, identity, payload))
 
 
+def test_scoreboard_preflight_accepts_explicit_campaign_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = publish.ScoreboardClient("https://scoreboard.test", "secret")
+    response = {
+        "status": "ready",
+        "supported_campaign_schemas": [
+            "lm-eval-campaign-v1",
+            "lm-eval-existing-campaign-v1",
+        ],
+        "evaluator_versions": {"lm-eval": "0.4.12"},
+    }
+    monkeypatch.setattr(client, "_request", lambda _method, _path: response)
+
+    assert (
+        client.preflight(
+            "lm-eval",
+            "0.4.12",
+            campaign_schema="lm-eval-existing-campaign-v1",
+        )
+        == response
+    )
+
+    response["supported_campaign_schemas"] = ["lm-eval-campaign-v1"]
+    with pytest.raises(PublicationError, match="incompatible"):
+        client.preflight(
+            "lm-eval",
+            "0.4.12",
+            campaign_schema="lm-eval-existing-campaign-v1",
+        )
+
+    response["supported_campaign_schemas"] = "lm-eval-existing-campaign-v1"
+    with pytest.raises(PublicationError, match="incompatible"):
+        client.preflight(
+            "lm-eval",
+            "0.4.12",
+            campaign_schema="lm-eval-existing-campaign-v1",
+        )
+
+
 def test_publish_results_preserves_native_data_and_diagnostics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

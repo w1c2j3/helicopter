@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import hashlib
+import gc
 import importlib.metadata
 import json
 import os
 import stat
+import tempfile
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -13,11 +14,13 @@ from typing import Mapping, Sequence
 from helicopter_lighteval.http_pool import PoolError, VLLMHttpPool
 from helicopter_lighteval.publish import PublicationError
 
-from .analysis import (
-    analyze_samples,
-    build_task_records,
-    render_markdown,
-    render_task_markdown,
+from .artifacts import (
+    IncrementalRunArtifacts,
+    install_staged_run,
+    reset_run_artifacts,
+    write_json,
+    write_run_artifacts,
+    write_spooled_results,
 )
 from .config import ConfigError, LMEvalConfig
 from .model import RWKVVLLMHttpLM
@@ -41,9 +44,27 @@ def _evaluation_task_specs(
     dataset_path_override: str | None,
     dataset_kwargs_override: Mapping[str, object] | None,
 ):
+    return [
+        spec
+        for batch in _evaluation_task_batches(
+            manager,
+            tasks,
+            dataset_path_override,
+            dataset_kwargs_override,
+        )
+        for spec in batch
+    ]
+
+
+def _evaluation_task_batches(
+    manager,
+    tasks: Sequence[str],
+    dataset_path_override: str | None,
+    dataset_kwargs_override: Mapping[str, object] | None,
+):
     if dataset_path_override is None and dataset_kwargs_override is None:
-        return list(tasks)
-    specs: list[object] = []
+        yield list(tasks)
+        return
     overrides: dict[str, object] = {}
     if dataset_path_override is not None:
         overrides["dataset_path"] = dataset_path_override
@@ -59,16 +80,76 @@ def _evaluation_task_specs(
         entry = manager.task_index.get(task_name)
         if entry is None:
             raise ConfigError(f"unknown task for benchmark override: {task_name}")
+        split_members = _split_scoped_group_members(manager, entry, overrides)
+        if split_members is not None:
+            for member, child_entry, test_split in split_members:
+                child = manager._factory.build(
+                    child_entry,
+                    overrides={"task": member, **overrides},
+                    registry=manager.task_index,
+                )
+                dataset = getattr(child, "dataset", None)
+                if not isinstance(dataset, Mapping) or test_split not in dataset:
+                    raise ConfigError(
+                        f"group task {member} did not load expected split {test_split}"
+                    )
+                child.dataset = {test_split: dataset[test_split]}
+                del dataset
+                yield [child]
+                del child
+                gc.collect()
+            continue
         built = manager._factory.build(
             entry,
             overrides=overrides,
             registry=manager.task_index,
         )
         if isinstance(built, list):
-            specs.extend(built)
+            yield built
         else:
-            specs.append(built)
-    return specs
+            yield [built]
+
+
+def _split_scoped_group_members(manager, entry, overrides: Mapping[str, object]):
+    entry_config = getattr(entry, "cfg", None)
+    dataset_kwargs = overrides.get("dataset_kwargs")
+    data_files = (
+        dataset_kwargs.get("data_files")
+        if isinstance(dataset_kwargs, Mapping)
+        else None
+    )
+    members = entry_config.get("task") if isinstance(entry_config, Mapping) else None
+    aggregate_metrics = (
+        entry_config.get("aggregate_metric_list")
+        if isinstance(entry_config, Mapping)
+        else None
+    )
+    if (
+        not isinstance(data_files, Mapping)
+        or not isinstance(members, list)
+        or aggregate_metrics
+    ):
+        return None
+    if not members or not all(isinstance(member, str) for member in members):
+        return None
+
+    child_entries = []
+    for member in members:
+        child_entry = manager.task_index.get(member)
+        child_config = getattr(child_entry, "cfg", None)
+        test_split = (
+            child_config.get("test_split")
+            if isinstance(child_config, Mapping)
+            else None
+        )
+        if (
+            child_entry is None
+            or not isinstance(test_split, str)
+            or test_split not in data_files
+        ):
+            return None
+        child_entries.append((member, child_entry, test_split))
+    return child_entries
 
 
 def run(*, config_path: Path, env: Mapping[str, str], dry_run: bool) -> int:
@@ -168,93 +249,118 @@ def run(*, config_path: Path, env: Mapping[str, str], dry_run: bool) -> int:
         for index, (unit, pool, ready) in enumerate(
             zip(config.execution_units, pools, readiness, strict=True)
         ):
-            result_parts: list[Mapping[str, object]] = []
-            for benchmark, run_tasks in benchmark_runs:
-                batch_size = benchmark.batch_size if benchmark else config.batch_size
-                max_gen_toks = (
-                    benchmark.max_gen_toks if benchmark else config.max_gen_toks
-                )
-                limit = benchmark.limit if benchmark else config.limit
-                prompt = benchmark.prompt if benchmark else config.prompt
-                generation_kwargs = (
-                    benchmark.generation_kwargs
-                    if benchmark
-                    else config.generation_kwargs
-                )
-                model = RWKVVLLMHttpLM(
-                    pool=pool,
-                    eot_token_id=config.eot_token_id,
-                    batch_size=batch_size,
-                    max_gen_toks=max_gen_toks,
-                    prompt_profile=prompt.profile,
-                    generation_prompt=prompt.generation_prompt,
-                )
-                with _remote_dataset_code(
-                    benchmark.trust_remote_dataset_code if benchmark else False
-                ):
-                    part = lm_eval.simple_evaluate(
-                        model=model,
-                        tasks=_evaluation_task_specs(
-                            task_manager,
-                            run_tasks,
-                            benchmark.dataset_path_override if benchmark else None,
-                            benchmark.dataset_kwargs_override if benchmark else None,
-                        ),
-                        batch_size=batch_size,
-                        limit=limit,
-                        log_samples=config.log_samples or config.publish,
-                        task_manager=task_manager,
-                        num_fewshot=prompt.num_fewshot,
-                        system_instruction=prompt.system_instruction,
-                        apply_chat_template=prompt.apply_chat_template,
-                        fewshot_as_multiturn=prompt.fewshot_as_multiturn,
-                        gen_kwargs=(
-                            dict(generation_kwargs) if generation_kwargs else None
-                        ),
-                        confirm_run_unsafe_code=(
-                            benchmark.confirm_run_unsafe_code if benchmark else False
-                        ),
-                    )
-                if part is None:
-                    selector = benchmark.selector if benchmark else ",".join(config.tasks)
-                    raise RuntimeError(f"lm-eval returned no results for {selector}")
-                result_parts.append(part)
-            results = _merge_results(result_parts)
             output_dir = _unit_output_dir(
                 config.output_dir,
                 unit,
                 index,
                 total_units=len(config.execution_units),
             )
-            _write_results(
-                config=config,
-                model_id=str(ready["model_id"]),
-                version=version,
-                results=results,
-                output_dir=output_dir,
-                manifest=unit.manifest,
-                weight_sha256=unit.weight_sha256,
-            )
-            benchmark_logs = output_dir / "benchmarks"
-            if benchmark_logs.is_dir():
-                print(f"lm-eval benchmark logs written to {benchmark_logs}")
-            if campaign_id is not None:
-                from .publish import publish_unit
-
-                unit_expected = [
-                    task
-                    for task in expected_tasks
-                    if task["weight_sha256"] == unit.weight_sha256
-                    and task["wkv_mode"] == unit.wkv_mode
-                ]
-                completed += publish_unit(
-                    output_dir=output_dir,
-                    campaign_id=campaign_id,
-                    expected=unit_expected,
-                    unit=unit,
+            output_dir.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(
+                prefix=f".{output_dir.name}.spool-",
+                dir=output_dir.parent,
+            ) as temporary:
+                staging_dir = Path(temporary)
+                staging_dir.chmod(0o700)
+                spool = _ResultSpool(staging_dir)
+                for benchmark, run_tasks in benchmark_runs:
+                    batch_size = (
+                        benchmark.batch_size if benchmark else config.batch_size
+                    )
+                    max_gen_toks = (
+                        benchmark.max_gen_toks if benchmark else config.max_gen_toks
+                    )
+                    limit = benchmark.limit if benchmark else config.limit
+                    prompt = benchmark.prompt if benchmark else config.prompt
+                    generation_kwargs = (
+                        benchmark.generation_kwargs
+                        if benchmark
+                        else config.generation_kwargs
+                    )
+                    model = RWKVVLLMHttpLM(
+                        pool=pool,
+                        eot_token_id=config.eot_token_id,
+                        batch_size=batch_size,
+                        max_gen_toks=max_gen_toks,
+                        prompt_profile=prompt.profile,
+                        generation_prompt=prompt.generation_prompt,
+                    )
+                    task_batches = _evaluation_task_batches(
+                        task_manager,
+                        run_tasks,
+                        benchmark.dataset_path_override if benchmark else None,
+                        benchmark.dataset_kwargs_override if benchmark else None,
+                    )
+                    for task_specs in task_batches:
+                        with _remote_dataset_code(
+                            benchmark.trust_remote_dataset_code
+                            if benchmark
+                            else False
+                        ):
+                            part = lm_eval.simple_evaluate(
+                                model=model,
+                                tasks=task_specs,
+                                batch_size=batch_size,
+                                limit=limit,
+                                log_samples=config.log_samples or config.publish,
+                                task_manager=task_manager,
+                                num_fewshot=prompt.num_fewshot,
+                                system_instruction=prompt.system_instruction,
+                                apply_chat_template=prompt.apply_chat_template,
+                                fewshot_as_multiturn=prompt.fewshot_as_multiturn,
+                                gen_kwargs=(
+                                    dict(generation_kwargs)
+                                    if generation_kwargs
+                                    else None
+                                ),
+                                confirm_run_unsafe_code=(
+                                    benchmark.confirm_run_unsafe_code
+                                    if benchmark
+                                    else False
+                                ),
+                            )
+                        if part is None:
+                            selector = (
+                                benchmark.selector
+                                if benchmark
+                                else ",".join(config.tasks)
+                            )
+                            raise RuntimeError(
+                                f"lm-eval returned no results for {selector}"
+                            )
+                        spool.add(part)
+                        del part
+                        gc.collect()
+                _write_spooled_output(
                     config=config,
-                    client=client,
+                    model_id=str(ready["model_id"]),
+                    version=version,
+                    spool=spool,
+                    staging_dir=staging_dir,
+                    manifest=unit.manifest,
+                    weight_sha256=unit.weight_sha256,
                 )
+                _prepare_output_dir(output_dir)
+                install_staged_run(staging_dir, output_dir)
+                if campaign_id is not None:
+                    from .publish import publish_unit
+
+                    unit_expected = [
+                        task
+                        for task in expected_tasks
+                        if task["weight_sha256"] == unit.weight_sha256
+                        and task["wkv_mode"] == unit.wkv_mode
+                    ]
+                    completed += publish_unit(
+                        output_dir=output_dir,
+                        campaign_id=campaign_id,
+                        expected=unit_expected,
+                        unit=unit,
+                        config=config,
+                        client=client,
+                        result_metadata=spool.metadata,
+                        sample_paths=spool.sample_paths,
+                    )
         if campaign_id is not None:
             if completed != len(expected_tasks):
                 raise PublicationError(
@@ -337,6 +443,60 @@ _MERGED_RESULT_FIELDS = {
 }
 
 
+class _ResultSpool:
+    def __init__(self, staging_dir: Path) -> None:
+        self.staging_dir = staging_dir
+        self.metadata: dict[str, object] = {}
+        self.sample_paths: dict[str, Path] = {}
+        self.samples_logged = False
+        self._sample_root = staging_dir / ".sample-spool"
+        self._artifacts = IncrementalRunArtifacts(staging_dir)
+
+    def add(self, part: Mapping[str, object]) -> None:
+        for name, value in part.items():
+            if name not in _MERGED_RESULT_FIELDS:
+                self.metadata.setdefault(name, value)
+                continue
+            if value is None:
+                continue
+            if not isinstance(value, Mapping):
+                raise RuntimeError(f"lm-eval result field {name} must be an object")
+            if name == "samples":
+                self._add_samples(value)
+                continue
+            destination = self.metadata.setdefault(name, {})
+            if not isinstance(destination, dict):
+                raise RuntimeError(f"lm-eval result field {name} cannot be merged")
+            overlaps = sorted(set(destination).intersection(value))
+            if overlaps:
+                raise RuntimeError(
+                    f"lm-eval benchmark results overlap in {name}: "
+                    + ", ".join(overlaps)
+                )
+            destination.update(value)
+
+    def finish(self, evaluator_version: str) -> None:
+        self._artifacts.finish(evaluator_version)
+
+    def _add_samples(self, samples: Mapping[object, object]) -> None:
+        self.samples_logged = True
+        self._artifacts.mark_samples_logged()
+        overlaps = sorted(set(self.sample_paths).intersection(samples))
+        if overlaps:
+            raise RuntimeError(
+                "lm-eval benchmark results overlap in samples: "
+                + ", ".join(str(name) for name in overlaps)
+            )
+        self._sample_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        for task_name, rows in sorted(samples.items()):
+            if not isinstance(task_name, str):
+                raise RuntimeError("lm-eval sample task names must be strings")
+            sample_path = self._sample_root / f"{len(self.sample_paths):04d}.json"
+            write_json(sample_path, rows)
+            self._artifacts.add_task(task_name, rows)
+            self.sample_paths[task_name] = sample_path
+
+
 def _merge_results(parts: Sequence[Mapping[str, object]]) -> Mapping[str, object]:
     if not parts:
         raise RuntimeError("lm-eval returned no benchmark result parts")
@@ -390,24 +550,70 @@ def _write_results(
     manifest=None,
     weight_sha256: str | None = None,
 ) -> None:
-    from lm_eval.utils import handle_non_serializable
-
     destination = output_dir or config.output_dir
     execution_manifest = manifest or config.manifest
     _prepare_output_dir(destination)
-    raw = json.loads(
-        json.dumps(results, default=handle_non_serializable, ensure_ascii=False)
+    reset_run_artifacts(destination)
+    summary = _result_summary(
+        config=config,
+        model_id=model_id,
+        version=version,
+        results=results,
+        manifest=execution_manifest,
+        weight_sha256=weight_sha256,
     )
-    summary = {
+    write_json(destination / "results.json", results)
+    write_json(destination / "summary.json", summary)
+    write_run_artifacts(destination, results, version)
+
+
+def _write_spooled_output(
+    *,
+    config: LMEvalConfig,
+    model_id: str,
+    version: str,
+    spool: _ResultSpool,
+    staging_dir: Path,
+    manifest,
+    weight_sha256: str | None,
+) -> None:
+    write_spooled_results(
+        staging_dir / "results.json",
+        spool.metadata,
+        spool.sample_paths,
+        samples_logged=spool.samples_logged,
+    )
+    summary = _result_summary(
+        config=config,
+        model_id=model_id,
+        version=version,
+        results=spool.metadata,
+        manifest=manifest,
+        weight_sha256=weight_sha256,
+    )
+    write_json(staging_dir / "summary.json", summary)
+    spool.finish(version)
+
+
+def _result_summary(
+    *,
+    config: LMEvalConfig,
+    model_id: str,
+    version: str,
+    results: Mapping[str, object],
+    manifest,
+    weight_sha256: str | None,
+) -> dict[str, object]:
+    return {
         "schema_version": 1,
         "evaluator": {"name": "lm-eval", "version": version},
         "backend": "vllm_http",
         "model_id": model_id,
         "weight_sha256": weight_sha256,
-        "global_step": execution_manifest.global_step,
-        "wkv_mode": execution_manifest.wkv_mode,
-        "max_model_len": execution_manifest.max_model_len,
-        "effective_max_length": execution_manifest.max_model_len - 2,
+        "global_step": manifest.global_step,
+        "wkv_mode": manifest.wkv_mode,
+        "max_model_len": manifest.max_model_len,
+        "effective_max_length": manifest.max_model_len - 2,
         "tasks": list(config.tasks),
         "prompt": config.prompt.public(),
         "generation_kwargs": dict(config.generation_kwargs),
@@ -415,108 +621,9 @@ def _write_results(
             benchmark.public() for benchmark in config.benchmarks
         ],
         "task_include_paths": [str(path) for path in config.task_include_paths],
-        "metrics": raw.get("results", {}),
-        "versions": raw.get("versions", {}),
+        "metrics": results.get("results", {}),
+        "versions": results.get("versions", {}),
     }
-    _atomic_json(destination / "results.json", raw)
-    _atomic_json(destination / "summary.json", summary)
-    _write_sample_artifacts(destination, raw, version)
-
-
-def _write_sample_artifacts(
-    output_dir: Path,
-    results: Mapping[str, object],
-    version: str,
-) -> None:
-    raw_samples = results.get("samples")
-    artifacts: list[dict[str, object]] = []
-    benchmark_artifacts: list[dict[str, object]] = []
-    analysis_paths: dict[str, str] = {}
-    if isinstance(raw_samples, Mapping):
-        samples_dir = output_dir / "samples"
-        _prepare_output_dir(samples_dir)
-        for index, (task_name, rows) in enumerate(sorted(raw_samples.items())):
-            if not isinstance(task_name, str) or not isinstance(rows, list):
-                raise RuntimeError("lm-eval samples must map task names to arrays")
-            path = samples_dir / f"{index:04d}.json"
-            _atomic_json(path, rows)
-            artifacts.append(
-                {
-                    "task_name": task_name,
-                    "path": path.relative_to(output_dir).as_posix(),
-                    "samples": len(rows),
-                }
-            )
-        analysis, bad_cases = analyze_samples(raw_samples)
-        _atomic_json(output_dir / "error_analysis.json", analysis)
-        _atomic_json(output_dir / "bad_cases.json", bad_cases)
-        _atomic_text(
-            output_dir / "error_analysis.md",
-            render_markdown(analysis, bad_cases),
-        )
-        analysis_paths = {
-            "error_analysis_path": "error_analysis.json",
-            "bad_cases_path": "bad_cases.json",
-            "error_analysis_markdown_path": "error_analysis.md",
-        }
-        summaries = {
-            item["task_name"]: item
-            for item in analysis["tasks"]
-            if isinstance(item, Mapping) and isinstance(item.get("task_name"), str)
-        }
-        benchmarks_dir = output_dir / "benchmarks"
-        _prepare_output_dir(benchmarks_dir)
-        for task_name, rows in sorted(raw_samples.items()):
-            if not isinstance(task_name, str):
-                raise RuntimeError("lm-eval sample task names must be strings")
-            records = build_task_records(task_name, rows)
-            errors = [
-                record
-                for record in records
-                if record["status"] in {"incorrect", "quality_outlier"}
-            ]
-            task_dir = benchmarks_dir / _benchmark_dir_name(task_name)
-            _prepare_output_dir(task_dir)
-            summary = {"schema_version": 1, **summaries[task_name]}
-            _atomic_json(task_dir / "summary.json", summary)
-            _atomic_jsonl(task_dir / "records.jsonl", records)
-            _atomic_jsonl(task_dir / "errors.jsonl", errors)
-            _atomic_text(
-                task_dir / "report.md",
-                render_task_markdown(summary, records),
-            )
-            benchmark_artifacts.append(
-                {
-                    "task_name": task_name,
-                    "directory": task_dir.relative_to(output_dir).as_posix(),
-                    "summary_path": (task_dir / "summary.json")
-                    .relative_to(output_dir)
-                    .as_posix(),
-                    "records_path": (task_dir / "records.jsonl")
-                    .relative_to(output_dir)
-                    .as_posix(),
-                    "errors_path": (task_dir / "errors.jsonl")
-                    .relative_to(output_dir)
-                    .as_posix(),
-                    "report_path": (task_dir / "report.md")
-                    .relative_to(output_dir)
-                    .as_posix(),
-                    "samples": len(records),
-                    "errors": len(errors),
-                }
-            )
-    _atomic_json(
-        output_dir / "artifacts.json",
-        {
-            "schema_version": 1,
-            "evaluator": {"name": "lm-eval", "version": version},
-            "results_path": "results.json",
-            "summary_path": "summary.json",
-            "sample_artifacts": artifacts,
-            "benchmark_artifacts": benchmark_artifacts,
-            **analysis_paths,
-        },
-    )
 
 
 def _prepare_output_dir(path: Path) -> None:
@@ -529,37 +636,3 @@ def _prepare_output_dir(path: Path) -> None:
     ):
         raise ConfigError("output_dir must be an owned regular directory")
     path.chmod(0o700)
-
-
-def _atomic_json(path: Path, value: object) -> None:
-    _atomic_text(
-        path,
-        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-    )
-
-
-def _atomic_text(path: Path, value: str) -> None:
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    temporary.write_text(value, encoding="utf-8")
-    temporary.chmod(0o600)
-    temporary.replace(path)
-
-
-def _atomic_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
-    value = "".join(
-        json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows
-    )
-    _atomic_text(path, value)
-
-
-def _benchmark_dir_name(task_name: str) -> str:
-    safe = "".join(
-        character if character.isalnum() or character in "._-" else "_"
-        for character in task_name
-    ).strip(".")
-    if not safe:
-        safe = "task"
-    if safe != task_name:
-        suffix = hashlib.sha256(task_name.encode("utf-8")).hexdigest()[:8]
-        safe = f"{safe}--{suffix}"
-    return safe

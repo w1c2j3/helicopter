@@ -1,0 +1,17 @@
+# Minimal open-source smoke test: five ARC Easy examples with full sample logs.
+schema_version = 1
+backend = "vllm_http"
+
+tasks = ["arc_easy"]
+output_dir = ".tmp/eval/lm-eval-quickstart"
+batch_size = 8
+eot_token_id = 0
+max_gen_toks = 64
+limit = 5
+log_samples = true
+
+[prompt]
+profile = "none"
+
+[generation_kwargs]
+do_sample = false

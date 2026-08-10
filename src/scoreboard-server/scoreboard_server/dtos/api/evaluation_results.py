@@ -80,7 +80,11 @@ class ExpectedTask(Contract):
 
 
 class CampaignCreate(Contract):
-    schema_version: Literal["lighteval-campaign-v3", "lm-eval-campaign-v1"]
+    schema_version: Literal[
+        "lighteval-campaign-v3",
+        "lm-eval-campaign-v1",
+        "lm-eval-existing-campaign-v1",
+    ]
     run_key: str = Field(pattern=r"^[0-9a-f]{64}$")
     config_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     registry_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -97,7 +101,10 @@ class CampaignCreate(Contract):
         if self.schema_version == "lighteval-campaign-v3":
             if self.lighteval_version != "0.13.0" or self.evaluator is not None:
                 raise ValueError("LightEval campaign requires lighteval_version")
-        elif (
+        elif self.schema_version in {
+            "lm-eval-campaign-v1",
+            "lm-eval-existing-campaign-v1",
+        } and (
             self.lighteval_version is not None
             or self.evaluator is None
             or self.evaluator.name != "lm-eval"
@@ -137,6 +144,7 @@ class CampaignCreate(Contract):
         if len(task_sets) != 1:
             raise ValueError("every weight must evaluate the same task set")
         metadata_by_task: dict[str, tuple[object, ...]] = {}
+        common_modes: frozenset[WkvMode] | None = None
         for weight_sha256, tasks in by_weight.items():
             display_names = {
                 row.weight_display_name for rows in tasks.values() for row in rows
@@ -146,8 +154,20 @@ class CampaignCreate(Contract):
                     f"weight display name differs for digest: {weight_sha256}"
                 )
             for task_name, rows in tasks.items():
-                if {row.wkv_mode for row in rows} != {"fp16", "fp32io16"}:
+                modes = frozenset(row.wkv_mode for row in rows)
+                if self.schema_version != "lm-eval-existing-campaign-v1" and modes != {
+                    "fp16",
+                    "fp32io16",
+                }:
                     raise ValueError(f"task {task_name} must include both WKV modes")
+                if not modes:
+                    raise ValueError(f"task {task_name} must include a WKV mode")
+                if common_modes is None:
+                    common_modes = modes
+                elif modes != common_modes:
+                    raise ValueError(
+                        "every task and weight must use the same WKV mode set"
+                    )
                 for row in rows:
                     metadata = (
                         row.task_version,

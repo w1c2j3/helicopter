@@ -91,6 +91,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate configuration and print evaluator readiness",
     )
 
+    publish = subparsers.add_parser(
+        "publish",
+        help="publish completed evaluation artifacts without rerunning a model",
+    )
+    publish.add_argument(
+        "--evaluator",
+        choices=("lm-eval",),
+        default="lm-eval",
+        help="artifact evaluator; defaults to lm-eval",
+    )
+    publish.add_argument(
+        "--output-dir",
+        action="append",
+        required=True,
+        help="completed evaluator output directory; repeat for matrix units",
+    )
+    publish.add_argument(
+        "--weight-sha256",
+        help="explicit weight SHA-256 when existing summary metadata lacks it",
+    )
+    publish.add_argument("--weight-display-name")
+    publish.add_argument("--vllm-version", default="not-recorded-in-artifact")
+    publish.add_argument("--torch-version", default="not-recorded-in-artifact")
+    publish.add_argument(
+        "--env-file",
+        default=DEFAULT_ENV_FILE,
+        help="private dotenv file; defaults to .env.local",
+    )
+    publish.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="validate artifacts and Scoreboard readiness without publishing",
+    )
+
     return parser
 
 
@@ -98,20 +132,22 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     root = find_root()
-    if args.command == "eval":
+    if args.command in {"eval", "publish"}:
         env_path = find_env_path(root, args.env_file, use_fallbacks=False)
         if env_path is not None:
             try:
                 env_status = env_path.lstat()
             except OSError as error:
-                parser.error(f"cannot inspect eval private environment file: {error}")
+                parser.error(
+                    f"cannot inspect evaluation private environment file: {error}"
+                )
             if (
                 not stat.S_ISREG(env_status.st_mode)
                 or stat.S_IMODE(env_status.st_mode) != 0o600
                 or env_status.st_uid != os.geteuid()
             ):
                 parser.error(
-                    "eval private environment file must be owned by the current "
+                    "evaluation private environment file must be owned by the current "
                     "user, have mode 0600, and be a regular non-symlink file: "
                     f"{env_path}"
                 )
@@ -123,14 +159,15 @@ def main(argv: list[str] | None = None) -> int:
                 require_private=True,
             )
         except (OSError, UnicodeError) as error:
-            parser.error(f"cannot securely read eval private environment file: {error}")
-        if not eval_env.get("HELICOPTER_VLLM_POOL_MANIFEST"):
+            parser.error(
+                f"cannot securely read evaluation private environment file: {error}"
+            )
+        if args.command == "eval" and not eval_env.get(
+            "HELICOPTER_VLLM_POOL_MANIFEST"
+        ):
             local_manifest = root / LOCAL_POOL_MANIFEST
             if local_manifest.is_file() and not local_manifest.is_symlink():
                 eval_env["HELICOPTER_VLLM_POOL_MANIFEST"] = str(local_manifest)
-        config_path = Path(args.config).expanduser()
-        if not config_path.is_absolute():
-            config_path = Path.cwd() / config_path
         is_lm_eval = args.evaluator == "lm-eval"
         python_variable = (
             "HELICOPTER_LM_EVAL_PYTHON"
@@ -157,13 +194,35 @@ def main(argv: list[str] | None = None) -> int:
                 f"{evaluator_name} Python executable not found: {eval_python}; "
                 f"prepare the {component} component"
             )
-        command = [
-            str(eval_python),
-            "-m",
-            "helicopter_lm_eval" if is_lm_eval else "helicopter_lighteval",
-            "--config",
-            str(config_path),
-        ]
+        if args.command == "eval":
+            config_path = Path(args.config).expanduser()
+            if not config_path.is_absolute():
+                config_path = Path.cwd() / config_path
+            command = [
+                str(eval_python),
+                "-m",
+                "helicopter_lm_eval" if is_lm_eval else "helicopter_lighteval",
+                "--config",
+                str(config_path),
+            ]
+        else:
+            command = [
+                str(eval_python),
+                "-m",
+                "helicopter_lm_eval",
+                "--publish-existing",
+            ]
+            for output_dir in args.output_dir:
+                command.extend(["--output-dir", str(Path(output_dir).expanduser())])
+            for option in (
+                "weight_sha256",
+                "weight_display_name",
+                "vllm_version",
+                "torch_version",
+            ):
+                value = getattr(args, option)
+                if value:
+                    command.extend(["--" + option.replace("_", "-"), str(value)])
         if args.dry_run:
             command.append("--dry-run")
         return run_command(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import hashlib
 import importlib.metadata
 import json
@@ -176,14 +177,30 @@ def campaign_payload(config, metadata, expected):
     }
 
 
-def publish_unit(*, output_dir: Path, campaign_id: str, expected, unit, config, client):
-    results = _read_json(output_dir / "results.json")
+def publish_unit(
+    *,
+    output_dir: Path,
+    campaign_id: str,
+    expected,
+    unit,
+    config,
+    client,
+    result_metadata: Mapping[str, object] | None = None,
+    sample_paths: Mapping[str, Path] | None = None,
+):
+    results = (
+        result_metadata
+        if result_metadata is not None
+        else _read_json(output_dir / "results.json")
+    )
     artifact = _read_json(output_dir / "artifacts.json")
     aggregates_by_task = results.get("results")
     samples_by_task = results.get("samples")
     configs = results.get("configs")
     sample_counts = results.get("n-samples")
-    if not isinstance(aggregates_by_task, dict) or not isinstance(samples_by_task, dict):
+    if not isinstance(aggregates_by_task, Mapping):
+        raise PublicationError("lm-eval publication requires results and samples")
+    if sample_paths is None and not isinstance(samples_by_task, Mapping):
         raise PublicationError("lm-eval publication requires results and samples")
     for task in expected:
         task_name = str(task["task_name"])
@@ -214,7 +231,11 @@ def publish_unit(*, output_dir: Path, campaign_id: str, expected, unit, config, 
             else config.max_gen_toks
         )
         aggregates = _aggregates(aggregates_by_task.get(task_name))
-        rows = samples_by_task.get(task_name)
+        rows = (
+            _read_sample_rows(sample_paths.get(task_name), task_name)
+            if sample_paths is not None
+            else samples_by_task.get(task_name)
+        )
         if not aggregates or not isinstance(rows, list) or not rows:
             raise PublicationError(f"lm-eval output is incomplete for {task_name}")
         primary = next((name for name in aggregates if "stderr" not in name), None)
@@ -234,16 +255,7 @@ def publish_unit(*, output_dir: Path, campaign_id: str, expected, unit, config, 
             effective_num_docs=effective_docs,
             skipped_multiselect_docs=original_docs - effective_docs,
         )
-        sample_path = next(
-            (
-                item["path"]
-                for item in artifact.get("sample_artifacts", [])
-                if item.get("task_name") == task_name
-            ),
-            None,
-        )
-        if not isinstance(sample_path, str):
-            raise PublicationError(f"lm-eval sample artifact is missing for {task_name}")
+        details_path = _details_path(artifact, task_name)
         payload = {
             "schema_version": "lm-eval-task-v1",
             "campaign_id": campaign_id,
@@ -251,7 +263,7 @@ def publish_unit(*, output_dir: Path, campaign_id: str, expected, unit, config, 
             "artifact": {
                 "evaluator": {"name": "lm-eval", "version": LM_EVAL_VERSION},
                 "results_path": "results.json",
-                "details_paths": [sample_path],
+                "details_paths": [details_path],
             },
             "task_config": task_config,
             "model": {
@@ -289,7 +301,42 @@ def publish_unit(*, output_dir: Path, campaign_id: str, expected, unit, config, 
             "details": details,
         }
         client.publish_task(campaign_id, str(task["identity"]), payload)
+        del payload, details, rows
+        gc.collect()
     return len(expected)
+
+
+def _read_sample_rows(path: Path | None, task_name: str) -> list[object]:
+    if path is None:
+        raise PublicationError(f"lm-eval output is incomplete for {task_name}")
+    try:
+        with path.open("r", encoding="utf-8") as stream:
+            rows = json.load(stream)
+    except (OSError, json.JSONDecodeError) as error:
+        raise PublicationError(
+            f"invalid lm-eval samples for {task_name}"
+        ) from error
+    if not isinstance(rows, list):
+        raise PublicationError(f"lm-eval output is incomplete for {task_name}")
+    return rows
+
+
+def _details_path(artifact: Mapping[str, object], task_name: str) -> str:
+    collections = (
+        ("benchmark_artifacts", "records_path"),
+        ("sample_artifacts", "path"),
+    )
+    for collection_name, path_field in collections:
+        collection = artifact.get(collection_name)
+        if not isinstance(collection, list):
+            continue
+        for item in collection:
+            if not isinstance(item, Mapping) or item.get("task_name") != task_name:
+                continue
+            path = item.get(path_field)
+            if isinstance(path, str):
+                return path
+    raise PublicationError(f"lm-eval details artifact is missing for {task_name}")
 
 
 def _detail(task_name: str, index: int, raw: object):

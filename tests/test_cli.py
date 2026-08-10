@@ -139,6 +139,64 @@ class EvaluationCliTests(unittest.TestCase):
         self.assertEqual(command[1:3], ["-m", "helicopter_lm_eval"])
         self.assertEqual(command[-1], "--dry-run")
 
+    def test_publish_accepts_multiple_existing_output_directories(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "publish",
+                "--output-dir",
+                ".tmp/eval/a",
+                "--output-dir",
+                ".tmp/eval/b",
+                "--weight-sha256",
+                "a" * 64,
+                "--dry-run",
+            ]
+        )
+
+        self.assertEqual(args.command, "publish")
+        self.assertEqual(args.evaluator, "lm-eval")
+        self.assertEqual(args.output_dir, [".tmp/eval/a", ".tmp/eval/b"])
+        self.assertEqual(args.weight_sha256, "a" * 64)
+        self.assertTrue(args.dry_run)
+
+    def test_publish_dispatches_to_existing_artifact_publisher(self) -> None:
+        root = Path("/workspace/helicopter")
+        with (
+            mock.patch.object(cli_main, "find_root", return_value=root),
+            mock.patch.object(cli_main, "find_env_path", return_value=None),
+            mock.patch.object(
+                cli_main,
+                "load_env",
+                return_value=(
+                    {
+                        "HELICOPTER_LM_EVAL_PYTHON": ".venv-lm-eval/bin/python"
+                    },
+                    None,
+                ),
+            ),
+            mock.patch.object(cli_main.os, "access", return_value=True),
+            mock.patch.object(cli_main, "run_command", return_value=0) as run,
+        ):
+            result = cli_main.main(
+                [
+                    "publish",
+                    "--output-dir",
+                    ".tmp/eval/a",
+                    "--weight-sha256",
+                    "a" * 64,
+                    "--dry-run",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], str(root / ".venv-lm-eval/bin/python"))
+        self.assertEqual(command[1:3], ["-m", "helicopter_lm_eval"])
+        self.assertIn("--publish-existing", command)
+        self.assertIn("--output-dir", command)
+        self.assertIn("--weight-sha256", command)
+        self.assertEqual(command[-1], "--dry-run")
+
     def test_eval_auto_discovers_local_vllm_pool_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -5,7 +5,7 @@ max_gen_toks = 1024
 
 [prompt]
 profile = "assistant"
-generation_prompt = "fake_think"
+generation_prompt = "none"
 fewshot_as_multiturn = false
 
 [generation_kwargs]

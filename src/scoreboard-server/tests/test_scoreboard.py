@@ -220,6 +220,47 @@ def _publication(campaign_id: str, task: dict) -> dict:
     }
 
 
+def _existing_lm_eval_campaign() -> dict:
+    task = _expected(task_name="wikitext", mode="fp16")
+    return {
+        "schema_version": "lm-eval-existing-campaign-v1",
+        "run_key": "9" * 64,
+        "config_digest": "8" * 64,
+        "registry_digest": "7" * 64,
+        "eval_contract_digest": "6" * 64,
+        "evaluator": {"name": "lm-eval", "version": "0.4.12"},
+        "configured_selectors": ["wikitext"],
+        "resolved_selectors": ["wikitext"],
+        "skipped_selectors": [],
+        "expected_tasks": [task],
+    }
+
+
+def _existing_lm_eval_publication(campaign_id: str, task: dict) -> dict:
+    payload = _publication(campaign_id, task)
+    payload["schema_version"] = "lm-eval-task-v1"
+    payload["artifact"] = {
+        "evaluator": {"name": "lm-eval", "version": "0.4.12"},
+        "results_path": "results.json",
+        "details_paths": ["benchmarks/wikitext/records.jsonl"],
+    }
+    payload["model"]["dependency_versions"] = {
+        "lm-eval": "0.4.12",
+        "vllm": "not-recorded-in-artifact",
+        "torch": "not-recorded-in-artifact",
+    }
+    payload["model"]["evaluator"] = "lm-eval"
+    payload["sampling_config"] = {
+        "existing_artifact": True,
+        "source_artifacts": {
+            "results_sha256": "a" * 64,
+            "summary_sha256": "b" * 64,
+            "artifacts_sha256": "c" * 64,
+        },
+    }
+    return payload
+
+
 def _body(payload: dict) -> bytes:
     return gzip.compress(
         json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
@@ -543,6 +584,84 @@ async def test_unauthorized_publication_is_rejected_before_body_decode(
     assert decoded is False
 
 
+async def test_existing_lm_eval_campaign_publishes_and_finalizes(
+    database_settings: DatabaseSettings,
+) -> None:
+    app = create_app(
+        database_settings,
+        publication_tokens={TOKEN: "existing-artifact-publisher"},
+    )
+    await app.state.database.start()
+    campaign = _existing_lm_eval_campaign()
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            created = await client.post(
+                "/api/v1/evaluation-campaigns",
+                content=_body(campaign),
+                headers=_campaign_headers(campaign),
+            )
+            assert created.status_code == 201
+            campaign_id = created.json()["campaign_id"]
+            task = campaign["expected_tasks"][0]
+            payload = _existing_lm_eval_publication(campaign_id, task)
+            published = await client.put(
+                (
+                    f"/api/v1/evaluation-campaigns/{campaign_id}/tasks/"
+                    f"{quote(task['identity'], safe='')}"
+                ),
+                content=_body(payload),
+                headers=_task_headers(payload),
+            )
+            assert published.status_code == 201
+
+            finalized = await client.post(
+                f"/api/v1/evaluation-campaigns/{campaign_id}/finalize",
+                headers={
+                    **AUTH,
+                    "Idempotency-Key": f"finalize:{campaign_id}",
+                },
+            )
+            assert finalized.status_code == 200
+            assert finalized.json()["task_count"] == 1
+
+            replayed = await client.put(
+                (
+                    f"/api/v1/evaluation-campaigns/{campaign_id}/tasks/"
+                    f"{quote(task['identity'], safe='')}"
+                ),
+                content=_body(payload),
+                headers=_task_headers(payload),
+            )
+            assert replayed.status_code == 200
+            assert replayed.json()["disposition"] == "unchanged"
+
+            changed = _existing_lm_eval_publication(campaign_id, task)
+            changed["aggregates"]["exact_match"] = 0.25
+            conflict = await client.put(
+                (
+                    f"/api/v1/evaluation-campaigns/{campaign_id}/tasks/"
+                    f"{quote(task['identity'], safe='')}"
+                ),
+                content=_body(changed),
+                headers=_task_headers(changed),
+            )
+            assert conflict.status_code == 409
+
+            evaluations = (await client.get("/api/evaluations")).json()
+            assert evaluations["total"] == 1
+            summary = evaluations["evaluations"][0]
+            assert summary["model"]["evaluator"] == "lm-eval"
+            assert summary["sampling_config"]["existing_artifact"] is True
+            assert (
+                summary["provenance"]["publisher_principal"]
+                == "existing-artifact-publisher"
+            )
+    finally:
+        await app.state.database.stop()
+
+
 async def test_campaign_publication_finalize_and_complete_queries(
     database_settings: DatabaseSettings,
 ) -> None:
@@ -574,6 +693,7 @@ async def test_campaign_publication_finalize_and_complete_queries(
                 "supported_campaign_schemas": [
                     "lighteval-campaign-v3",
                     "lm-eval-campaign-v1",
+                    "lm-eval-existing-campaign-v1",
                 ],
                 "evaluator_versions": {
                     "lighteval": "0.13.0",

@@ -2,6 +2,12 @@
 
 日期：2026-08-05
 
+> 2026-08-06 输入协议曾将生成类 benchmark 改为单换行的
+> `User: <题目>\nAssistant:` chat 输入，并取消 `<think`/`<think></think` 预填。
+> 2026-08-09 根据完整逐样本输出修正：WMT14、DROP 和 XQuAD 的上游停止符分别是首个
+> 换行或句号，chat 模型经常在最终答案前输出 `<think>`，导致生成被提前截断。这三项恢复
+> 已有 A/B 表现更好的原生 causal prompt；2026-08-08 的 chat 全量分数不代表修正后协议。
+
 ## 模型与协议
 
 - 权重：`models/rwkv7/rwkv7-g1i-1.5b-20260805-ctx16384.pth`

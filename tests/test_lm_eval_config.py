@@ -138,6 +138,16 @@ penalty_decay = 0.988
     assert config.task_include_paths == (tasks.resolve(),)
 
 
+def test_chat_prompt_defaults_to_no_assistant_prefill(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    config = LMEvalConfig.read(
+        _config(tmp_path, extra='[prompt]\nprofile = "assistant"'),
+        {"HELICOPTER_VLLM_POOL_MANIFEST": str(manifest)},
+    )
+
+    assert config.prompt.generation_prompt == "none"
+
+
 def test_config_loads_per_benchmark_prompt_and_generation_overrides(
     tmp_path: Path,
 ) -> None:

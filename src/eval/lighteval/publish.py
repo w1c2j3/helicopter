@@ -119,6 +119,7 @@ class ScoreboardClient:
         self,
         evaluator: str = "lighteval",
         version: str = "0.13.0",
+        campaign_schema: str | None = None,
     ) -> dict[str, Any]:
         response = self._request(
             "GET",
@@ -130,11 +131,15 @@ class ScoreboardClient:
             or response.get("lighteval_version") != version
         ):
             raise PublicationError("Scoreboard publication API is incompatible")
+        expected_schema = campaign_schema or f"{evaluator}-campaign-v1"
+        supported_schemas = response.get("supported_campaign_schemas")
+        evaluator_versions = response.get("evaluator_versions")
         if evaluator != "lighteval" and (
             response.get("status") != "ready"
-            or f"{evaluator}-campaign-v1"
-            not in response.get("supported_campaign_schemas", [])
-            or response.get("evaluator_versions", {}).get(evaluator) != version
+            or not isinstance(supported_schemas, list)
+            or expected_schema not in supported_schemas
+            or not isinstance(evaluator_versions, dict)
+            or evaluator_versions.get(evaluator) != version
         ):
             raise PublicationError("Scoreboard publication API is incompatible")
         return response

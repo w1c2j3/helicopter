@@ -1,0 +1,34 @@
+# Local diagnostic profile: 50 examples for each task, approximately 200
+# examples total. It covers rolling PPL, likelihood, multiple choice, and
+# generation without running unsafe code or large benchmark groups.
+schema_version = 1
+backend = "vllm_http"
+
+tasks = [
+  "wikitext",
+  "lambada_openai",
+  "race",
+  "gsm_plus",
+]
+benchmark_configs = [
+  "lm_eval_benchmarks/wikitext.toml",
+  "lm_eval_benchmarks/lambada_openai.toml",
+  "lm_eval_benchmarks/race.toml",
+  "lm_eval_benchmarks/gsm_plus.toml",
+]
+
+output_dir = ".tmp/eval/lm-eval-local-quick"
+batch_size = 16
+eot_token_id = 0
+max_gen_toks = 512
+
+# This is a diagnostic sample, never a publishable benchmark result.
+limit = 50
+log_samples = true
+
+[prompt]
+profile = "none"
+generation_prompt = "none"
+
+[generation_kwargs]
+do_sample = false

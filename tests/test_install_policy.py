@@ -92,6 +92,8 @@ class InstallPolicyTests(unittest.TestCase):
 
         eval_launcher = (ROOT / "scripts/run_lm_eval.sh").read_text(encoding="utf-8")
         self.assertIn('configs/eval/lm_eval.toml', eval_launcher)
+        self.assertIn("helicopter_lm_eval.route", eval_launcher)
+        self.assertIn('"${evaluation_route}" == "native"', eval_launcher)
         self.assertIn('manifest_is_healthy', eval_launcher)
         self.assertIn('trap cleanup EXIT', eval_launcher)
         self.assertIn(

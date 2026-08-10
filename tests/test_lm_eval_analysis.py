@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from helicopter_lm_eval import artifacts
 from helicopter_lm_eval.analysis import (
     analyze_samples,
     build_task_records,
@@ -321,6 +322,8 @@ def test_result_writer_registers_error_analysis_artifacts(tmp_path: Path) -> Non
     )
 
     artifacts = json.loads((tmp_path / "artifacts.json").read_text())
+    assert artifacts["schema_version"] == 2
+    assert "sample_artifacts" not in artifacts
     assert artifacts["error_analysis_path"] == "error_analysis.json"
     assert artifacts["bad_cases_path"] == "bad_cases.json"
     assert artifacts["error_analysis_markdown_path"] == "error_analysis.md"
@@ -340,6 +343,67 @@ def test_result_writer_registers_error_analysis_artifacts(tmp_path: Path) -> Non
     assert errors == records
     assert "模型答案" in (benchmark / "report.md").read_text()
     assert artifacts["benchmark_artifacts"][0]["task_name"] == "race"
+    assert not (tmp_path / "samples").exists()
+
+
+def test_json_artifact_writers_stream_without_json_dumps(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def fail_dumps(*_args, **_kwargs):
+        raise AssertionError("streaming writers must not build one JSON string")
+
+    monkeypatch.setattr(artifacts.json, "dumps", fail_dumps)
+
+    artifacts.write_json(tmp_path / "value.json", {"rows": [1, 2]})
+    artifacts.write_jsonl(
+        tmp_path / "rows.jsonl",
+        [{"row": 1}, {"row": 2}],
+    )
+
+    assert json.loads((tmp_path / "value.json").read_text()) == {
+        "rows": [1, 2]
+    }
+    assert [
+        json.loads(line)
+        for line in (tmp_path / "rows.jsonl").read_text().splitlines()
+    ] == [{"row": 1}, {"row": 2}]
+
+
+def test_incremental_artifacts_match_combined_analysis(tmp_path: Path) -> None:
+    samples = {
+        "cmmlu_alpha": [
+            {
+                "doc_id": 0,
+                "arguments": [["prompt", " A"], ["prompt", " B"]],
+                "filtered_resps": [[-2.0, False], [-1.0, False]],
+                "target": 0,
+                "acc": 0.0,
+            }
+        ],
+        "cmmlu_beta": [
+            {
+                "doc_id": 0,
+                "arguments": [["prompt", " A"], ["prompt", " B"]],
+                "filtered_resps": [[-1.0, False], [-2.0, False]],
+                "target": 0,
+                "acc": 1.0,
+            }
+        ],
+    }
+    expected_analysis, expected_bad_cases = analyze_samples(samples)
+    accumulator = artifacts.IncrementalRunArtifacts(tmp_path)
+
+    for task_name, rows in reversed(list(samples.items())):
+        accumulator.add_task(task_name, rows)
+    accumulator.finish("0.4.12")
+
+    assert json.loads((tmp_path / "error_analysis.json").read_text()) == (
+        expected_analysis
+    )
+    assert json.loads((tmp_path / "bad_cases.json").read_text()) == (
+        expected_bad_cases
+    )
 
 
 def test_posthoc_analysis_preserves_original_artifact_manifest(

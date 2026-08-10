@@ -1,1 +1,1 @@
-"""lm-eval-harness adapter for RWKV-vLLM HTTP services."""
+"""Route native lm-eval models or RWKV-vLLM HTTP services."""

@@ -17,6 +17,21 @@ if [[ ! -x "${eval_cli}" ]]; then
   exit 2
 fi
 
+route_python="${HELICOPTER_LM_EVAL_PYTHON:-${project_root}/.venv-lm-eval/bin/python}"
+if [[ "${route_python}" != /* ]]; then
+  route_python="${project_root}/${route_python}"
+fi
+if [[ ! -x "${route_python}" ]]; then
+  printf 'lm-eval Python executable not found: %s\n' "${route_python}" >&2
+  exit 2
+fi
+evaluation_route="$(
+  "${route_python}" -m helicopter_lm_eval.route --config "${config_path}"
+)"
+if [[ "${evaluation_route}" == "native" ]]; then
+  exec "${eval_cli}" eval --evaluator lm-eval --config "${config_path}" "$@"
+fi
+
 # An explicit manifest belongs to an external service lifecycle. In that case the
 # evaluator performs the normal pool preflight and this wrapper never starts vLLM.
 if [[ -n "${HELICOPTER_VLLM_POOL_MANIFEST:-}" ]]; then

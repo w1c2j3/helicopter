@@ -5,6 +5,7 @@ from typing import Mapping, Sequence
 
 from lm_eval import utils
 from lm_eval.api.model import TemplateLM
+from tqdm import tqdm
 
 from helicopter_lighteval.http_pool import PoolError, PromptLogprobs, VLLMHttpPool
 
@@ -118,6 +119,53 @@ class RWKVVLLMHttpLM(TemplateLM):
             else context_tokens
         )
         return stable_context, boundary_whole_tokens[common_length:]
+
+    def loglikelihood(
+        self,
+        requests,
+        disable_tqdm: bool = False,
+    ) -> list[tuple[float, bool]]:
+        results: list[tuple[float, bool]] = []
+        offsets = range(0, len(requests), self.batch_size)
+        for offset in tqdm(
+            offsets,
+            desc="Running loglikelihood batches",
+            disable=disable_tqdm,
+        ):
+            encoded_requests = []
+            for request in requests[offset : offset + self.batch_size]:
+                context, continuation = request.args
+                if context:
+                    context_tokens, continuation_tokens = self._encode_pair(
+                        context,
+                        continuation,
+                    )
+                else:
+                    continuation_tokens = self.tok_encode(
+                        continuation,
+                        add_special_tokens=False,
+                    )
+                    if not continuation_tokens:
+                        context_tokens = [self.prefix_token_id]
+                    elif self.prefix_token_id == continuation_tokens[0]:
+                        context_tokens = continuation_tokens[:1]
+                        continuation_tokens = continuation_tokens[1:]
+                    else:
+                        context_tokens = [self.prefix_token_id]
+                encoded_requests.append(
+                    (
+                        (context, continuation),
+                        context_tokens,
+                        continuation_tokens,
+                    )
+                )
+            results.extend(
+                self._loglikelihood_tokens(
+                    encoded_requests,
+                    disable_tqdm=True,
+                )
+            )
+        return results
 
     def generate_until(self, requests, disable_tqdm: bool = False) -> list[str]:
         del disable_tqdm

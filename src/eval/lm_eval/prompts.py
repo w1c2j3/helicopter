@@ -7,7 +7,7 @@ from typing import Mapping, Sequence
 
 
 GENERATION_PROMPTS = ("none", "open_think", "fake_think")
-PROMPT_RENDERER_VERSION = 1
+PROMPT_RENDERER_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -79,8 +79,7 @@ def render_prompt(
         rendered.append(
             _render_generation(profile, _generation_text(generation_prompt))
         )
-    separator = "\n\n" if profile.style == "assistant" else "\n"
-    return separator.join(rendered)
+    return "\n".join(rendered)
 
 
 def _render_message(profile: PromptProfile, role: str, content: str) -> str:

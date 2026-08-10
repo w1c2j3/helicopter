@@ -84,10 +84,10 @@ SHA-256 作为权重身份，使用文件 basename 作为展示名。
 以下值只写入 workspace 私有的 `.env.local` 或 `.env.remote`，不能写进 TOML：
 
 ```dotenv
-WEIGHT_PATH=/home/caizus/Weights
+WEIGHT_PATH=/workspace/weights
 HELICOPTER_SCOREBOARD_URL=https://scoreboard.example.test
 HELICOPTER_SCOREBOARD_TOKEN=replace-with-private-token
-HELICOPTER_EVAL_STAGING_ROOT=/home/caizus/Projects/MachineLearning/helicopter/.tmp/eval
+HELICOPTER_EVAL_STAGING_ROOT=/workspace/helicopter/.tmp/eval
 ```
 
 env 文件必须由当前用户所有、权限为 `0600`，且不能是 symlink。默认读取

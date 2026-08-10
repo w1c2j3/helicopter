@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import gc
 import json
 import stat
 import tomllib
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -120,6 +122,10 @@ def test_rwkv_suite_uses_external_per_benchmark_prompt_configs() -> None:
     with (ROOT / "configs/eval/lm_eval_benchmarks/drop.toml").open("rb") as stream:
         drop = tomllib.load(stream)
     with (
+        ROOT / "configs/eval/lm_eval_benchmarks/wmt14_en_fr.toml"
+    ).open("rb") as stream:
+        wmt14 = tomllib.load(stream)
+    with (
         ROOT / "configs/eval/lm_eval_benchmarks/xquad.toml"
     ).open("rb") as stream:
         xquad = tomllib.load(stream)
@@ -135,13 +141,70 @@ def test_rwkv_suite_uses_external_per_benchmark_prompt_configs() -> None:
     assert wikitext["prompt"]["profile"] == "none"
     assert gsm_plus["selector"] == "gsm_plus"
     assert gsm_plus["prompt"]["profile"] == "assistant"
-    assert gsm_plus["prompt"]["generation_prompt"] == "fake_think"
+    assert gsm_plus["prompt"]["generation_prompt"] == "none"
     assert drop["prompt"]["profile"] == "none"
+    assert wmt14["prompt"]["profile"] == "none"
     assert xquad["prompt"]["profile"] == "none"
     assert xquad["dataset_path_override"] == "google/xquad"
-    assert mgsm["prompt"]["profile"] == "none"
+    assert mgsm["prompt"]["profile"] == "assistant"
     assert ppl_config["tasks"] == ["wikitext"]
     assert ppl_config["prompt"]["profile"] == "none"
+
+
+def test_local_quick_lm_eval_profile_returns_diagnostic_scores() -> None:
+    with (ROOT / "configs/eval/lm_eval_local_quick.toml").open("rb") as stream:
+        config = tomllib.load(stream)
+
+    assert config["tasks"] == ["wikitext", "lambada_openai", "race", "gsm_plus"]
+    assert config["limit"] == 50
+    assert config["log_samples"] is True
+    assert config["output_dir"] == ".tmp/eval/lm-eval-local-quick"
+    assert len(config["tasks"]) == len(config["benchmark_configs"])
+
+
+def test_generation_benchmark_profiles_preserve_native_short_answer_protocols() -> None:
+    assistant_selectors = {
+        "babilong",
+        "cruxeval_input",
+        "cruxeval_output",
+        "flores",
+        "gpqa_extended_cot_zeroshot",
+        "gsm_plus",
+        "infinitebench",
+        "mgsm_cot_native",
+        "realtoxicityprompts",
+        "ruler",
+    }
+    native_causal_selectors = {"drop", "wmt14_en_fr", "xquad"}
+
+    for selector in assistant_selectors:
+        path = ROOT / f"configs/eval/lm_eval_benchmarks/{selector}.toml"
+        with path.open("rb") as stream:
+            config = tomllib.load(stream)
+        assert config["prompt"]["profile"] == "assistant"
+        assert config["prompt"]["generation_prompt"] == "none"
+
+    for selector in native_causal_selectors:
+        path = ROOT / f"configs/eval/lm_eval_benchmarks/{selector}.toml"
+        with path.open("rb") as stream:
+            config = tomllib.load(stream)
+        assert config["prompt"] == {
+            "profile": "none",
+            "generation_prompt": "none",
+        }
+
+
+def test_native_short_answer_tasks_keep_their_upstream_stop_sequences() -> None:
+    manager, resolved = evaluate._resolve_tasks(("drop", "wmt14-en-fr", "xquad"))
+
+    assert resolved == ("drop", "wmt14-en-fr", "xquad")
+    assert manager.task_index["drop"].cfg["generation_kwargs"]["until"] == ["."]
+    assert manager.task_index["wmt14-en-fr"].cfg["generation_kwargs"]["until"] == [
+        "\n"
+    ]
+    assert manager.task_index["xquad_en"].cfg["generation_kwargs"]["until"] == [
+        "\n"
+    ]
 
 
 def test_qwen35_alignment_suite_uses_stable_unlimited_selectors() -> None:
@@ -657,6 +720,59 @@ def test_benchmark_dataset_overrides_build_complete_task_objects() -> None:
     )
 
 
+def test_group_dataset_override_retains_only_each_tasks_test_split() -> None:
+    alpha_data = object()
+    beta_data = object()
+    group_entry = SimpleNamespace(
+        name="suite",
+        cfg={"group": "suite", "task": ["suite_alpha", "suite_beta"]},
+    )
+    alpha_entry = SimpleNamespace(
+        name="suite_alpha",
+        cfg={"test_split": "alpha"},
+    )
+    beta_entry = SimpleNamespace(
+        name="suite_beta",
+        cfg={"test_split": "beta"},
+    )
+
+    class Factory:
+        def build(self, entry, *, overrides, registry):
+            assert set(overrides["dataset_kwargs"]["data_files"]) == {
+                "alpha",
+                "beta",
+            }
+            return SimpleNamespace(
+                task_name=entry.name,
+                dataset={"alpha": alpha_data, "beta": beta_data},
+            )
+
+    manager = SimpleNamespace(
+        task_index={
+            "suite": group_entry,
+            "suite_alpha": alpha_entry,
+            "suite_beta": beta_entry,
+        },
+        _factory=Factory(),
+    )
+
+    batches = list(
+        evaluate._evaluation_task_batches(
+            manager,
+            ("suite",),
+            None,
+            {"data_files": {"alpha": "alpha.jsonl", "beta": "beta.jsonl"}},
+        )
+    )
+
+    assert [[task.task_name for task in batch] for batch in batches] == [
+        ["suite_alpha"],
+        ["suite_beta"],
+    ]
+    assert batches[0][0].dataset == {"alpha": alpha_data}
+    assert batches[1][0].dataset == {"beta": beta_data}
+
+
 def test_result_writer_preserves_raw_results_and_normalizes_metrics(
     tmp_path: Path,
 ) -> None:
@@ -698,6 +814,135 @@ def test_result_writer_preserves_raw_results_and_normalizes_metrics(
     assert stat.S_IMODE(output_dir.stat().st_mode) == 0o700
     assert stat.S_IMODE((output_dir / "results.json").stat().st_mode) == 0o600
     assert stat.S_IMODE((output_dir / "summary.json").stat().st_mode) == 0o600
+
+
+def test_result_spool_releases_parts_and_preserves_complete_results(
+    tmp_path: Path,
+) -> None:
+    class ResultPart(dict):
+        pass
+
+    class SampleRows(list):
+        pass
+
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+    spool = evaluate._ResultSpool(staging_dir)
+    first_rows = SampleRows(
+        [
+            {
+                "doc_id": 0,
+                "arguments": [["question", " A"], ["question", " B"]],
+                "filtered_resps": [[-2.0, False], [-1.0, False]],
+                "target": 0,
+                "acc": 0.0,
+            }
+        ]
+    )
+    first_rows_reference = weakref.ref(first_rows)
+    first = ResultPart(
+        {
+            "config": {"model": "rwkv-current"},
+            "results": {"race": {"acc,none": 0.0}},
+            "configs": {"race": {"output_type": "multiple_choice"}},
+            "n-samples": {"race": {"original": 1, "effective": 1}},
+            "samples": {"race": first_rows},
+            "versions": {"race": 1},
+        }
+    )
+    first_reference = weakref.ref(first)
+
+    spool.add(first)
+    del first
+    del first_rows
+    gc.collect()
+
+    assert first_reference() is None
+    assert first_rows_reference() is None
+    assert "samples" not in spool.metadata
+    assert json.loads(spool.sample_paths["race"].read_text())[
+        0
+    ]["doc_id"] == 0
+
+    second = ResultPart(
+        {
+            "results": {"gsm8k": {"exact_match,none": 1.0}},
+            "configs": {"gsm8k": {"output_type": "generate_until"}},
+            "n-samples": {"gsm8k": {"original": 1, "effective": 1}},
+            "samples": {
+                "gsm8k": [
+                    {
+                        "doc_id": 0,
+                        "doc": {"question": "1+1?"},
+                        "filtered_resps": ["2"],
+                        "target": "2",
+                        "exact_match": 1.0,
+                    }
+                ]
+            },
+            "versions": {"gsm8k": 3},
+        }
+    )
+    second_reference = weakref.ref(second)
+    spool.add(second)
+    del second
+    gc.collect()
+
+    assert second_reference() is None
+    from helicopter_lm_eval.artifacts import write_spooled_results
+
+    result_path = staging_dir / "results.json"
+    write_spooled_results(
+        result_path,
+        spool.metadata,
+        spool.sample_paths,
+        samples_logged=spool.samples_logged,
+    )
+    spool.finish("0.4.12")
+
+    results = json.loads(result_path.read_text())
+    assert set(results["results"]) == {"race", "gsm8k"}
+    assert results["config"] == {"model": "rwkv-current"}
+    assert results["samples"]["race"][0]["doc_id"] == 0
+    assert results["samples"]["gsm8k"][0]["filtered_resps"] == ["2"]
+    artifacts = json.loads((staging_dir / "artifacts.json").read_text())
+    assert [
+        item["task_name"] for item in artifacts["benchmark_artifacts"]
+    ] == ["gsm8k", "race"]
+
+
+def test_result_writer_removes_stale_managed_artifacts(tmp_path: Path) -> None:
+    output_dir = tmp_path / "results"
+    (output_dir / "samples").mkdir(parents=True)
+    (output_dir / "samples" / "0000.json").write_text("stale")
+    (output_dir / "benchmarks" / "old-task").mkdir(parents=True)
+    (output_dir / "error_analysis.md").write_text("stale")
+    config = LMEvalConfig(
+        tasks=("wikitext",),
+        output_dir=output_dir,
+        batch_size=1,
+        eot_token_id=0,
+        max_gen_toks=32,
+        limit=None,
+        log_samples=False,
+        vllm_pool_manifest=tmp_path / "pool.json",
+        manifest=SimpleNamespace(
+            global_step=1,
+            wkv_mode="fp16",
+            max_model_len=128,
+        ),
+    )
+
+    evaluate._write_results(
+        config=config,
+        model_id="rwkv-test",
+        version="0.4.12",
+        results={"results": {}, "versions": {}},
+    )
+
+    assert not (output_dir / "samples").exists()
+    assert not (output_dir / "benchmarks").exists()
+    assert not (output_dir / "error_analysis.md").exists()
 
 
 def test_published_run_completes_every_matrix_unit_before_finalize(
@@ -756,6 +1001,16 @@ def test_published_run_completes_every_matrix_unit_before_finalize(
         encoding="utf-8",
     )
     events: list[str] = []
+    from helicopter_lm_eval import publish as lm_eval_publish
+
+    read_artifacts: list[str] = []
+    original_read_json = lm_eval_publish._read_json
+
+    def read_json(path):
+        read_artifacts.append(path.name)
+        return original_read_json(path)
+
+    monkeypatch.setattr(lm_eval_publish, "_read_json", read_json)
 
     class Pool:
         total_capacity = 2
@@ -842,3 +1097,4 @@ def test_published_run_completes_every_matrix_unit_before_finalize(
     ]
     assert events.index("finalize") > events.index("publish:fp16")
     assert events.index("finalize") > events.index("publish:fp32io16")
+    assert read_artifacts == ["artifacts.json", "artifacts.json"]

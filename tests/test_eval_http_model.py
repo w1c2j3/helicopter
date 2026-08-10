@@ -90,7 +90,7 @@ def test_model_splits_samples_into_requests_and_preserves_document_order() -> No
 def test_model_initialization_uses_remote_identity_without_local_vllm() -> None:
     closed: list[bool] = []
     served_model_id = (
-        "/home/caizus/Weights/RWKV/rwkv7/pth/"
+        "/workspace/weights/rwkv7/pth/"
         "rwkv7-g1h-1.5b-20260710-ctx10240.pth"
     )
 

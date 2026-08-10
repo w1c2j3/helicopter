@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import re
-import uuid
 from collections import Counter
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -318,7 +316,7 @@ def render_task_markdown(
         if record.get("status") in {"incorrect", "quality_outlier"}
     ]
     lines = [
-        f"# {task_name} 评测日志",
+        f"# {task_name} 评测报告",
         "",
         "`records.jsonl` 包含全部样本；`errors.jsonl` 包含全部错题和生成质量异常。",
         "",
@@ -864,128 +862,16 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("results artifact does not contain logged samples")
     output_dir = args.output_dir or args.results.parent
     output_dir.mkdir(parents=True, exist_ok=True)
-    analysis, bad_cases = analyze_samples(
-        samples, examples_per_task=args.examples_per_task
-    )
-    _write_json(output_dir / "error_analysis.json", analysis)
-    _write_json(output_dir / "bad_cases.json", bad_cases)
-    _write_text(
-        output_dir / "error_analysis.md", render_markdown(analysis, bad_cases)
-    )
-    benchmark_artifacts = _write_benchmark_logs(output_dir, samples, analysis)
-    _write_json(
-        output_dir / "analysis_artifacts.json",
-        {
-            "schema_version": 1,
-            "source_results_path": args.results.name,
-            "source_results_sha256": _sha256(args.results),
-            "error_analysis_path": "error_analysis.json",
-            "bad_cases_path": "bad_cases.json",
-            "error_analysis_markdown_path": "error_analysis.md",
-            "benchmark_artifacts": benchmark_artifacts,
-        },
+    from .artifacts import write_posthoc_analysis
+
+    write_posthoc_analysis(
+        output_dir=output_dir,
+        results_path=args.results,
+        samples=samples,
+        examples_per_task=args.examples_per_task,
     )
     print(f"lm-eval error analysis written to {output_dir}")
     return 0
-
-
-def _write_json(path: Path, value: object) -> None:
-    _write_text(
-        path,
-        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-    )
-
-
-def _write_jsonl(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
-    _write_text(
-        path,
-        "".join(
-            json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
-            for row in rows
-        ),
-    )
-
-
-def _write_benchmark_logs(
-    output_dir: Path,
-    samples: Mapping[str, object],
-    analysis: Mapping[str, object],
-) -> list[dict[str, object]]:
-    raw_summaries = analysis.get("tasks")
-    if not isinstance(raw_summaries, list):
-        raise ValueError("analysis does not contain task summaries")
-    summaries = {
-        item["task_name"]: item
-        for item in raw_summaries
-        if isinstance(item, Mapping) and isinstance(item.get("task_name"), str)
-    }
-    benchmark_root = output_dir / "benchmarks"
-    benchmark_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    artifacts: list[dict[str, object]] = []
-    for task_name, rows in sorted(samples.items()):
-        if not isinstance(task_name, str):
-            raise ValueError("sample task names must be strings")
-        records = build_task_records(task_name, rows)
-        errors = [
-            record
-            for record in records
-            if record["status"] in {"incorrect", "quality_outlier"}
-        ]
-        task_dir = benchmark_root / _benchmark_dir_name(task_name)
-        task_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        summary = {"schema_version": 1, **summaries[task_name]}
-        _write_json(task_dir / "summary.json", summary)
-        _write_jsonl(task_dir / "records.jsonl", records)
-        _write_jsonl(task_dir / "errors.jsonl", errors)
-        _write_text(
-            task_dir / "report.md", render_task_markdown(summary, records)
-        )
-        artifacts.append(
-            {
-                "task_name": task_name,
-                "directory": task_dir.relative_to(output_dir).as_posix(),
-                "summary_path": (task_dir / "summary.json")
-                .relative_to(output_dir)
-                .as_posix(),
-                "records_path": (task_dir / "records.jsonl")
-                .relative_to(output_dir)
-                .as_posix(),
-                "errors_path": (task_dir / "errors.jsonl")
-                .relative_to(output_dir)
-                .as_posix(),
-                "report_path": (task_dir / "report.md")
-                .relative_to(output_dir)
-                .as_posix(),
-                "samples": len(records),
-                "errors": len(errors),
-            }
-        )
-    return artifacts
-
-
-def _benchmark_dir_name(task_name: str) -> str:
-    safe = "".join(
-        character if character.isalnum() or character in "._-" else "_"
-        for character in task_name
-    ).strip(".")
-    if not safe:
-        safe = "task"
-    if safe != task_name:
-        suffix = hashlib.sha256(task_name.encode("utf-8")).hexdigest()[:8]
-        safe = f"{safe}--{suffix}"
-    return safe
-
-
-def _write_text(path: Path, value: str) -> None:
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    temporary.write_text(value, encoding="utf-8")
-    temporary.chmod(0o600)
-    temporary.replace(path)
-
-
-def _sha256(path: Path) -> str:
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 if __name__ == "__main__":

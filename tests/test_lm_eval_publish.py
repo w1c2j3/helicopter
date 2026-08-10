@@ -84,8 +84,11 @@ def test_publish_unit_preserves_native_metrics_and_samples(tmp_path, monkeypatch
     (tmp_path / "artifacts.json").write_text(
         json.dumps(
             {
-                "sample_artifacts": [
-                    {"task_name": "gsm8k", "path": "samples/0000.json"}
+                "benchmark_artifacts": [
+                    {
+                        "task_name": "gsm8k",
+                        "records_path": "benchmarks/gsm8k/records.jsonl",
+                    }
                 ]
             }
         ),
@@ -147,6 +150,9 @@ def test_publish_unit_preserves_native_metrics_and_samples(tmp_path, monkeypatch
         "name": "lm-eval",
         "version": "0.4.12",
     }
+    assert payload["artifact"]["details_paths"] == [
+        "benchmarks/gsm8k/records.jsonl"
+    ]
     assert payload["model"]["prompt_template"] == "assistant"
     assert payload["sampling_config"]["batch_size"] == 2
     assert payload["sampling_config"]["default_max_gen_toks"] == 512

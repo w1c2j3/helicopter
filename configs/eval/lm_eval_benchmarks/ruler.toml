@@ -5,7 +5,7 @@ max_gen_toks = 256
 
 [prompt]
 profile = "assistant"
-generation_prompt = "fake_think"
+generation_prompt = "none"
 system_instruction = "Use the supplied context and return only the requested answer."
 fewshot_as_multiturn = false
 

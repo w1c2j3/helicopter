@@ -6,6 +6,7 @@ Domain behavior stays with the component that implements it:
 - `helicopter infer` launches `vllm-rwkv`.
 - `helicopter takeoff` delegates a complete MaxRL config to `verl-rwkv`.
 - `helicopter eval` dispatches to the LightEval or lm-eval adapter.
+- `helicopter publish` publishes completed lm-eval artifacts without rerunning.
 - `scripts/install_local.sh` and `scripts/install_remote.sh` prepare the
   selected product environment.
 
@@ -132,29 +133,52 @@ local result mode bypasses Scoreboard entirely. See
 [`docs/evaluation/lighteval.md`](docs/evaluation/lighteval.md) for the campaign
 contract and private environment requirements.
 
-The lm-eval-harness backend uses the already running RWKV-vLLM HTTP pool and
-supports rolling perplexity, choice scoring, and text generation:
+The lm-eval entry routes from its TOML config. For local score validation, use
+the dedicated limited profile. It evaluates 50 examples each from WikiText,
+LAMBADA, RACE, and GSM-Plus, exercising rolling likelihood, choice scoring, and
+generation:
 
 ```bash
+./scripts/run_lm_eval.sh configs/eval/lm_eval_local_quick.toml --dry-run
+./scripts/run_lm_eval.sh configs/eval/lm_eval_local_quick.toml
+```
+
+Configs with
+`backend = "vllm_http"` use the RWKV-vLLM HTTP adapter; configs without
+`backend` are passed to native lm-eval-harness, including its model backend,
+tasks, metrics, and result tracker:
+
+```bash
+# Full 28-selector RWKV suite, not an interactive validation run.
 ./scripts/run_lm_eval.sh
 ```
 
 Pass another TOML path as the first argument, or add `--dry-run` for a
-configuration and service preflight. The wrapper reuses a healthy local server,
-or starts, waits for, and cleans up RWKV-vLLM automatically. Explicit manifests
-remain available for remote and production pools.
+configuration preflight. The wrapper starts or reuses RWKV-vLLM only for the
+explicit RWKV route. Native configs use lm-eval fields such as `model`,
+`model_args`, `tasks`, and `output_path`; their benchmarks and artifacts are not
+processed by the repository's RWKV-specific profiles or publishers.
 
 This path runs in `.venv-lm-eval`; task names, groups, tags, and glob selectors
 are resolved by lm-eval itself. The smaller `configs/eval/lm_eval_ppl.toml`
 continues to provide a WikiText-only run. The
 `configs/eval/lm_eval_qwen35.toml` suite fixes the public Qwen3.5 language-task
-selectors for local protocol-aligned comparisons. All write local
-`results.json` plus `summary.json` and do not publish to Scoreboard. Production
-matrix publication is available through `configs/eval/lm_eval_campaign.toml`,
-with weight SHA verification, both WKV modes, standard sample artifacts, and an
-evaluator-aware Scoreboard campaign. See
-[`docs/evaluation/lm_eval.md`](docs/evaluation/lm_eval.md) for the HTTP and
-result contracts.
+selectors for local protocol-aligned comparisons. These RWKV presets write
+local `results.json`, `summary.json`, and per-task evidence without publishing;
+native configs retain upstream lm-eval output semantics. Production matrix
+publication is available through `configs/eval/lm_eval_campaign.toml`, with
+weight SHA verification, both WKV modes, task-level evidence artifacts, and an
+evaluator-aware Scoreboard campaign. Existing completed RWKV artifacts use the
+same authenticated publication path:
+
+```bash
+helicopter publish --evaluator lm-eval --output-dir .tmp/eval/lm-eval --dry-run
+```
+
+See
+[`docs/evaluation/lm_eval.md`](docs/evaluation/lm_eval.md) for installation,
+RWKV and native quickstarts, configuration, result inspection, troubleshooting,
+and the HTTP and publication contracts.
 
 ## Lightweight checks
 

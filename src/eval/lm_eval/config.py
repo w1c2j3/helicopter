@@ -485,7 +485,7 @@ class LMEvalConfig:
         default_generation = (
             base.generation_prompt
             if base is not None and profile == base.profile
-            else "open_think" if profile != "none" else "none"
+            else "none"
         )
         generation_prompt = raw.get("generation_prompt", default_generation)
         if (

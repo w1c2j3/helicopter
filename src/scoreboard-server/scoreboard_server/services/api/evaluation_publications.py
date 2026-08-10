@@ -77,6 +77,7 @@ class EvaluationPublicationService:
             supported_campaign_schemas=[
                 "lighteval-campaign-v3",
                 "lm-eval-campaign-v1",
+                "lm-eval-existing-campaign-v1",
             ],
             evaluator_versions={"lighteval": "0.13.0", "lm-eval": "0.4.12"},
         )

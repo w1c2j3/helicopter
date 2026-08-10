@@ -54,6 +54,48 @@ def test_public_loglikelihood_supports_multiple_choice_requests() -> None:
     assert model.loglikelihood([request]) == [(-2.0, True)]
 
 
+def test_public_loglikelihood_tokenizes_in_bounded_batches() -> None:
+    class TrackingPool(Pool):
+        manifest = SimpleNamespace(max_model_len=128)
+
+        def __init__(self) -> None:
+            self.events: list[tuple[str, object]] = []
+
+        def tokenize(self, text: str):
+            self.events.append(("tokenize", text))
+            return super().tokenize(text)
+
+        def score_tokens(self, token_ids, *, implicit_prefix_token_id=None):
+            self.events.append(("score", tuple(token_ids)))
+            return super().score_tokens(
+                token_ids,
+                implicit_prefix_token_id=implicit_prefix_token_id,
+            )
+
+    pool = TrackingPool()
+    model = RWKVVLLMHttpLM(pool=pool, eot_token_id=0, batch_size=2)
+    requests = [
+        SimpleNamespace(args=(context, "!"))
+        for context in ("alpha", "bravo", "charlie", "delta", "echo")
+    ]
+
+    assert model.loglikelihood(requests, disable_tqdm=True) == [
+        (-1.0, True),
+    ] * len(requests)
+    first_score = next(
+        index for index, event in enumerate(pool.events) if event[0] == "score"
+    )
+    tokenized_before_first_score = [
+        value for event, value in pool.events[:first_score] if event == "tokenize"
+    ]
+    assert tokenized_before_first_score
+    assert not any(
+        context in value
+        for context in ("charlie", "delta", "echo")
+        for value in tokenized_before_first_score
+    )
+
+
 def test_loglikelihood_scores_rwkv_token_that_merges_across_pair_boundary() -> None:
     class BoundaryMergingPool(Pool):
         manifest = SimpleNamespace(max_model_len=128)
@@ -257,7 +299,7 @@ def test_rwkv_prompt_profile_renders_multiturn_and_adds_required_stop() -> None:
     [
         (
             "assistant",
-            "System: concise\n\nUser: 1+1?\n\nAssistant: <think",
+            "System: concise\nUser: 1+1?\nAssistant: <think",
         ),
         (
             "function_calling",
@@ -283,6 +325,20 @@ def test_rwkv_prompt_profiles_match_native_renderer(
             {"role": "user", "content": "1+1?"},
         ]
     ) == expected
+
+
+def test_rwkv_assistant_chat_prompt_does_not_prefill_a_continuation() -> None:
+    model = RWKVVLLMHttpLM(
+        pool=Pool(),
+        eot_token_id=0,
+        batch_size=1,
+        prompt_profile="assistant",
+        generation_prompt="none",
+    )
+
+    assert model.apply_chat_template(
+        [{"role": "user", "content": "What is 1+1?"}]
+    ) == "User: What is 1+1?\nAssistant:"
 
 
 def test_rwkv_profile_stop_is_applied_to_local_postprocessing() -> None:

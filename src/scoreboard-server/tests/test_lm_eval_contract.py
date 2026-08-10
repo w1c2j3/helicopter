@@ -10,18 +10,18 @@ from scoreboard_server.dtos.api.evaluation_results import (
 )
 
 
-def _task(mode: str = "fp16") -> dict:
+def _task(mode: str = "fp16", task_name: str = "wikitext") -> dict:
     return {
-        "identity": f"{'a' * 64}:{mode}:wikitext",
+        "identity": f"{'a' * 64}:{mode}:{task_name}",
         "weight_sha256": "a" * 64,
         "weight_display_name": "model.pth",
         "wkv_mode": mode,
-        "selector": "wikitext",
-        "task_name": "wikitext",
+        "selector": task_name,
+        "task_name": task_name,
         "task_version": "2.0",
-        "module_family": "wikitext",
-        "module": "tasks/wikitext/wikitext.yaml",
-        "dataset": "EleutherAI/wikitext_document_level",
+        "module_family": task_name,
+        "module": f"tasks/{task_name}/{task_name}.yaml",
+        "dataset": f"fixture/{task_name}",
         "subset": "wikitext-2-raw-v1",
         "evaluation_splits": ["test"],
         "languages": [],
@@ -49,6 +49,49 @@ def test_lm_eval_campaign_requires_complete_wkv_matrix() -> None:
     assert campaign.evaluator_version == "0.4.12"
     with pytest.raises(ValidationError, match="both WKV modes"):
         CampaignCreate.model_validate({**payload, "expected_tasks": [_task()]})
+
+
+def test_existing_lm_eval_campaign_accepts_available_modes_only() -> None:
+    payload = {
+        "schema_version": "lm-eval-existing-campaign-v1",
+        "run_key": "1" * 64,
+        "config_digest": "2" * 64,
+        "registry_digest": "3" * 64,
+        "eval_contract_digest": "4" * 64,
+        "evaluator": {"name": "lm-eval", "version": "0.4.12"},
+        "configured_selectors": ["wikitext"],
+        "resolved_selectors": ["wikitext"],
+        "skipped_selectors": [],
+        "expected_tasks": [_task("fp16")],
+    }
+
+    campaign = CampaignCreate.model_validate(payload)
+
+    assert campaign.schema_version == "lm-eval-existing-campaign-v1"
+    assert [task.wkv_mode for task in campaign.expected_tasks] == ["fp16"]
+
+
+def test_existing_lm_eval_campaign_rejects_inconsistent_mode_sets() -> None:
+    tasks = [
+        _task("fp16", "wikitext"),
+        _task("fp32io16", "wikitext"),
+        _task("fp16", "lambada_openai"),
+    ]
+    payload = {
+        "schema_version": "lm-eval-existing-campaign-v1",
+        "run_key": "1" * 64,
+        "config_digest": "2" * 64,
+        "registry_digest": "3" * 64,
+        "eval_contract_digest": "4" * 64,
+        "evaluator": {"name": "lm-eval", "version": "0.4.12"},
+        "configured_selectors": ["wikitext", "lambada_openai"],
+        "resolved_selectors": ["wikitext", "lambada_openai"],
+        "skipped_selectors": [],
+        "expected_tasks": tasks,
+    }
+
+    with pytest.raises(ValidationError, match="same WKV mode set"):
+        CampaignCreate.model_validate(payload)
 
 
 def test_lm_eval_task_contract_accepts_native_sample_shape() -> None:

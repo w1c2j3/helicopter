@@ -204,8 +204,6 @@ class ScoreboardRepository:
             )
             if campaign is None:
                 raise CampaignContractError("campaign not found")
-            if campaign["status"] != "incomplete":
-                raise CampaignContractError("complete campaign is immutable")
             expected = {task["identity"]: task for task in campaign["expected_tasks"]}
             if task_identity not in expected:
                 raise CampaignContractError(
@@ -246,6 +244,9 @@ class ScoreboardRepository:
                     content_digest=digest,
                     disposition="unchanged",
                 )
+
+            if campaign["status"] != "incomplete":
+                raise CampaignContractError("complete campaign is immutable")
 
             evaluation_id = uuid.uuid4()
             await connection.execute(
