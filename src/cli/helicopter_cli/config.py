@@ -31,6 +31,9 @@ def load_config(
         raise SystemExit(f"config file not found: {path}")
     with path.open("rb") as file:
         config = tomllib.load(file)
+    config["_config_path"] = str(path.resolve())
+    if isinstance(config.get("profile"), dict):
+        config["_evaluation_profile_path"] = str(path.resolve())
     model_catalog = config.get("model_catalog", {})
     if isinstance(model_catalog, dict) and model_catalog.get("path"):
         merge_model_catalog(config, root=root, catalog_path=str(model_catalog["path"]))

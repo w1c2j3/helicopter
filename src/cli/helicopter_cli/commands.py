@@ -853,6 +853,24 @@ def build_lighteval_model_args(
         return raw_model_args, str(api_key) if api_key else None
 
     lighteval = table(config, "lighteval")
+    profile = table(config, "profile")
+    profile_path = config.get("_evaluation_profile_path")
+    if profile_path:
+        configured_model = str(profile.get("model") or "").strip()
+        if configured_model and configured_model != str(args.model):
+            raise SystemExit(
+                f"evaluation profile is for model {configured_model!r}, got {args.model!r}"
+            )
+        sampling_overrides = [
+            field
+            for field in VLLM_SAMPLING_FIELDS
+            if getattr(args, field, None) is not None
+        ]
+        if sampling_overrides:
+            raise SystemExit(
+                "sampling overrides are disabled for evaluation profiles; edit [sampling] in the TOML: "
+                + ", ".join(sampling_overrides)
+            )
     provider = str(pick(getattr(args, "provider", None), lighteval.get("provider"), "openai"))
     served_model_name = str(
         pick(
@@ -871,6 +889,8 @@ def build_lighteval_model_args(
         f"base_url={base_url}",
         "use_cache=false",
     ]
+    if profile_path:
+        parts.append(f"rwkv_profile={profile_path}")
     concurrent_requests = pick(
         getattr(args, "concurrent_requests", None),
         env_value(env, "HELICOPTER_EVAL_CONCURRENT_REQUESTS"),
@@ -888,7 +908,11 @@ def build_lighteval_model_args(
         lighteval.get("max_model_length"),
         model.get("max_model_len"),
     )
-    sampling = resolve_lighteval_request_sampling(args, env=env, config=config)
+    sampling = (
+        {}
+        if profile_path
+        else resolve_lighteval_request_sampling(args, env=env, config=config)
+    )
     if concurrent_requests is not None:
         parts.append(f"concurrent_requests={concurrent_requests}")
     if request_timeout is not None:
@@ -915,9 +939,15 @@ def build_lighteval_plan(
         raise SystemExit(f"unsupported LightEval backend: {args.backend}")
 
     lighteval = table(config, "lighteval")
+    profile = table(config, "profile")
+    profile_path = config.get("_evaluation_profile_path")
     python = python_executable(config, root=root, env=env)
     model_args, api_key = build_lighteval_model_args(args, root=root, env=env, config=config)
-    sampling = resolve_lighteval_request_sampling(args, env=env, config=config)
+    sampling = (
+        {}
+        if profile_path
+        else resolve_lighteval_request_sampling(args, env=env, config=config)
+    )
     command = [
         python,
         "-m",
@@ -975,6 +1005,20 @@ def build_lighteval_plan(
 
     shown_env = {"PYTHON": python}
     plan_env = _strip_vllm_env(env)
+    if profile_path:
+        # A profile run has one authoritative prompt/sampling/request path in
+        # vendored LightEval. Do not let stale dotenv values reactivate the
+        # legacy runtime monkey patches or task-level request overrides.
+        for legacy_key in (
+            "HELICOPTER_PROMPT_TEMPLATE",
+            "HELICOPTER_PATCH_LIGHTEVAL_LITELLM_LOGPROBS",
+            "HELICOPTER_SCOREBOARD_DB_ONLY",
+            "HELICOPTER_VLLM_SAMPLING_JSON",
+            "HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY",
+            "HELICOPTER_LIGHTEEVAL_TASK_REQUEST_POLICY",
+            "HELICOPTER_LIGHTEEVAL_G1H_POLICY",
+        ):
+            plan_env.pop(legacy_key, None)
     # The repository carries the LightEval source that this command is meant
     # to exercise.  Put it on the child interpreter's PYTHONPATH explicitly
     # instead of relying only on an editable-install record in the venv.
@@ -987,10 +1031,20 @@ def build_lighteval_plan(
     prepend_pythonpath(plan_env, root / "src/cli")
     plan_env["HELICOPTER_LIGHTEEVAL_SOURCE_ROOT"] = str(lighteval_source)
     plan_env["HELICOPTER_LIGHTEEVAL_ASSERT_LOCAL_SOURCE"] = "1"
-    plan_env["HELICOPTER_PATCH_LIGHTEVAL_LITELLM_LOGPROBS"] = "1"
+    # The strict profile path is implemented in vendored LightEval itself.
+    # Importing the legacy logprob shim would also import its raw-generation
+    # monkey patch and overwrite the source implementation.
+    if not profile_path:
+        plan_env["HELICOPTER_PATCH_LIGHTEVAL_LITELLM_LOGPROBS"] = "1"
     plan_env["HELICOPTER_PATCH_LIGHTEVAL_DATASET_RETRIES"] = "1"
     plan_env["HELICOPTER_LIGHTEVAL_DATASET_ONLINE_FALLBACK"] = "1"
-    plan_env["HELICOPTER_SCOREBOARD_DB_ONLY"] = "1"
+    selected_task_count = len(
+        [item for item in str(args.tasks).split(",") if item.strip()]
+    )
+    if not profile_path or selected_task_count == 1:
+        plan_env["HELICOPTER_SCOREBOARD_DB_ONLY"] = "1"
+    if profile_path:
+        plan_env["HELICOPTER_LIGHTEVAL_PROFILE_PATH"] = str(profile_path)
     plan_env["HELICOPTER_PROJECT_ROOT"] = str(root)
     model_entry = resolve_model_entry(config, args.model)
     plan_env["HELICOPTER_SCOREBOARD_MODEL_NAME"] = str(
@@ -1002,15 +1056,68 @@ def build_lighteval_plan(
         )
     )
     prompt = table(config, "prompt")
-    prompt_mode = resolve_prompt_mode(args, env=env, prompt=prompt)
+    configured_profile_mode = prompt.get("mode") if profile_path else None
+    requested_prompt_mode = getattr(args, "prompt_mode", None)
+    if (
+        profile_path
+        and requested_prompt_mode is not None
+        and str(requested_prompt_mode) != str(configured_profile_mode)
+    ):
+        raise SystemExit(
+            "prompt mode overrides are disabled for evaluation profiles; edit [prompt] in the TOML"
+        )
+    prompt_mode = str(
+        configured_profile_mode
+        if profile_path
+        else pick(
+            requested_prompt_mode,
+            env_value(env, "HELICOPTER_PROMPT_MODE"),
+            "naive_cot",
+        )
+    ).strip().lower()
+    if prompt_mode not in PROMPT_MODES:
+        allowed = ", ".join(PROMPT_MODES)
+        raise SystemExit(f"prompt mode must be one of: {allowed}; got {prompt_mode!r}")
     prompt_template = prompt_template_for_mode(prompt, prompt_mode)
-    if prompt_template:
+    if prompt_template and not profile_path:
         plan_env["HELICOPTER_PROMPT_TEMPLATE"] = prompt_template
     if prompt_mode:
         plan_env["HELICOPTER_SCOREBOARD_PROMPT_MODE"] = prompt_mode
         plan_env["HELICOPTER_PROMPT_MODE"] = prompt_mode
     plan_env["HELICOPTER_SCOREBOARD_COT_MODE"] = "NoCoT" if "nocot" in prompt_mode.lower() else "CoT"
-    configured_path = Path(args.config) if getattr(args, "config", None) else default_config_path(root)
+    if profile_path:
+        adapter = str(profile.get("adapter") or "raw")
+        adapter_contracts = {
+            "math": ("math", "math_boxed"),
+            "choice": ("knowledge", "choice"),
+            "code": ("coding", "python_program"),
+            "instruction": ("instruction_following", "instruction"),
+            "raw": (None, None),
+        }
+        adapter_contract = adapter_contracts.get(adapter)
+        if adapter_contract is None:
+            raise SystemExit(f"unsupported [profile].adapter: {adapter!r}")
+        domain, request_format = adapter_contract
+        profile_tasks = {
+            item.split("|", 1)[0]: {
+                "domain": domain,
+                "format": request_format,
+                "prompt_mode": prompt_mode,
+                "adapter": adapter,
+            }
+            for item in (task.strip() for task in str(args.tasks).split(","))
+            if item
+        }
+        plan_env["HELICOPTER_LIGHTEVAL_TASK_REQUEST_POLICY"] = json.dumps(
+            {"tasks": profile_tasks},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    configured_path = Path(
+        str(config.get("_config_path"))
+    ) if config.get("_config_path") else (
+        Path(args.config) if getattr(args, "config", None) else default_config_path(root)
+    )
     if not configured_path.is_absolute():
         configured_path = root / configured_path
     plan_env["HELICOPTER_SCOREBOARD_CONFIG_PATH"] = str(configured_path.resolve())

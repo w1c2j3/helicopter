@@ -42,6 +42,10 @@ SERVER_POLL_INTERVAL_S = 2.0
 def resolve_run_tasks(args: Any, config: dict[str, Any]) -> str:
     lighteval = table(config, "lighteval")
     configured = lighteval.get("tasks")
+    profile = table(config, "profile")
+    profile_tasks = profile.get("tasks")
+    if configured is None and isinstance(profile_tasks, list):
+        configured = profile_tasks
     if isinstance(configured, list):
         configured = ",".join(str(item) for item in configured if str(item))
     tasks = pick(getattr(args, "tasks", None), configured)
@@ -49,6 +53,14 @@ def resolve_run_tasks(args: Any, config: dict[str, Any]) -> str:
         raise SystemExit(
             "no tasks given: pass a task string (e.g. 'gsm8k|0') or set [lighteval].tasks in the config"
         )
+    if isinstance(profile_tasks, list) and profile_tasks:
+        allowed = {str(item).strip() for item in profile_tasks if str(item).strip()}
+        selected = [str(item).strip() for item in str(tasks).split(",") if str(item).strip()]
+        outside_profile = [item for item in selected if item.split("|", 1)[0] not in allowed]
+        if outside_profile:
+            raise SystemExit(
+                "task(s) are outside [profile].tasks: " + ", ".join(outside_profile)
+            )
     return str(tasks)
 
 
